@@ -1,0 +1,2009 @@
+{
+  "captured_at": "2026-02-18T05:20:49Z",
+  "legacy_root": "/data/projects/beads_viewer_rust/legacy_beads_viewer_code/beads_viewer",
+  "beads_file": "/data/projects/beads_viewer_rust/tests/testdata/synthetic_complex.jsonl",
+  "diff_since": "HEAD~1",
+  "triage": {
+    "data_hash": "8a18b3bb4677c027",
+    "generated_at": "2026-02-18T05:20:49Z",
+    "triage": {
+      "blockers_to_clear": [
+        {
+          "actionable": true,
+          "id": "bd-101",
+          "title": "Implement OAuth2 Authentication",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "bd-103"
+          ]
+        }
+      ],
+      "commands": {
+        "claim_top": "CI=1 br update bd-101 --status in_progress --json",
+        "list_blocked": "CI=1 br blocked --json",
+        "list_ready": "CI=1 br ready --json",
+        "refresh_triage": "bv --robot-triage",
+        "show_top": "CI=1 br show bd-101 --json"
+      },
+      "meta": {
+        "compute_time_ms": 0,
+        "generated_at": "2026-02-18T00:20:49.218081124-05:00",
+        "issue_count": 6,
+        "phase2_ready": true,
+        "version": "1.0.0"
+      },
+      "project_health": {
+        "counts": {
+          "actionable": 4,
+          "blocked": 1,
+          "by_priority": {
+            "0": 1,
+            "1": 2,
+            "2": 2,
+            "3": 1
+          },
+          "by_status": {
+            "blocked": 1,
+            "closed": 1,
+            "in_progress": 2,
+            "open": 2
+          },
+          "by_type": {
+            "bug": 1,
+            "chore": 1,
+            "feature": 3,
+            "task": 1
+          },
+          "closed": 1,
+          "open": 5,
+          "total": 6
+        },
+        "graph": {
+          "density": 0.03333333333333333,
+          "edge_count": 1,
+          "has_cycles": false,
+          "node_count": 6,
+          "phase2_ready": true
+        },
+        "velocity": {
+          "avg_days_to_close": 4.083333333333333,
+          "closed_last_30_days": 0,
+          "closed_last_7_days": 0,
+          "weekly": [
+            {
+              "closed": 0,
+              "week_start": "2026-02-16T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-02-09T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-02-02T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-26T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-19T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-12T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-05T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2025-12-29T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "quick_ref": {
+        "actionable_count": 4,
+        "blocked_count": 1,
+        "in_progress_count": 2,
+        "open_count": 5,
+        "top_picks": [
+          {
+            "id": "bd-101",
+            "reasons": [
+              "🔓 Unblocks 1 item(s): bd-103",
+              "📊 High centrality in dependency graph (PageRank: 100%)",
+              "🕐 No activity in 869 days - may need review",
+              "🚧 In progress - already being worked",
+              "🚨 High priority (P0) - prioritize this work"
+            ],
+            "score": 0.4446009242549478,
+            "title": "Implement OAuth2 Authentication",
+            "unblocks": 1
+          },
+          {
+            "id": "bd-102",
+            "reasons": [
+              "📊 High centrality in dependency graph (PageRank: 54%)",
+              "✅ Currently unclaimed - available for work",
+              "🚨 High priority (P1) - prioritize this work"
+            ],
+            "score": 0.2559935896830492,
+            "title": "Fix memory leak in image processor",
+            "unblocks": 0
+          },
+          {
+            "id": "bd-106",
+            "reasons": [
+              "📊 High centrality in dependency graph (PageRank: 54%)",
+              "✅ Currently unclaimed - available for work"
+            ],
+            "score": 0.23474358968304915,
+            "title": "Audit Logs",
+            "unblocks": 0
+          }
+        ]
+      },
+      "quick_wins": [
+        {
+          "id": "bd-101",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Implement OAuth2 Authentication",
+          "unblocks_ids": [
+            "bd-103"
+          ]
+        },
+        {
+          "id": "bd-102",
+          "reason": "Low complexity, high priority",
+          "score": 0.5,
+          "title": "Fix memory leak in image processor"
+        },
+        {
+          "id": "bd-105",
+          "reason": "Low complexity, high priority",
+          "score": 0.5,
+          "title": "Frontend: Login Page"
+        },
+        {
+          "id": "bd-103",
+          "reason": "Low complexity",
+          "score": 0.4,
+          "title": "Database Migration for Users Table"
+        },
+        {
+          "id": "bd-106",
+          "reason": "Low complexity",
+          "score": 0.4,
+          "title": "Audit Logs"
+        }
+      ],
+      "recommendations": [
+        {
+          "action": "Check if this is stuck and needs help",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.22,
+            "pagerank_norm": 1,
+            "priority_boost": 0.1,
+            "priority_boost_norm": 1,
+            "risk": 0.01603703464992538,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.1603703464992538,
+            "risk_signals": {
+              "activity_churn": 0.0012344883308459229,
+              "composite_risk": 0.1603703464992538,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.8
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (871 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "bd-101",
+          "labels": [
+            "auth",
+            "security",
+            "backend"
+          ],
+          "priority": 0,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): bd-103",
+            "📊 High centrality in dependency graph (PageRank: 100%)",
+            "🕐 No activity in 869 days - may need review",
+            "🚧 In progress - already being worked",
+            "🚨 High priority (P0) - prioritize this work"
+          ],
+          "score": 0.4446009242549478,
+          "status": "in_progress",
+          "title": "Implement OAuth2 Authentication",
+          "type": "feature",
+          "unblocks_ids": [
+            "bd-103"
+          ]
+        },
+        {
+          "action": "Start work on this issue",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.11891892903888136,
+            "pagerank_norm": 0.5405405865403698,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.006,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.06,
+            "risk_signals": {
+              "activity_churn": 0,
+              "composite_risk": 0.06,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.025,
+            "staleness_norm": 0.5,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (869 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "bd-102",
+          "labels": null,
+          "priority": 1,
+          "reasons": [
+            "📊 High centrality in dependency graph (PageRank: 54%)",
+            "✅ Currently unclaimed - available for work",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.2559935896830492,
+          "status": "open",
+          "title": "Fix memory leak in image processor",
+          "type": "bug"
+        },
+        {
+          "action": "Start work on this issue",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.11891892903888136,
+            "pagerank_norm": 0.5405405865403698,
+            "priority_boost": 0.05,
+            "priority_boost_norm": 0.5,
+            "risk": 0.006,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.06,
+            "risk_signals": {
+              "activity_churn": 0,
+              "composite_risk": 0.06,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.025,
+            "staleness_norm": 0.5,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (867 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "bd-106",
+          "labels": null,
+          "priority": 2,
+          "reasons": [
+            "📊 High centrality in dependency graph (PageRank: 54%)",
+            "✅ Currently unclaimed - available for work"
+          ],
+          "score": 0.23474358968304915,
+          "status": "open",
+          "title": "Audit Logs",
+          "type": "feature"
+        },
+        {
+          "action": "Work on bd-101 first to unblock this",
+          "blocked_by": [
+            "bd-101"
+          ],
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.11891892903888136,
+            "pagerank_norm": 0.5405405865403698,
+            "priority_boost": 0.05,
+            "priority_boost_norm": 0.5,
+            "risk": 0.013999999999999999,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.13999999999999999,
+            "risk_signals": {
+              "activity_churn": 0,
+              "composite_risk": 0.13999999999999999,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.7
+            },
+            "staleness": 0.025,
+            "staleness_norm": 0.5,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (868 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "bd-103",
+          "labels": null,
+          "priority": 2,
+          "reasons": [
+            "📊 High centrality in dependency graph (PageRank: 54%)",
+            "✅ Currently unclaimed - available for work",
+            "⏳ Blocked by bd-101 - complete that first"
+          ],
+          "score": 0.22733514323110507,
+          "status": "blocked",
+          "title": "Database Migration for Users Table",
+          "type": "task"
+        },
+        {
+          "action": "Continue work on this issue",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.11891892903888136,
+            "pagerank_norm": 0.5405405865403698,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.006,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.06,
+            "risk_signals": {
+              "activity_churn": 0,
+              "composite_risk": 0.06,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.025,
+            "staleness_norm": 0.5,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (870 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "bd-105",
+          "labels": null,
+          "priority": 1,
+          "reasons": [
+            "📊 High centrality in dependency graph (PageRank: 54%)",
+            "🚧 In progress - already being worked",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.21081825032721696,
+          "status": "in_progress",
+          "title": "Frontend: Login Page",
+          "type": "feature"
+        }
+      ]
+    },
+    "usage_hints": [
+      "jq '.triage.quick_ref.top_picks[:3]' - Top 3 picks for immediate work",
+      "jq '.triage.recommendations[3:10] | map({id,title,score})' - Next candidates after top picks",
+      "jq '.triage.blockers_to_clear | map(.id)' - High-impact blockers to clear",
+      "jq '.triage.recommendations[] | select(.type == \"bug\")' - Bug-focused recommendations",
+      "jq '.triage.quick_ref.top_picks[] | select(.unblocks \u003e 2)' - High-impact picks",
+      "jq '.triage.quick_wins' - Low-effort, high-impact items",
+      "--robot-next - Get only the single top recommendation",
+      "--robot-triage-by-track - Group by execution track for multi-agent coordination",
+      "--robot-triage-by-label - Group by label for area-focused agents",
+      "jq '.triage.recommendations_by_track[].top_pick' - Top pick per track",
+      "jq '.triage.recommendations_by_label[].claim_command' - Claim commands per label",
+      "jq '.feedback.weight_adjustments' - View feedback-adjusted weights (bv-90)"
+    ]
+  },
+  "plan": {
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "skip",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "not computed for --robot-plan",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": false,
+      "ComputeCriticalPath": false,
+      "ComputeCycles": false,
+      "ComputeEigenvector": false,
+      "ComputeHITS": false,
+      "ComputeKCore": true,
+      "ComputePageRank": false,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "not computed for --robot-plan",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "not computed for --robot-plan",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "not computed for --robot-plan",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "8a18b3bb4677c027",
+    "generated_at": "2026-02-18T05:20:49Z",
+    "plan": {
+      "summary": {
+        "highest_impact": "bd-101",
+        "impact_reason": "Unblocks 1 task",
+        "unblocks_count": 1
+      },
+      "total_actionable": 4,
+      "total_blocked": 1,
+      "tracks": [
+        {
+          "items": [
+            {
+              "id": "bd-101",
+              "priority": 0,
+              "status": "in_progress",
+              "title": "Implement OAuth2 Authentication",
+              "unblocks": [
+                "bd-103"
+              ]
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-A"
+        },
+        {
+          "items": [
+            {
+              "id": "bd-102",
+              "priority": 1,
+              "status": "open",
+              "title": "Fix memory leak in image processor",
+              "unblocks": null
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-B"
+        },
+        {
+          "items": [
+            {
+              "id": "bd-105",
+              "priority": 1,
+              "status": "in_progress",
+              "title": "Frontend: Login Page",
+              "unblocks": null
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-C"
+        },
+        {
+          "items": [
+            {
+              "id": "bd-106",
+              "priority": 2,
+              "status": "open",
+              "title": "Audit Logs",
+              "unblocks": null
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-D"
+        }
+      ]
+    },
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "Critical": {
+        "state": "skipped"
+      },
+      "Cycles": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "Eigenvector": {
+        "state": "skipped"
+      },
+      "HITS": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "KCore": {
+        "ms": 0.035387,
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "skipped"
+      },
+      "Slack": {
+        "ms": 0.001412,
+        "state": "computed"
+      }
+    },
+    "usage_hints": [
+      "jq '.plan.tracks | length' - Number of parallel execution tracks",
+      "jq '.plan.tracks[0].items | map(.id)' - First track item IDs",
+      "jq '.plan.tracks[].items[] | select(.unblocks | length \u003e 0)' - Items that unblock others",
+      "jq '.plan.summary' - High-level execution summary",
+      "jq '[.plan.tracks[].items[]] | length' - Total items across all tracks"
+    ]
+  },
+  "insights": {
+    "Articulation": null,
+    "Authorities": [
+      {
+        "ID": "bd-101",
+        "Value": 1
+      },
+      {
+        "ID": "bd-102",
+        "Value": 0
+      },
+      {
+        "ID": "bd-103",
+        "Value": 0
+      },
+      {
+        "ID": "bd-104",
+        "Value": 0
+      },
+      {
+        "ID": "bd-105",
+        "Value": 0
+      },
+      {
+        "ID": "bd-106",
+        "Value": 0
+      }
+    ],
+    "Bottlenecks": [],
+    "ClusterDensity": 0.03333333333333333,
+    "Cores": [
+      {
+        "ID": "bd-101",
+        "Value": 1
+      },
+      {
+        "ID": "bd-103",
+        "Value": 1
+      },
+      {
+        "ID": "bd-102",
+        "Value": 0
+      },
+      {
+        "ID": "bd-104",
+        "Value": 0
+      },
+      {
+        "ID": "bd-105",
+        "Value": 0
+      },
+      {
+        "ID": "bd-106",
+        "Value": 0
+      }
+    ],
+    "Cycles": null,
+    "Hubs": [
+      {
+        "ID": "bd-103",
+        "Value": 1
+      },
+      {
+        "ID": "bd-101",
+        "Value": 0
+      },
+      {
+        "ID": "bd-102",
+        "Value": 0
+      },
+      {
+        "ID": "bd-104",
+        "Value": 0
+      },
+      {
+        "ID": "bd-105",
+        "Value": 0
+      },
+      {
+        "ID": "bd-106",
+        "Value": 0
+      }
+    ],
+    "Influencers": [
+      {
+        "ID": "bd-101",
+        "Value": 1
+      },
+      {
+        "ID": "bd-102",
+        "Value": 0
+      },
+      {
+        "ID": "bd-103",
+        "Value": 0
+      },
+      {
+        "ID": "bd-104",
+        "Value": 0
+      },
+      {
+        "ID": "bd-105",
+        "Value": 0
+      },
+      {
+        "ID": "bd-106",
+        "Value": 0
+      }
+    ],
+    "Keystones": [
+      {
+        "ID": "bd-101",
+        "Value": 2
+      },
+      {
+        "ID": "bd-102",
+        "Value": 1
+      },
+      {
+        "ID": "bd-103",
+        "Value": 1
+      },
+      {
+        "ID": "bd-104",
+        "Value": 1
+      },
+      {
+        "ID": "bd-105",
+        "Value": 1
+      },
+      {
+        "ID": "bd-106",
+        "Value": 1
+      }
+    ],
+    "Orphans": [
+      "bd-101",
+      "bd-102",
+      "bd-104",
+      "bd-105",
+      "bd-106"
+    ],
+    "Slack": [
+      {
+        "ID": "bd-102",
+        "Value": 1
+      },
+      {
+        "ID": "bd-104",
+        "Value": 1
+      },
+      {
+        "ID": "bd-105",
+        "Value": 1
+      },
+      {
+        "ID": "bd-106",
+        "Value": 1
+      },
+      {
+        "ID": "bd-101",
+        "Value": 0
+      },
+      {
+        "ID": "bd-103",
+        "Value": 0
+      }
+    ],
+    "Stats": {
+      "Config": {
+        "BetweennessIsApproximate": false,
+        "BetweennessMode": "exact",
+        "BetweennessSampleSize": 0,
+        "BetweennessSkipReason": "",
+        "BetweennessTimeout": 2000000000,
+        "ComputeArticulation": true,
+        "ComputeBetweenness": true,
+        "ComputeCriticalPath": true,
+        "ComputeCycles": true,
+        "ComputeEigenvector": true,
+        "ComputeHITS": true,
+        "ComputeKCore": true,
+        "ComputePageRank": true,
+        "ComputeSlack": true,
+        "CyclesSkipReason": "",
+        "CyclesTimeout": 2000000000,
+        "HITSSkipReason": "",
+        "HITSTimeout": 2000000000,
+        "MaxCyclesToStore": 1000,
+        "PageRankSkipReason": "",
+        "PageRankTimeout": 2000000000
+      },
+      "Density": 0.03333333333333333,
+      "EdgeCount": 1,
+      "InDegree": {
+        "bd-101": 1,
+        "bd-102": 0,
+        "bd-103": 0,
+        "bd-104": 0,
+        "bd-105": 0,
+        "bd-106": 0
+      },
+      "NodeCount": 6,
+      "OutDegree": {
+        "bd-101": 0,
+        "bd-102": 0,
+        "bd-103": 1,
+        "bd-104": 0,
+        "bd-105": 0,
+        "bd-106": 0
+      },
+      "TopologicalOrder": [
+        "bd-101",
+        "bd-102",
+        "bd-103",
+        "bd-104",
+        "bd-105",
+        "bd-106"
+      ]
+    },
+    "Velocity": {
+      "avg_days_to_close": 4.083333333333333,
+      "closed_last_30_days": 0,
+      "closed_last_7_days": 0,
+      "weekly": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "advanced_insights": {
+      "config": {
+        "coverage_set_limit": 5,
+        "cycle_break_limit": 5,
+        "k_paths_limit": 5,
+        "parallel_cut_limit": 5,
+        "path_length_cap": 50,
+        "topk_set_limit": 5
+      },
+      "coverage_set": {
+        "coverage_ratio": 1,
+        "edges_covered": 1,
+        "how_to_use": "Small vertex cover touching all dependency edges. Use for breadth coverage.",
+        "items": [
+          {
+            "edges_added": 1,
+            "id": "bd-101",
+            "selection_seq": 1,
+            "title": "Implement OAuth2 Authentication",
+            "total_degree": 1
+          }
+        ],
+        "rationale": "Greedy vertex cover (2-approx): iteratively pick highest uncovered degree until edges are covered or cap is reached.",
+        "status": {
+          "count": 1,
+          "limited": 1,
+          "state": "available"
+        },
+        "total_edges": 1
+      },
+      "cycle_break": {
+        "advisory": "No cycles detected - dependency graph is a proper DAG.",
+        "cycle_count": 0,
+        "how_to_use": "Structural fix suggestions. Apply BEFORE working on cycle members.",
+        "status": {
+          "state": "available"
+        }
+      },
+      "k_paths": {
+        "how_to_use": "K-shortest critical paths. Focus on issues appearing in multiple paths.",
+        "paths": [
+          {
+            "issue_ids": [
+              "bd-101",
+              "bd-103"
+            ],
+            "length": 2,
+            "rank": 1
+          }
+        ],
+        "status": {
+          "count": 1,
+          "limited": 1,
+          "state": "available"
+        }
+      },
+      "parallel_cut": {
+        "how_to_use": "Issues that enable parallel work. Complete to maximize team throughput.",
+        "max_parallel": 4,
+        "status": {
+          "state": "available"
+        }
+      },
+      "parallel_gain": {
+        "how_to_use": "Parallelization improvement from completing each issue.",
+        "status": {
+          "reason": "Awaiting implementation (bv-129)",
+          "state": "pending"
+        }
+      },
+      "topk_set": {
+        "how_to_use": "Best k issues to complete for max downstream unlock. Work these in order.",
+        "items": [
+          {
+            "id": "bd-101",
+            "marginal_gain": 1,
+            "title": "Implement OAuth2 Authentication",
+            "unblocks": [
+              "bd-103"
+            ]
+          },
+          {
+            "id": "bd-102",
+            "marginal_gain": 0,
+            "title": "Fix memory leak in image processor"
+          },
+          {
+            "id": "bd-103",
+            "marginal_gain": 0,
+            "title": "Database Migration for Users Table"
+          },
+          {
+            "id": "bd-105",
+            "marginal_gain": 0,
+            "title": "Frontend: Login Page"
+          },
+          {
+            "id": "bd-106",
+            "marginal_gain": 0,
+            "title": "Audit Logs"
+          }
+        ],
+        "marginal_gain": [
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        "status": {
+          "count": 5,
+          "limited": 5,
+          "state": "available"
+        },
+        "total_gain": 1
+      },
+      "usage_hints": {
+        "coverage_set": "Small vertex cover touching all dependency edges. Use for breadth coverage.",
+        "cycle_break": "Structural fix suggestions. Apply BEFORE working on cycle members.",
+        "k_paths": "K-shortest critical paths. Focus on issues appearing in multiple paths.",
+        "parallel_cut": "Issues that enable parallel work. Complete to maximize team throughput.",
+        "parallel_gain": "Parallelization improvement from completing each issue.",
+        "topk_set": "Best k issues to complete for max downstream unlock. Work these in order."
+      }
+    },
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "exact",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": true,
+      "ComputeCriticalPath": true,
+      "ComputeCycles": true,
+      "ComputeEigenvector": true,
+      "ComputeHITS": true,
+      "ComputeKCore": true,
+      "ComputePageRank": true,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "8a18b3bb4677c027",
+    "full_stats": {
+      "articulation_points": null,
+      "authorities": {
+        "bd-101": 1,
+        "bd-102": 0,
+        "bd-103": 0,
+        "bd-104": 0,
+        "bd-105": 0,
+        "bd-106": 0
+      },
+      "betweenness": {},
+      "core_number": {
+        "bd-101": 1,
+        "bd-102": 0,
+        "bd-103": 1,
+        "bd-104": 0,
+        "bd-105": 0,
+        "bd-106": 0
+      },
+      "critical_path_score": {
+        "bd-101": 2,
+        "bd-102": 1,
+        "bd-103": 1,
+        "bd-104": 1,
+        "bd-105": 1,
+        "bd-106": 1
+      },
+      "eigenvector": {
+        "bd-101": 1,
+        "bd-102": 0,
+        "bd-103": 0,
+        "bd-104": 0,
+        "bd-105": 0,
+        "bd-106": 0
+      },
+      "hubs": {
+        "bd-101": 0,
+        "bd-102": 0,
+        "bd-103": 1,
+        "bd-104": 0,
+        "bd-105": 0,
+        "bd-106": 0
+      },
+      "pagerank": {
+        "bd-101": 0.27007297592472634,
+        "bd-102": 0.14598540481505476,
+        "bd-103": 0.14598540481505476,
+        "bd-104": 0.14598540481505476,
+        "bd-105": 0.14598540481505476,
+        "bd-106": 0.14598540481505476
+      },
+      "slack": {
+        "bd-101": 0,
+        "bd-102": 1,
+        "bd-103": 0,
+        "bd-104": 1,
+        "bd-105": 1,
+        "bd-106": 1
+      }
+    },
+    "generated_at": "2026-02-18T05:20:49Z",
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "ms": 0.009358,
+        "state": "computed"
+      },
+      "Critical": {
+        "ms": 0.003626,
+        "state": "computed"
+      },
+      "Cycles": {
+        "ms": 0.002254,
+        "state": "computed"
+      },
+      "Eigenvector": {
+        "ms": 0.002805,
+        "state": "computed"
+      },
+      "HITS": {
+        "ms": 0.012323,
+        "state": "computed"
+      },
+      "KCore": {
+        "ms": 0.003376,
+        "state": "computed"
+      },
+      "PageRank": {
+        "ms": 0.045645,
+        "state": "computed"
+      },
+      "Slack": {
+        "ms": 0.001333,
+        "state": "computed"
+      }
+    },
+    "top_what_ifs": [
+      {
+        "delta": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0.2,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.125,
+          "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "bd-103"
+          ]
+        },
+        "issue_id": "bd-101",
+        "title": "Implement OAuth2 Authentication"
+      }
+    ],
+    "usage_hints": [
+      "jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
+      "jq '.CriticalPath[:3]' - Top 3 critical path items",
+      "jq '.top_what_ifs[] | select(.delta.direct_unblocks \u003e 2)' - High-impact items",
+      "jq '.full_stats.pagerank | to_entries | sort_by(-.value)[:5]' - Top PageRank",
+      "jq '.full_stats.core_number | to_entries | sort_by(-.value)[:5]' - Strongly embedded nodes (k-core)",
+      "jq '.full_stats.articulation_points' - Structural cut points",
+      "jq '.Slack[:5]' - Nodes with slack (good parallel work candidates)",
+      "jq '.Cycles | length' - Count of detected cycles",
+      "jq '.advanced_insights.cycle_break' - Cycle break suggestions (bv-181)",
+      "BV_INSIGHTS_MAP_LIMIT=50 bv --robot-insights - Reduce map sizes"
+    ]
+  },
+  "priority": {
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "exact",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": true,
+      "ComputeCriticalPath": true,
+      "ComputeCycles": true,
+      "ComputeEigenvector": true,
+      "ComputeHITS": true,
+      "ComputeKCore": true,
+      "ComputePageRank": true,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "8a18b3bb4677c027",
+    "field_descriptions": {
+      "status.capped": "Whether results were truncated to prevent overload",
+      "status.phase2": "Whether expensive graph metrics (PageRank, betweenness) are included",
+      "top_reasons": "Top 3 factors contributing to priority score, ordered by weight",
+      "what_if.cascade": "Total issues transitively unblocked (including indirect)",
+      "what_if.days_saved": "Estimated days saved based on issue estimates",
+      "what_if.depth": "Critical path depth reduction if completed",
+      "what_if.parallelization_gain": "Net change in parallel work capacity (direct_unblocks - 1); positive = more parallel work possible",
+      "what_if.unblocks": "Number of issues directly waiting on this one"
+    },
+    "filters": {
+      "max_results": 10
+    },
+    "generated_at": "2026-02-18T05:20:49Z",
+    "recommendations": [
+      {
+        "confidence": 1,
+        "current_priority": 0,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:49Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "Very high: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.22
+            },
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.1
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 1,
+            "depth_reduction": 0.2,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.125,
+            "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 1,
+            "unblocked_issue_ids": [
+              "bd-103"
+            ]
+          }
+        },
+        "impact_score": 0.6062870346498516,
+        "issue_id": "bd-101",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Blocks 1 other item",
+          "Stale for 30+ days"
+        ],
+        "suggested_priority": 1,
+        "title": "Implement OAuth2 Authentication",
+        "what_if": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0.2,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.125,
+          "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "bd-103"
+          ]
+        }
+      },
+      {
+        "confidence": 0.9285714285714286,
+        "current_priority": 1,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:49Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "High: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.11891892903888136
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.07500000000000001
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0.1,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.3081689290388814,
+        "issue_id": "bd-102",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Stale for 15+ days",
+          "aging (869 days)"
+        ],
+        "suggested_priority": 2,
+        "title": "Fix memory leak in image processor",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0.1,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      },
+      {
+        "confidence": 0.9285714285714286,
+        "current_priority": 1,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:49Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "High: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.11891892903888136
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.07500000000000001
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0.1,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.3081689290388814,
+        "issue_id": "bd-105",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Stale for 15+ days",
+          "aging (870 days)"
+        ],
+        "suggested_priority": 2,
+        "title": "Frontend: Login Page",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0.1,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      },
+      {
+        "confidence": 1,
+        "current_priority": 2,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:49Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "High: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.11891892903888136
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "High: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.05
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0.1,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.29116892903888136,
+        "issue_id": "bd-103",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Stale for 15+ days",
+          "aging (868 days)"
+        ],
+        "suggested_priority": 3,
+        "title": "Database Migration for Users Table",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0.1,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      },
+      {
+        "confidence": 0.7285714285714285,
+        "current_priority": 2,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:49Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "High: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.11891892903888136
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "High: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.05
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0.1,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.28316892903888136,
+        "issue_id": "bd-106",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Stale for 15+ days",
+          "aging (867 days)"
+        ],
+        "suggested_priority": 3,
+        "title": "Audit Logs",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0.1,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      }
+    ],
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "state": "computed"
+      },
+      "Critical": {
+        "state": "computed"
+      },
+      "Cycles": {
+        "state": "computed"
+      },
+      "Eigenvector": {
+        "state": "computed"
+      },
+      "HITS": {
+        "state": "computed"
+      },
+      "KCore": {
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "computed"
+      },
+      "Slack": {
+        "state": "computed"
+      }
+    },
+    "summary": {
+      "high_confidence": 5,
+      "recommendations": 5,
+      "total_issues": 6
+    },
+    "usage_hints": [
+      "jq '.recommendations[] | select(.confidence \u003e 0.7)' - Filter high confidence",
+      "jq '.recommendations[0].explanation.what_if' - Get top item's impact",
+      "jq '.recommendations | map({id: .issue_id, score: .impact_score})' - Extract IDs and scores",
+      "jq '.recommendations[] | select(.explanation.what_if.parallelization_gain \u003e 0)' - Find items that increase parallel work capacity",
+      "--robot-min-confidence 0.6 - Pre-filter by confidence",
+      "--robot-max-results 5 - Limit to top N results",
+      "--robot-by-label bug - Filter by specific label"
+    ]
+  },
+  "forecast": {
+    "agents": 2,
+    "data_hash": "8a18b3bb4677c027",
+    "forecast_count": 5,
+    "forecasts": [
+      {
+        "agents": 2,
+        "confidence": 0.2,
+        "estimated_days": 4.25,
+        "estimated_minutes": 102,
+        "eta_date": "2026-02-22T06:20:49.448517726-05:00",
+        "eta_date_high": "2026-02-24T23:37:37.448517726-05:00",
+        "eta_date_low": "2026-02-19T13:04:01.448517725-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: feature×1.3",
+          "depth: 2×1.20",
+          "desc: 198r×1.10",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "bd-101",
+        "velocity_minutes_per_day": 12
+      },
+      {
+        "agents": 2,
+        "confidence": 0.15000000000000002,
+        "estimated_days": 2.9166666666666665,
+        "estimated_minutes": 70,
+        "eta_date": "2026-02-20T22:20:49.448517726-05:00",
+        "eta_date_high": "2026-02-22T21:56:49.448517726-05:00",
+        "eta_date_low": "2026-02-18T22:44:49.448517725-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: bug×1.0",
+          "depth: 1×1.10",
+          "desc: 132r×1.07",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "bd-102",
+        "velocity_minutes_per_day": 12
+      },
+      {
+        "agents": 2,
+        "confidence": 0.15000000000000002,
+        "estimated_days": 2.75,
+        "estimated_minutes": 66,
+        "eta_date": "2026-02-20T18:20:49.448517726-05:00",
+        "eta_date_high": "2026-02-22T15:13:37.448517726-05:00",
+        "eta_date_low": "2026-02-18T21:28:01.448517725-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: task×1.0",
+          "depth: 1×1.10",
+          "desc: 24r×1.01",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "bd-103",
+        "velocity_minutes_per_day": 12
+      },
+      {
+        "agents": 2,
+        "confidence": 0.15000000000000002,
+        "estimated_days": 3.625,
+        "estimated_minutes": 87,
+        "eta_date": "2026-02-21T15:20:49.448517726-05:00",
+        "eta_date_high": "2026-02-24T02:30:25.448517726-05:00",
+        "eta_date_low": "2026-02-19T04:11:13.448517726-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: feature×1.3",
+          "depth: 1×1.10",
+          "desc: 43r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "bd-105",
+        "velocity_minutes_per_day": 12
+      },
+      {
+        "agents": 2,
+        "confidence": 0.15000000000000002,
+        "estimated_days": 3.5833333333333335,
+        "estimated_minutes": 86,
+        "eta_date": "2026-02-21T14:20:49.448517726-05:00",
+        "eta_date_high": "2026-02-24T00:49:37.448517726-05:00",
+        "eta_date_low": "2026-02-19T03:52:01.448517725-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: feature×1.3",
+          "depth: 1×1.10",
+          "desc: 23r×1.01",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "bd-106",
+        "velocity_minutes_per_day": 12
+      }
+    ],
+    "generated_at": "2026-02-18T05:20:49Z",
+    "output_format": "json",
+    "summary": {
+      "avg_confidence": 0.16,
+      "earliest_eta": "2026-02-20T18:20:49.448517726-05:00",
+      "latest_eta": "2026-02-22T06:20:49.448517726-05:00",
+      "total_days": 0.85625,
+      "total_minutes": 411
+    },
+    "version": "v0.14.4"
+  },
+  "capacity": {
+    "actionable": [
+      "bd-101",
+      "bd-105",
+      "bd-106"
+    ],
+    "actionable_count": 3,
+    "agents": 3,
+    "bottlenecks": [
+      {
+        "blocks": [
+          "bd-102",
+          "bd-103"
+        ],
+        "blocks_count": 2,
+        "id": "bd-101",
+        "title": "Implement OAuth2 Authentication"
+      }
+    ],
+    "critical_path": [
+      "bd-101",
+      "bd-102"
+    ],
+    "critical_path_length": 2,
+    "data_hash": "8a18b3bb4677c027",
+    "estimated_days": 0.5229166666666667,
+    "generated_at": "2026-02-18T05:20:49Z",
+    "open_issue_count": 5,
+    "output_format": "json",
+    "parallel_minutes": 239,
+    "parallelizable_pct": 58.15085158150851,
+    "serial_minutes": 172,
+    "total_days": 0.85625,
+    "total_minutes": 411,
+    "version": "v0.14.4"
+  },
+  "capacity_by_label": {
+    "actionable": [
+      "bd-101"
+    ],
+    "actionable_count": 1,
+    "agents": 1,
+    "critical_path": [
+      "bd-101"
+    ],
+    "critical_path_length": 1,
+    "data_hash": "8a18b3bb4677c027",
+    "estimated_days": 0.2125,
+    "generated_at": "2026-02-18T05:20:49Z",
+    "label": "backend",
+    "open_issue_count": 1,
+    "output_format": "json",
+    "parallel_minutes": 0,
+    "parallelizable_pct": 0,
+    "serial_minutes": 102,
+    "total_days": 0.2125,
+    "total_minutes": 102,
+    "version": "v0.14.4"
+  },
+  "history": {
+    "commit_index": {},
+    "data_hash": "2f3190438bad",
+    "generated_at": "2026-02-18T05:20:49.543950891Z",
+    "git_range": "limit 20 commits",
+    "histories": {
+      "bd-101": {
+        "bead_id": "bd-101",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-101",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-101",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        },
+        "status": "in_progress",
+        "title": "Implement OAuth2 Authentication"
+      },
+      "bd-102": {
+        "bead_id": "bd-102",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-102",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-102",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        },
+        "status": "open",
+        "title": "Fix memory leak in image processor"
+      },
+      "bd-103": {
+        "bead_id": "bd-103",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-103",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-103",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        },
+        "status": "blocked",
+        "title": "Database Migration for Users Table"
+      },
+      "bd-104": {
+        "bead_id": "bd-104",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-104",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-104",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        },
+        "status": "closed",
+        "title": "Update documentation"
+      },
+      "bd-105": {
+        "bead_id": "bd-105",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-105",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-105",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        },
+        "status": "in_progress",
+        "title": "Frontend: Login Page"
+      },
+      "bd-106": {
+        "bead_id": "bd-106",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-106",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "bd-106",
+            "commit_message": "update snapshot",
+            "commit_sha": "91e263bd85af6ac7fe0d524377003c4b7055206d",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:48-05:00"
+          }
+        },
+        "status": "open",
+        "title": "Audit Logs"
+      }
+    },
+    "latest_commit_sha": "8d9bcaecf8a8e9a64632c0b8bf64df802eb99c88",
+    "stats": {
+      "avg_commits_per_bead": 0,
+      "beads_with_commits": 0,
+      "method_distribution": {},
+      "total_beads": 6,
+      "total_commits": 0,
+      "unique_authors": 1
+    }
+  },
+  "diff": {
+    "diff": {
+      "closed_issues": null,
+      "from_revision": "8d9bcaecf8a8e9a64632c0b8bf64df802eb99c88",
+      "from_timestamp": "0001-01-01T00:00:00Z",
+      "metric_deltas": {
+        "avg_betweenness": 0,
+        "avg_pagerank": -0.33333333333333326,
+        "blocked_issues": 0,
+        "closed_issues": 1,
+        "component_count": 0,
+        "cycle_count": 0,
+        "open_issues": 3,
+        "total_edges": 0,
+        "total_issues": 4
+      },
+      "modified_issues": null,
+      "new_cycles": null,
+      "new_issues": [
+        {
+          "assignee": "alice",
+          "comments": [
+            {
+              "author": "bob",
+              "created_at": "2023-10-01T11:00:00Z",
+              "id": 0,
+              "issue_id": "",
+              "text": "I can handle the GitHub part."
+            }
+          ],
+          "created_at": "2023-10-01T10:00:00Z",
+          "description": "We need to support Google and GitHub login.\n\n### Requirements\n- [ ] Google Strategy\n- [ ] GitHub Strategy\n- [ ] JWT Session handling\n\nSee [RFC 7519](https://tools.ietf.org/html/rfc7519) for details.",
+          "id": "bd-101",
+          "issue_type": "feature",
+          "labels": [
+            "auth",
+            "security",
+            "backend"
+          ],
+          "priority": 0,
+          "status": "in_progress",
+          "title": "Implement OAuth2 Authentication",
+          "updated_at": "2023-10-02T14:30:00Z"
+        },
+        {
+          "assignee": "charlie",
+          "created_at": "2023-10-03T09:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "bd-101",
+              "issue_id": "bd-102",
+              "type": "related"
+            }
+          ],
+          "description": "The `Resize` function is not releasing buffers.\n\n```go\nfunc Resize(img []byte) {\n  // leaking here\n  buf := make([]byte, 1024)\n}\n```",
+          "id": "bd-102",
+          "issue_type": "bug",
+          "priority": 1,
+          "status": "open",
+          "title": "Fix memory leak in image processor",
+          "updated_at": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created_at": "2023-10-04T12:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "bd-101",
+              "issue_id": "bd-103",
+              "type": "blocks"
+            }
+          ],
+          "description": "Add `last_login` column.",
+          "id": "bd-103",
+          "issue_type": "task",
+          "priority": 2,
+          "status": "blocked",
+          "title": "Database Migration for Users Table",
+          "updated_at": "0001-01-01T00:00:00Z"
+        },
+        {
+          "closed_at": "2023-09-05T10:00:00Z",
+          "created_at": "2023-09-01T08:00:00Z",
+          "description": "The README is outdated.",
+          "id": "bd-104",
+          "issue_type": "chore",
+          "priority": 3,
+          "status": "closed",
+          "title": "Update documentation",
+          "updated_at": "0001-01-01T00:00:00Z"
+        },
+        {
+          "assignee": "diana",
+          "created_at": "2023-10-02T10:00:00Z",
+          "description": "Design the login page using the new UI kit.",
+          "id": "bd-105",
+          "issue_type": "feature",
+          "priority": 1,
+          "status": "in_progress",
+          "title": "Frontend: Login Page",
+          "updated_at": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created_at": "2023-10-05T15:00:00Z",
+          "description": "Track all user actions.",
+          "id": "bd-106",
+          "issue_type": "feature",
+          "priority": 2,
+          "status": "open",
+          "title": "Audit Logs",
+          "updated_at": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "removed_issues": [
+        {
+          "created_at": "0001-01-01T00:00:00Z",
+          "description": "",
+          "id": "A",
+          "issue_type": "task",
+          "priority": 1,
+          "status": "open",
+          "title": "Root",
+          "updated_at": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created_at": "0001-01-01T00:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "A",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "",
+          "id": "B",
+          "issue_type": "task",
+          "priority": 2,
+          "status": "blocked",
+          "title": "Blocked",
+          "updated_at": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "reopened_issues": null,
+      "resolved_cycles": null,
+      "summary": {
+        "cycles_introduced": 0,
+        "cycles_resolved": 0,
+        "health_trend": "stable",
+        "issues_added": 6,
+        "issues_closed": 0,
+        "issues_modified": 0,
+        "issues_removed": 2,
+        "issues_reopened": 0,
+        "net_issue_change": 4,
+        "total_changes": 8
+      },
+      "to_timestamp": "2026-02-18T00:20:49.586070098-05:00"
+    },
+    "from_data_hash": "60a8d727931c6bfe",
+    "generated_at": "2026-02-18T05:20:49Z",
+    "resolved_revision": "8d9bcaecf8a8e9a64632c0b8bf64df802eb99c88",
+    "to_data_hash": "8a18b3bb4677c027"
+  }
+}

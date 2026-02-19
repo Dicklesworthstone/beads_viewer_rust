@@ -1,0 +1,3 @@
+[submodule "legacy_beads_viewer_code/beads_viewer"]
+	path = legacy_beads_viewer_code/beads_viewer
+	url = https://github.com/Dicklesworthstone/beads_viewer

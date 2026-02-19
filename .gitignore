@@ -1,0 +1,5 @@
+# bv (beads viewer) local config and caches
+.bv/
+target/
+a.out
+.ruff_cache/

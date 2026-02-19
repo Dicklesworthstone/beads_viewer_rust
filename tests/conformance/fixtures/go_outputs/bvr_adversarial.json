@@ -1,0 +1,3017 @@
+{
+  "captured_at": "2026-02-18T05:20:51Z",
+  "legacy_root": "/data/projects/beads_viewer_rust/legacy_beads_viewer_code/beads_viewer",
+  "beads_file": "/data/projects/beads_viewer_rust/tests/testdata/adversarial_parity.jsonl",
+  "diff_since": "HEAD~1",
+  "triage": {
+    "data_hash": "82d68356fe1cc926",
+    "generated_at": "2026-02-18T05:20:50Z",
+    "triage": {
+      "blockers_to_clear": [
+        {
+          "actionable": true,
+          "id": "ADV-100",
+          "title": "Core orchestration rewrite",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "ADV-109"
+          ]
+        },
+        {
+          "actionable": false,
+          "blocked_by": [
+            "ADV-102"
+          ],
+          "id": "ADV-101",
+          "title": "Cycle alpha",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "ADV-103"
+          ]
+        },
+        {
+          "actionable": false,
+          "blocked_by": [
+            "ADV-103"
+          ],
+          "id": "ADV-102",
+          "title": "Cycle beta",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "ADV-101"
+          ]
+        },
+        {
+          "actionable": false,
+          "blocked_by": [
+            "ADV-101"
+          ],
+          "id": "ADV-103",
+          "title": "Cycle gamma",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "ADV-102"
+          ]
+        },
+        {
+          "actionable": true,
+          "id": "ADV-104",
+          "title": "Flaky test suite reopened",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "ADV-107"
+          ]
+        }
+      ],
+      "commands": {
+        "claim_top": "CI=1 br update ADV-103 --status in_progress --json",
+        "list_blocked": "CI=1 br blocked --json",
+        "list_ready": "CI=1 br ready --json",
+        "refresh_triage": "bv --robot-triage",
+        "show_top": "CI=1 br show ADV-103 --json"
+      },
+      "meta": {
+        "compute_time_ms": 0,
+        "generated_at": "2026-02-18T00:20:50.87873452-05:00",
+        "issue_count": 10,
+        "phase2_ready": true,
+        "version": "1.0.0"
+      },
+      "project_health": {
+        "counts": {
+          "actionable": 4,
+          "blocked": 5,
+          "by_priority": {
+            "0": 2,
+            "1": 5,
+            "2": 2,
+            "3": 1
+          },
+          "by_status": {
+            "blocked": 2,
+            "closed": 1,
+            "in_progress": 2,
+            "open": 5
+          },
+          "by_type": {
+            "bug": 2,
+            "chore": 1,
+            "feature": 2,
+            "task": 5
+          },
+          "closed": 1,
+          "open": 9,
+          "total": 10
+        },
+        "graph": {
+          "density": 0.05555555555555555,
+          "edge_count": 5,
+          "has_cycles": false,
+          "node_count": 10,
+          "phase2_ready": true
+        },
+        "velocity": {
+          "avg_days_to_close": 13,
+          "closed_last_30_days": 0,
+          "closed_last_7_days": 0,
+          "weekly": [
+            {
+              "closed": 0,
+              "week_start": "2026-02-16T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-02-09T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-02-02T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-26T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-19T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-12T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-05T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2025-12-29T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "quick_ref": {
+        "actionable_count": 4,
+        "blocked_count": 5,
+        "in_progress_count": 2,
+        "open_count": 9,
+        "top_picks": [
+          {
+            "id": "ADV-104",
+            "reasons": [
+              "🔓 Unblocks 1 item(s): ADV-107",
+              "🕐 No activity in 767 days - may need review",
+              "⚡ Low effort, high impact - good starting point",
+              "✅ Currently unclaimed - available for work",
+              "🚨 High priority (P1) - prioritize this work"
+            ],
+            "score": 0.3559102104001791,
+            "title": "Flaky test suite reopened",
+            "unblocks": 1
+          },
+          {
+            "id": "ADV-100",
+            "reasons": [
+              "🔓 Unblocks 1 item(s): ADV-109",
+              "🕐 No activity in 769 days - may need review",
+              "🚧 In progress - already being worked",
+              "🚨 High priority (P0) - prioritize this work"
+            ],
+            "score": 0.3150234471325275,
+            "title": "Core orchestration rewrite",
+            "unblocks": 1
+          },
+          {
+            "id": "ADV-105",
+            "reasons": [
+              "🕐 No activity in 767 days - may need review",
+              "✅ Currently unclaimed - available for work"
+            ],
+            "score": 0.17827366678176415,
+            "title": "API label normalization",
+            "unblocks": 0
+          }
+        ]
+      },
+      "quick_wins": [
+        {
+          "id": "ADV-100",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Core orchestration rewrite",
+          "unblocks_ids": [
+            "ADV-109"
+          ]
+        },
+        {
+          "id": "ADV-101",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Cycle alpha",
+          "unblocks_ids": [
+            "ADV-103"
+          ]
+        },
+        {
+          "id": "ADV-102",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Cycle beta",
+          "unblocks_ids": [
+            "ADV-101"
+          ]
+        },
+        {
+          "id": "ADV-103",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Cycle gamma",
+          "unblocks_ids": [
+            "ADV-102"
+          ]
+        },
+        {
+          "id": "ADV-104",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Flaky test suite reopened",
+          "unblocks_ids": [
+            "ADV-107"
+          ]
+        }
+      ],
+      "recommendations": [
+        {
+          "action": "Work on ADV-101 first to unblock this",
+          "blocked_by": [
+            "ADV-101"
+          ],
+          "breakdown": {
+            "betweenness": 0.2,
+            "betweenness_norm": 1,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.22,
+            "pagerank_norm": 1,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.018123589585708727,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.18123589585708727,
+            "risk_signals": {
+              "activity_churn": 0.004119652856957523,
+              "composite_risk": 0.18123589585708727,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.9
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.015,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 240m",
+            "time_to_impact_norm": 0.15,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (777 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-103",
+          "labels": [
+            "cycle",
+            "graph"
+          ],
+          "priority": 1,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): ADV-102",
+            "🔀 Critical path bottleneck (betweenness: 100%)",
+            "📊 High centrality in dependency graph (PageRank: 100%)",
+            "🕐 No activity in 768 days - may need review",
+            "✅ Currently unclaimed - available for work",
+            "⏳ Blocked by ADV-101 - complete that first",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.5606865127099961,
+          "status": "blocked",
+          "title": "Cycle gamma",
+          "type": "task",
+          "unblocks_ids": [
+            "ADV-102"
+          ]
+        },
+        {
+          "action": "Work on ADV-103 first to unblock this",
+          "blocked_by": [
+            "ADV-103"
+          ],
+          "breakdown": {
+            "betweenness": 0.2,
+            "betweenness_norm": 1,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.22,
+            "pagerank_norm": 1,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.006123582956556642,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.06123582956556641,
+            "risk_signals": {
+              "activity_churn": 0.004119431885221389,
+              "composite_risk": 0.06123582956556641,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.018750000000000003,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 180m",
+            "time_to_impact_norm": 0.1875,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (777 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-102",
+          "labels": [
+            "cycle",
+            "graph"
+          ],
+          "priority": 1,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): ADV-101",
+            "🔀 Critical path bottleneck (betweenness: 100%)",
+            "📊 High centrality in dependency graph (PageRank: 100%)",
+            "🕐 No activity in 768 days - may need review",
+            "✅ Currently unclaimed - available for work",
+            "⏳ Blocked by ADV-103 - complete that first",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.5549115080695898,
+          "status": "open",
+          "title": "Cycle beta",
+          "type": "task",
+          "unblocks_ids": [
+            "ADV-101"
+          ]
+        },
+        {
+          "action": "Work on ADV-102 first to unblock this",
+          "blocked_by": [
+            "ADV-102"
+          ],
+          "breakdown": {
+            "betweenness": 0.2,
+            "betweenness_norm": 1,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.22,
+            "pagerank_norm": 1,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.006123576328115675,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.06123576328115674,
+            "risk_signals": {
+              "activity_churn": 0.004119210937189142,
+              "composite_risk": 0.06123576328115674,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.018750000000000003,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 180m",
+            "time_to_impact_norm": 0.1875,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (777 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-101",
+          "labels": [
+            "cycle",
+            "graph"
+          ],
+          "priority": 1,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): ADV-103",
+            "🔀 Critical path bottleneck (betweenness: 100%)",
+            "📊 High centrality in dependency graph (PageRank: 100%)",
+            "🕐 No activity in 768 days - may need review",
+            "✅ Currently unclaimed - available for work",
+            "⏳ Blocked by ADV-102 - complete that first",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.5549115034296811,
+          "status": "open",
+          "title": "Cycle alpha",
+          "type": "task",
+          "unblocks_ids": [
+            "ADV-103"
+          ]
+        },
+        {
+          "action": "Quick win - start here for fast progress",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.06105068579047565,
+            "pagerank_norm": 0.27750311722943477,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.006123091150911459,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.06123091150911459,
+            "risk_signals": {
+              "activity_churn": 0.004103038363715299,
+              "composite_risk": 0.06123091150911459,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.01125,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 300m",
+            "time_to_impact_norm": 0.11249999999999999,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (776 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-104",
+          "labels": [
+            "qa",
+            "reopened"
+          ],
+          "priority": 1,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): ADV-107",
+            "🕐 No activity in 767 days - may need review",
+            "⚡ Low effort, high impact - good starting point",
+            "✅ Currently unclaimed - available for work",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.3559102104001791,
+          "status": "open",
+          "title": "Flaky test suite reopened",
+          "type": "bug",
+          "unblocks_ids": [
+            "ADV-107"
+          ]
+        },
+        {
+          "action": "Check if this is stuck and needs help",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.06105068579047565,
+            "pagerank_norm": 0.27750311722943477,
+            "priority_boost": 0.1,
+            "priority_boost_norm": 1,
+            "risk": 0.016125667255992165,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.16125667255992163,
+            "risk_signals": {
+              "activity_churn": 0.004188908533071971,
+              "composite_risk": 0.16125667255992163,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.8
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 720m",
+            "time_to_impact_norm": 0,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (778 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-100",
+          "labels": [
+            "core",
+            "backend"
+          ],
+          "priority": 0,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): ADV-109",
+            "🕐 No activity in 769 days - may need review",
+            "🚧 In progress - already being worked",
+            "🚨 High priority (P0) - prioritize this work"
+          ],
+          "score": 0.3150234471325275,
+          "status": "in_progress",
+          "title": "Core orchestration rewrite",
+          "type": "feature",
+          "unblocks_ids": [
+            "ADV-109"
+          ]
+        },
+        {
+          "action": "Work on ADV-104 first to unblock this",
+          "blocked_by": [
+            "ADV-104"
+          ],
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.03300031724037488,
+            "pagerank_norm": 0.150001442001704,
+            "priority_boost": 0.1,
+            "priority_boost_norm": 1,
+            "risk": 0.018093687672124156,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.18093687672124156,
+            "risk_signals": {
+              "activity_churn": 0.003122922404138475,
+              "composite_risk": 0.18093687672124156,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.9
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.016874999999999998,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 210m",
+            "time_to_impact_norm": 0.16874999999999998,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (774 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-107",
+          "labels": [
+            "release",
+            "qa"
+          ],
+          "priority": 0,
+          "reasons": [
+            "🕐 No activity in 767 days - may need review",
+            "✅ Currently unclaimed - available for work",
+            "⏳ Blocked by ADV-104 - complete that first",
+            "🚨 High priority (P0) - prioritize this work"
+          ],
+          "score": 0.21437520392999923,
+          "status": "blocked",
+          "title": "Release gate depends on reopened tests",
+          "type": "task"
+        },
+        {
+          "action": "Start work on this issue",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.03300031724037488,
+            "pagerank_norm": 0.150001442001704,
+            "priority_boost": 0.05,
+            "priority_boost_norm": 0.5,
+            "risk": 0.0061084083852300415,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.061084083852300415,
+            "risk_signals": {
+              "activity_churn": 0.003613612841001387,
+              "composite_risk": 0.061084083852300415,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.020625,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 150m",
+            "time_to_impact_norm": 0.20625,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (775 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-105",
+          "labels": [
+            "API",
+            "api",
+            "backend"
+          ],
+          "priority": 2,
+          "reasons": [
+            "🕐 No activity in 767 days - may need review",
+            "✅ Currently unclaimed - available for work"
+          ],
+          "score": 0.17827366678176415,
+          "status": "open",
+          "title": "API label normalization",
+          "type": "task"
+        },
+        {
+          "action": "Work on ADV-100 first to unblock this",
+          "blocked_by": [
+            "ADV-100"
+          ],
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.03300031724037488,
+            "pagerank_norm": 0.150001442001704,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.01606413181366633,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.1606413181366633,
+            "risk_signals": {
+              "activity_churn": 0.002137727122210865,
+              "composite_risk": 0.1606413181366633,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.8
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.0075,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 360m",
+            "time_to_impact_norm": 0.075,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (772 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-109",
+          "labels": [
+            "analytics",
+            "backend"
+          ],
+          "priority": 1,
+          "reasons": [
+            "🕐 No activity in 767 days - may need review",
+            "🚧 In progress - already being worked",
+            "⏳ Blocked by ADV-100 - complete that first",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.16209511433782883,
+          "status": "in_progress",
+          "title": "Telemetry backfill",
+          "type": "feature"
+        },
+        {
+          "action": "Start work on this issue",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.03300031724037488,
+            "pagerank_norm": 0.150001442001704,
+            "priority_boost": 0.025,
+            "priority_boost_norm": 0.25,
+            "risk": 0.0060789288642914795,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.060789288642914795,
+            "risk_signals": {
+              "activity_churn": 0.0026309621430493247,
+              "composite_risk": 0.060789288642914795,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.3
+            },
+            "staleness": 0.05,
+            "staleness_norm": 1,
+            "time_to_impact": 0.024375,
+            "time_to_impact_explanation": "Leaf node, explicit estimate 90m",
+            "time_to_impact_norm": 0.24375,
+            "urgency": 0.05,
+            "urgency_explanation": "aging (773 days)",
+            "urgency_norm": 0.5
+          },
+          "id": "ADV-108",
+          "labels": [
+            "frontend"
+          ],
+          "priority": 3,
+          "reasons": [
+            "🕐 No activity in 767 days - may need review",
+            "✅ Currently unclaimed - available for work"
+          ],
+          "score": 0.1601861091889664,
+          "status": "open",
+          "title": "UI validation edge case",
+          "type": "bug"
+        }
+      ]
+    },
+    "usage_hints": [
+      "jq '.triage.quick_ref.top_picks[:3]' - Top 3 picks for immediate work",
+      "jq '.triage.recommendations[3:10] | map({id,title,score})' - Next candidates after top picks",
+      "jq '.triage.blockers_to_clear | map(.id)' - High-impact blockers to clear",
+      "jq '.triage.recommendations[] | select(.type == \"bug\")' - Bug-focused recommendations",
+      "jq '.triage.quick_ref.top_picks[] | select(.unblocks \u003e 2)' - High-impact picks",
+      "jq '.triage.quick_wins' - Low-effort, high-impact items",
+      "--robot-next - Get only the single top recommendation",
+      "--robot-triage-by-track - Group by execution track for multi-agent coordination",
+      "--robot-triage-by-label - Group by label for area-focused agents",
+      "jq '.triage.recommendations_by_track[].top_pick' - Top pick per track",
+      "jq '.triage.recommendations_by_label[].claim_command' - Claim commands per label",
+      "jq '.feedback.weight_adjustments' - View feedback-adjusted weights (bv-90)"
+    ]
+  },
+  "plan": {
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "skip",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "not computed for --robot-plan",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": false,
+      "ComputeCriticalPath": false,
+      "ComputeCycles": false,
+      "ComputeEigenvector": false,
+      "ComputeHITS": false,
+      "ComputeKCore": true,
+      "ComputePageRank": false,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "not computed for --robot-plan",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "not computed for --robot-plan",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "not computed for --robot-plan",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "82d68356fe1cc926",
+    "generated_at": "2026-02-18T05:20:50Z",
+    "plan": {
+      "summary": {
+        "highest_impact": "ADV-100",
+        "impact_reason": "Unblocks 1 task",
+        "unblocks_count": 1
+      },
+      "total_actionable": 4,
+      "total_blocked": 5,
+      "tracks": [
+        {
+          "items": [
+            {
+              "id": "ADV-100",
+              "priority": 0,
+              "status": "in_progress",
+              "title": "Core orchestration rewrite",
+              "unblocks": [
+                "ADV-109"
+              ]
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-A"
+        },
+        {
+          "items": [
+            {
+              "id": "ADV-104",
+              "priority": 1,
+              "status": "open",
+              "title": "Flaky test suite reopened",
+              "unblocks": [
+                "ADV-107"
+              ]
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-B"
+        },
+        {
+          "items": [
+            {
+              "id": "ADV-105",
+              "priority": 2,
+              "status": "open",
+              "title": "API label normalization",
+              "unblocks": null
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-C"
+        },
+        {
+          "items": [
+            {
+              "id": "ADV-108",
+              "priority": 3,
+              "status": "open",
+              "title": "UI validation edge case",
+              "unblocks": null
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-D"
+        }
+      ]
+    },
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "Critical": {
+        "state": "skipped"
+      },
+      "Cycles": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "Eigenvector": {
+        "state": "skipped"
+      },
+      "HITS": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "KCore": {
+        "ms": 0.029194,
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "skipped"
+      },
+      "Slack": {
+        "ms": 0.000071,
+        "state": "computed"
+      }
+    },
+    "usage_hints": [
+      "jq '.plan.tracks | length' - Number of parallel execution tracks",
+      "jq '.plan.tracks[0].items | map(.id)' - First track item IDs",
+      "jq '.plan.tracks[].items[] | select(.unblocks | length \u003e 0)' - Items that unblock others",
+      "jq '.plan.summary' - High-level execution summary",
+      "jq '[.plan.tracks[].items[]] | length' - Total items across all tracks"
+    ]
+  },
+  "insights": {
+    "Articulation": null,
+    "Authorities": [
+      {
+        "ID": "ADV-100",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-101",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-102",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-103",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-104",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-105",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-106",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-107",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-108",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-109",
+        "Value": 0
+      }
+    ],
+    "Bottlenecks": [
+      {
+        "ID": "ADV-101",
+        "Value": 1
+      },
+      {
+        "ID": "ADV-102",
+        "Value": 1
+      },
+      {
+        "ID": "ADV-103",
+        "Value": 1
+      }
+    ],
+    "ClusterDensity": 0.05555555555555555,
+    "Cores": [
+      {
+        "ID": "ADV-101",
+        "Value": 2
+      },
+      {
+        "ID": "ADV-102",
+        "Value": 2
+      },
+      {
+        "ID": "ADV-103",
+        "Value": 2
+      },
+      {
+        "ID": "ADV-100",
+        "Value": 1
+      },
+      {
+        "ID": "ADV-104",
+        "Value": 1
+      },
+      {
+        "ID": "ADV-107",
+        "Value": 1
+      },
+      {
+        "ID": "ADV-109",
+        "Value": 1
+      },
+      {
+        "ID": "ADV-105",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-106",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-108",
+        "Value": 0
+      }
+    ],
+    "Cycles": [
+      [
+        "ADV-101",
+        "ADV-103",
+        "ADV-102",
+        "ADV-101"
+      ]
+    ],
+    "Hubs": [
+      {
+        "ID": "ADV-101",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-102",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-103",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-107",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-109",
+        "Value": 0.447213595499958
+      },
+      {
+        "ID": "ADV-100",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-104",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-105",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-106",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-108",
+        "Value": 0
+      }
+    ],
+    "Influencers": [
+      {
+        "ID": "ADV-101",
+        "Value": 0.5773502691896258
+      },
+      {
+        "ID": "ADV-102",
+        "Value": 0.5773502691896258
+      },
+      {
+        "ID": "ADV-103",
+        "Value": 0.5773502691896258
+      },
+      {
+        "ID": "ADV-100",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-104",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-105",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-106",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-107",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-108",
+        "Value": 0
+      },
+      {
+        "ID": "ADV-109",
+        "Value": 0
+      }
+    ],
+    "Keystones": [],
+    "Orphans": [
+      "ADV-100",
+      "ADV-104",
+      "ADV-105",
+      "ADV-106",
+      "ADV-108"
+    ],
+    "Slack": [],
+    "Stats": {
+      "Config": {
+        "BetweennessIsApproximate": false,
+        "BetweennessMode": "exact",
+        "BetweennessSampleSize": 0,
+        "BetweennessSkipReason": "",
+        "BetweennessTimeout": 2000000000,
+        "ComputeArticulation": true,
+        "ComputeBetweenness": true,
+        "ComputeCriticalPath": true,
+        "ComputeCycles": true,
+        "ComputeEigenvector": true,
+        "ComputeHITS": true,
+        "ComputeKCore": true,
+        "ComputePageRank": true,
+        "ComputeSlack": true,
+        "CyclesSkipReason": "",
+        "CyclesTimeout": 2000000000,
+        "HITSSkipReason": "",
+        "HITSTimeout": 2000000000,
+        "MaxCyclesToStore": 1000,
+        "PageRankSkipReason": "",
+        "PageRankTimeout": 2000000000
+      },
+      "Density": 0.05555555555555555,
+      "EdgeCount": 5,
+      "InDegree": {
+        "ADV-100": 1,
+        "ADV-101": 1,
+        "ADV-102": 1,
+        "ADV-103": 1,
+        "ADV-104": 1,
+        "ADV-105": 0,
+        "ADV-106": 0,
+        "ADV-107": 0,
+        "ADV-108": 0,
+        "ADV-109": 0
+      },
+      "NodeCount": 10,
+      "OutDegree": {
+        "ADV-100": 0,
+        "ADV-101": 1,
+        "ADV-102": 1,
+        "ADV-103": 1,
+        "ADV-104": 0,
+        "ADV-105": 0,
+        "ADV-106": 0,
+        "ADV-107": 1,
+        "ADV-108": 0,
+        "ADV-109": 1
+      },
+      "TopologicalOrder": null
+    },
+    "Velocity": {
+      "avg_days_to_close": 13,
+      "closed_last_30_days": 0,
+      "closed_last_7_days": 0,
+      "weekly": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "advanced_insights": {
+      "config": {
+        "coverage_set_limit": 5,
+        "cycle_break_limit": 5,
+        "k_paths_limit": 5,
+        "parallel_cut_limit": 5,
+        "path_length_cap": 50,
+        "topk_set_limit": 5
+      },
+      "coverage_set": {
+        "coverage_ratio": 1,
+        "edges_covered": 5,
+        "how_to_use": "Small vertex cover touching all dependency edges. Use for breadth coverage.",
+        "items": [
+          {
+            "edges_added": 2,
+            "id": "ADV-101",
+            "selection_seq": 1,
+            "title": "Cycle alpha",
+            "total_degree": 2
+          },
+          {
+            "edges_added": 1,
+            "id": "ADV-100",
+            "selection_seq": 2,
+            "title": "Core orchestration rewrite",
+            "total_degree": 1
+          },
+          {
+            "edges_added": 1,
+            "id": "ADV-102",
+            "selection_seq": 3,
+            "title": "Cycle beta",
+            "total_degree": 1
+          },
+          {
+            "edges_added": 1,
+            "id": "ADV-104",
+            "selection_seq": 4,
+            "title": "Flaky test suite reopened",
+            "total_degree": 1
+          }
+        ],
+        "rationale": "Greedy vertex cover (2-approx): iteratively pick highest uncovered degree until edges are covered or cap is reached.",
+        "status": {
+          "count": 4,
+          "limited": 5,
+          "state": "available"
+        },
+        "total_edges": 5
+      },
+      "cycle_break": {
+        "advisory": "Structural fix—apply cycle breaks BEFORE executing dependents.",
+        "cycle_count": 1,
+        "how_to_use": "Structural fix suggestions. Apply BEFORE working on cycle members.",
+        "status": {
+          "count": 4,
+          "limited": 4,
+          "state": "available"
+        },
+        "suggestions": [
+          {
+            "collateral": 1,
+            "edge_from": "ADV-101",
+            "edge_to": "ADV-101",
+            "impact": 1,
+            "in_cycles": [
+              0
+            ],
+            "rationale": "Appears in most cycles; removing minimizes structural damage."
+          },
+          {
+            "collateral": 1,
+            "edge_from": "ADV-101",
+            "edge_to": "ADV-103",
+            "impact": 1,
+            "in_cycles": [
+              0
+            ],
+            "rationale": "Appears in most cycles; removing minimizes structural damage."
+          },
+          {
+            "collateral": 1,
+            "edge_from": "ADV-102",
+            "edge_to": "ADV-101",
+            "impact": 1,
+            "in_cycles": [
+              0
+            ],
+            "rationale": "Appears in most cycles; removing minimizes structural damage."
+          },
+          {
+            "collateral": 1,
+            "edge_from": "ADV-103",
+            "edge_to": "ADV-102",
+            "impact": 1,
+            "in_cycles": [
+              0
+            ],
+            "rationale": "Appears in most cycles; removing minimizes structural damage."
+          }
+        ]
+      },
+      "k_paths": {
+        "how_to_use": "K-shortest critical paths. Focus on issues appearing in multiple paths.",
+        "paths": [
+          {
+            "issue_ids": [
+              "ADV-104",
+              "ADV-107"
+            ],
+            "length": 2,
+            "rank": 1
+          },
+          {
+            "issue_ids": [
+              "ADV-100",
+              "ADV-109"
+            ],
+            "length": 2,
+            "rank": 2
+          }
+        ],
+        "status": {
+          "count": 2,
+          "limited": 2,
+          "state": "available"
+        }
+      },
+      "parallel_cut": {
+        "how_to_use": "Issues that enable parallel work. Complete to maximize team throughput.",
+        "max_parallel": 4,
+        "status": {
+          "state": "available"
+        }
+      },
+      "parallel_gain": {
+        "how_to_use": "Parallelization improvement from completing each issue.",
+        "status": {
+          "reason": "Awaiting implementation (bv-129)",
+          "state": "pending"
+        }
+      },
+      "topk_set": {
+        "how_to_use": "Best k issues to complete for max downstream unlock. Work these in order.",
+        "items": [
+          {
+            "id": "ADV-100",
+            "marginal_gain": 1,
+            "title": "Core orchestration rewrite",
+            "unblocks": [
+              "ADV-109"
+            ]
+          },
+          {
+            "id": "ADV-101",
+            "marginal_gain": 1,
+            "title": "Cycle alpha",
+            "unblocks": [
+              "ADV-103"
+            ]
+          },
+          {
+            "id": "ADV-103",
+            "marginal_gain": 1,
+            "title": "Cycle gamma",
+            "unblocks": [
+              "ADV-102"
+            ]
+          },
+          {
+            "id": "ADV-104",
+            "marginal_gain": 1,
+            "title": "Flaky test suite reopened",
+            "unblocks": [
+              "ADV-107"
+            ]
+          },
+          {
+            "id": "ADV-102",
+            "marginal_gain": 0,
+            "title": "Cycle beta"
+          }
+        ],
+        "marginal_gain": [
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        "status": {
+          "capped": true,
+          "count": 5,
+          "limited": 9,
+          "state": "available"
+        },
+        "total_gain": 4
+      },
+      "usage_hints": {
+        "coverage_set": "Small vertex cover touching all dependency edges. Use for breadth coverage.",
+        "cycle_break": "Structural fix suggestions. Apply BEFORE working on cycle members.",
+        "k_paths": "K-shortest critical paths. Focus on issues appearing in multiple paths.",
+        "parallel_cut": "Issues that enable parallel work. Complete to maximize team throughput.",
+        "parallel_gain": "Parallelization improvement from completing each issue.",
+        "topk_set": "Best k issues to complete for max downstream unlock. Work these in order."
+      }
+    },
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "exact",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": true,
+      "ComputeCriticalPath": true,
+      "ComputeCycles": true,
+      "ComputeEigenvector": true,
+      "ComputeHITS": true,
+      "ComputeKCore": true,
+      "ComputePageRank": true,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "82d68356fe1cc926",
+    "full_stats": {
+      "articulation_points": null,
+      "authorities": {
+        "ADV-100": 0.447213595499958,
+        "ADV-101": 0.447213595499958,
+        "ADV-102": 0.447213595499958,
+        "ADV-103": 0.447213595499958,
+        "ADV-104": 0.447213595499958,
+        "ADV-105": 0,
+        "ADV-106": 0,
+        "ADV-107": 0,
+        "ADV-108": 0,
+        "ADV-109": 0
+      },
+      "betweenness": {
+        "ADV-101": 1,
+        "ADV-102": 1,
+        "ADV-103": 1
+      },
+      "core_number": {
+        "ADV-100": 1,
+        "ADV-101": 2,
+        "ADV-102": 2,
+        "ADV-103": 2,
+        "ADV-104": 1,
+        "ADV-105": 0,
+        "ADV-106": 0,
+        "ADV-107": 1,
+        "ADV-108": 0,
+        "ADV-109": 1
+      },
+      "critical_path_score": {},
+      "eigenvector": {
+        "ADV-100": 0,
+        "ADV-101": 0.5773502691896258,
+        "ADV-102": 0.5773502691896258,
+        "ADV-103": 0.5773502691896258,
+        "ADV-104": 0,
+        "ADV-105": 0,
+        "ADV-106": 0,
+        "ADV-107": 0,
+        "ADV-108": 0,
+        "ADV-109": 0
+      },
+      "hubs": {
+        "ADV-100": 0,
+        "ADV-101": 0.447213595499958,
+        "ADV-102": 0.447213595499958,
+        "ADV-103": 0.447213595499958,
+        "ADV-104": 0,
+        "ADV-105": 0,
+        "ADV-106": 0,
+        "ADV-107": 0.447213595499958,
+        "ADV-108": 0,
+        "ADV-109": 0.447213595499958
+      },
+      "pagerank": {
+        "ADV-100": 0.06446045309941353,
+        "ADV-101": 0.23228731173538042,
+        "ADV-102": 0.23228731173538042,
+        "ADV-103": 0.23228731173538042,
+        "ADV-104": 0.06446045309941353,
+        "ADV-105": 0.034843431719006404,
+        "ADV-106": 0.034843431719006404,
+        "ADV-107": 0.034843431719006404,
+        "ADV-108": 0.034843431719006404,
+        "ADV-109": 0.034843431719006404
+      },
+      "slack": null
+    },
+    "generated_at": "2026-02-18T05:20:50Z",
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "ms": 0.016231,
+        "state": "computed"
+      },
+      "Critical": {
+        "ms": 0.004769,
+        "state": "computed"
+      },
+      "Cycles": {
+        "ms": 0.017884,
+        "state": "computed"
+      },
+      "Eigenvector": {
+        "ms": 0.005801,
+        "state": "computed"
+      },
+      "HITS": {
+        "ms": 0.017473,
+        "state": "computed"
+      },
+      "KCore": {
+        "ms": 0.0055,
+        "state": "computed"
+      },
+      "PageRank": {
+        "ms": 0.048541,
+        "state": "computed"
+      },
+      "Slack": {
+        "ms": 0.00005,
+        "state": "computed"
+      }
+    },
+    "top_what_ifs": [
+      {
+        "delta": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.5,
+          "explanation": "Completing this directly unblocks 1 item (2 total including cascades), clears 1 blocked, enabling ~0.5 days of work",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 2,
+          "unblocked_issue_ids": [
+            "ADV-103"
+          ]
+        },
+        "issue_id": "ADV-101",
+        "title": "Cycle alpha"
+      },
+      {
+        "delta": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.375,
+          "explanation": "Completing this directly unblocks 1 item (2 total including cascades)",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 2,
+          "unblocked_issue_ids": [
+            "ADV-101"
+          ]
+        },
+        "issue_id": "ADV-102",
+        "title": "Cycle beta"
+      },
+      {
+        "delta": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.375,
+          "explanation": "Completing this directly unblocks 1 item (2 total including cascades)",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 2,
+          "unblocked_issue_ids": [
+            "ADV-102"
+          ]
+        },
+        "issue_id": "ADV-103",
+        "title": "Cycle gamma"
+      },
+      {
+        "delta": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.75,
+          "explanation": "Completing this directly unblocks 1 item, enabling ~0.8 days of work",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "ADV-109"
+          ]
+        },
+        "issue_id": "ADV-100",
+        "title": "Core orchestration rewrite"
+      },
+      {
+        "delta": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.4375,
+          "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "ADV-107"
+          ]
+        },
+        "issue_id": "ADV-104",
+        "title": "Flaky test suite reopened"
+      }
+    ],
+    "usage_hints": [
+      "jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
+      "jq '.CriticalPath[:3]' - Top 3 critical path items",
+      "jq '.top_what_ifs[] | select(.delta.direct_unblocks \u003e 2)' - High-impact items",
+      "jq '.full_stats.pagerank | to_entries | sort_by(-.value)[:5]' - Top PageRank",
+      "jq '.full_stats.core_number | to_entries | sort_by(-.value)[:5]' - Strongly embedded nodes (k-core)",
+      "jq '.full_stats.articulation_points' - Structural cut points",
+      "jq '.Slack[:5]' - Nodes with slack (good parallel work candidates)",
+      "jq '.Cycles | length' - Count of detected cycles",
+      "jq '.advanced_insights.cycle_break' - Cycle break suggestions (bv-181)",
+      "BV_INSIGHTS_MAP_LIMIT=50 bv --robot-insights - Reduce map sizes"
+    ]
+  },
+  "priority": {
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "exact",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": true,
+      "ComputeCriticalPath": true,
+      "ComputeCycles": true,
+      "ComputeEigenvector": true,
+      "ComputeHITS": true,
+      "ComputeKCore": true,
+      "ComputePageRank": true,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "82d68356fe1cc926",
+    "field_descriptions": {
+      "status.capped": "Whether results were truncated to prevent overload",
+      "status.phase2": "Whether expensive graph metrics (PageRank, betweenness) are included",
+      "top_reasons": "Top 3 factors contributing to priority score, ordered by weight",
+      "what_if.cascade": "Total issues transitively unblocked (including indirect)",
+      "what_if.days_saved": "Estimated days saved based on issue estimates",
+      "what_if.depth": "Critical path depth reduction if completed",
+      "what_if.parallelization_gain": "Net change in parallel work capacity (direct_unblocks - 1); positive = more parallel work possible",
+      "what_if.unblocks": "Number of issues directly waiting on this one"
+    },
+    "filters": {
+      "max_results": 10
+    },
+    "generated_at": "2026-02-18T05:20:51Z",
+    "recommendations": [
+      {
+        "confidence": 1,
+        "current_priority": 1,
+        "direction": "increase",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "Very high: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.22
+            },
+            {
+              "emoji": "🔀",
+              "explanation": "Very high: Critical path bottleneck",
+              "factor": "betweenness",
+              "weight": 0.2
+            },
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.375,
+            "explanation": "Completing this directly unblocks 1 item (2 total including cascades)",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 2,
+            "unblocked_issue_ids": [
+              "ADV-102"
+            ]
+          }
+        },
+        "impact_score": 0.7581235895854392,
+        "issue_id": "ADV-103",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Critical path bottleneck",
+          "Blocks 1 other item"
+        ],
+        "suggested_priority": 0,
+        "title": "Cycle gamma",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.375,
+          "explanation": "Completing this directly unblocks 1 item (2 total including cascades)",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 2,
+          "unblocked_issue_ids": [
+            "ADV-102"
+          ]
+        }
+      },
+      {
+        "confidence": 1,
+        "current_priority": 1,
+        "direction": "increase",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "Very high: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.22
+            },
+            {
+              "emoji": "🔀",
+              "explanation": "Very high: Critical path bottleneck",
+              "factor": "betweenness",
+              "weight": 0.2
+            },
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.375,
+            "explanation": "Completing this directly unblocks 1 item (2 total including cascades)",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 2,
+            "unblocked_issue_ids": [
+              "ADV-101"
+            ]
+          }
+        },
+        "impact_score": 0.7498735829562871,
+        "issue_id": "ADV-102",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Critical path bottleneck",
+          "Blocks 1 other item"
+        ],
+        "suggested_priority": 0,
+        "title": "Cycle beta",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.375,
+          "explanation": "Completing this directly unblocks 1 item (2 total including cascades)",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 2,
+          "unblocked_issue_ids": [
+            "ADV-101"
+          ]
+        }
+      },
+      {
+        "confidence": 1,
+        "current_priority": 1,
+        "direction": "increase",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "Very high: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.22
+            },
+            {
+              "emoji": "🔀",
+              "explanation": "Very high: Critical path bottleneck",
+              "factor": "betweenness",
+              "weight": 0.2
+            },
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 1,
+            "depth_reduction": 0,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.5,
+            "explanation": "Completing this directly unblocks 1 item (2 total including cascades), clears 1 blocked, enabling ~0.5 days of work",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 2,
+            "unblocked_issue_ids": [
+              "ADV-103"
+            ]
+          }
+        },
+        "impact_score": 0.7498735763278462,
+        "issue_id": "ADV-101",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Critical path bottleneck",
+          "Blocks 1 other item"
+        ],
+        "suggested_priority": 0,
+        "title": "Cycle alpha",
+        "what_if": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.5,
+          "explanation": "Completing this directly unblocks 1 item (2 total including cascades), clears 1 blocked, enabling ~0.5 days of work",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 2,
+          "unblocked_issue_ids": [
+            "ADV-103"
+          ]
+        }
+      },
+      {
+        "confidence": 1,
+        "current_priority": 0,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.1
+            },
+            {
+              "emoji": "🎯",
+              "explanation": "Moderate: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.06105068579047565
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.75,
+            "explanation": "Completing this directly unblocks 1 item, enabling ~0.8 days of work",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 1,
+            "unblocked_issue_ids": [
+              "ADV-109"
+            ]
+          }
+        },
+        "impact_score": 0.40717635304619404,
+        "issue_id": "ADV-100",
+        "reasoning": [
+          "Blocks 1 other item",
+          "Stale for 30+ days",
+          "aging (778 days)"
+        ],
+        "suggested_priority": 2,
+        "title": "Core orchestration rewrite",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.75,
+          "explanation": "Completing this directly unblocks 1 item, enabling ~0.8 days of work",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "ADV-109"
+          ]
+        }
+      },
+      {
+        "confidence": 1,
+        "current_priority": 1,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.07500000000000001
+            },
+            {
+              "emoji": "🎯",
+              "explanation": "Moderate: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.06105068579047565
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 1,
+            "depth_reduction": 0,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.4375,
+            "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 1,
+            "unblocked_issue_ids": [
+              "ADV-107"
+            ]
+          }
+        },
+        "impact_score": 0.38342377694111823,
+        "issue_id": "ADV-104",
+        "reasoning": [
+          "Blocks 1 other item",
+          "Stale for 30+ days",
+          "aging (776 days)"
+        ],
+        "suggested_priority": 2,
+        "title": "Flaky test suite reopened",
+        "what_if": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.4375,
+          "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "ADV-107"
+          ]
+        }
+      },
+      {
+        "confidence": 0.9285714285714286,
+        "current_priority": 0,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.1
+            },
+            {
+              "emoji": "⏰",
+              "explanation": "Very high: Needs attention (aging)",
+              "factor": "staleness",
+              "weight": 0.05
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.26796900491229386,
+        "issue_id": "ADV-107",
+        "reasoning": [
+          "Stale for 30+ days",
+          "aging (774 days)",
+          "Zero slack on critical chain"
+        ],
+        "suggested_priority": 3,
+        "title": "Release gate depends on reopened tests",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      },
+      {
+        "confidence": 0.9285714285714286,
+        "current_priority": 1,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.07500000000000001
+            },
+            {
+              "emoji": "⏰",
+              "explanation": "Very high: Needs attention (aging)",
+              "factor": "staleness",
+              "weight": 0.05
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.2315644490539004,
+        "issue_id": "ADV-109",
+        "reasoning": [
+          "Stale for 30+ days",
+          "aging (772 days)",
+          "Zero slack on critical chain"
+        ],
+        "suggested_priority": 3,
+        "title": "Telemetry backfill",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      },
+      {
+        "confidence": 0.9285714285714286,
+        "current_priority": 2,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:51Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "⏰",
+              "explanation": "Very high: Needs attention (aging)",
+              "factor": "staleness",
+              "weight": 0.05
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "High: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.05
+            },
+            {
+              "emoji": "🔥",
+              "explanation": "High: Urgent labels/timing",
+              "factor": "urgency",
+              "weight": 0.05
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.2097337256253678,
+        "issue_id": "ADV-105",
+        "reasoning": [
+          "Stale for 30+ days",
+          "aging (775 days)",
+          "Zero slack on critical chain"
+        ],
+        "suggested_priority": 3,
+        "title": "API label normalization",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      }
+    ],
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "state": "computed"
+      },
+      "Critical": {
+        "state": "computed"
+      },
+      "Cycles": {
+        "state": "computed"
+      },
+      "Eigenvector": {
+        "state": "computed"
+      },
+      "HITS": {
+        "state": "computed"
+      },
+      "KCore": {
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "computed"
+      },
+      "Slack": {
+        "state": "computed"
+      }
+    },
+    "summary": {
+      "high_confidence": 8,
+      "recommendations": 8,
+      "total_issues": 10
+    },
+    "usage_hints": [
+      "jq '.recommendations[] | select(.confidence \u003e 0.7)' - Filter high confidence",
+      "jq '.recommendations[0].explanation.what_if' - Get top item's impact",
+      "jq '.recommendations | map({id: .issue_id, score: .impact_score})' - Extract IDs and scores",
+      "jq '.recommendations[] | select(.explanation.what_if.parallelization_gain \u003e 0)' - Find items that increase parallel work capacity",
+      "--robot-min-confidence 0.6 - Pre-filter by confidence",
+      "--robot-max-results 5 - Limit to top N results",
+      "--robot-by-label bug - Filter by specific label"
+    ]
+  },
+  "forecast": {
+    "agents": 2,
+    "data_hash": "82d68356fe1cc926",
+    "forecast_count": 9,
+    "forecasts": [
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 12.35897435897436,
+        "estimated_minutes": 964,
+        "eta_date": "2026-03-02T08:57:46.492890297-05:00",
+        "eta_date_high": "2026-03-07T19:28:25.262121067-05:00",
+        "eta_date_low": "2026-02-24T22:27:07.723659528-05:00",
+        "factors": [
+          "estimate: explicit (720m)",
+          "type: feature×1.3",
+          "depth: 0×1.00",
+          "desc: 61r×1.03",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-100",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 2.3461538461538463,
+        "estimated_minutes": 183,
+        "eta_date": "2026-02-20T08:39:18.800582605-05:00",
+        "eta_date_high": "2026-02-21T09:25:50.185197989-05:00",
+        "eta_date_low": "2026-02-19T07:52:47.41596722-05:00",
+        "factors": [
+          "estimate: explicit (180m)",
+          "type: task×1.0",
+          "depth: 0×1.00",
+          "desc: 40r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-101",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 2.3461538461538463,
+        "estimated_minutes": 183,
+        "eta_date": "2026-02-20T08:39:18.800582605-05:00",
+        "eta_date_high": "2026-02-21T09:25:50.185197989-05:00",
+        "eta_date_low": "2026-02-19T07:52:47.41596722-05:00",
+        "factors": [
+          "estimate: explicit (180m)",
+          "type: task×1.0",
+          "depth: 0×1.00",
+          "desc: 41r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-102",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 3.128205128205128,
+        "estimated_minutes": 244,
+        "eta_date": "2026-02-21T03:25:28.031351836-05:00",
+        "eta_date_high": "2026-02-22T12:27:29.877505682-05:00",
+        "eta_date_low": "2026-02-19T18:23:26.185197989-05:00",
+        "factors": [
+          "estimate: explicit (240m)",
+          "type: task×1.0",
+          "depth: 0×1.00",
+          "desc: 40r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-103",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 3.923076923076923,
+        "estimated_minutes": 306,
+        "eta_date": "2026-02-21T22:30:04.954428759-05:00",
+        "eta_date_high": "2026-02-23T15:55:44.646736451-05:00",
+        "eta_date_low": "2026-02-20T05:04:25.262121066-05:00",
+        "factors": [
+          "estimate: explicit (300m)",
+          "type: bug×1.0",
+          "depth: 0×1.00",
+          "desc: 41r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-104",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 1.9615384615384615,
+        "estimated_minutes": 153,
+        "eta_date": "2026-02-19T23:25:28.031351836-05:00",
+        "eta_date_high": "2026-02-20T20:08:17.877505682-05:00",
+        "eta_date_low": "2026-02-19T02:42:38.185197989-05:00",
+        "factors": [
+          "estimate: explicit (150m)",
+          "type: task×1.0",
+          "depth: 0×1.00",
+          "desc: 45r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-105",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 2.7564102564102564,
+        "estimated_minutes": 215,
+        "eta_date": "2026-02-20T18:30:04.954428759-05:00",
+        "eta_date_high": "2026-02-21T23:36:32.646736451-05:00",
+        "eta_date_low": "2026-02-19T13:23:37.262121066-05:00",
+        "factors": [
+          "estimate: explicit (210m)",
+          "type: task×1.0",
+          "depth: 0×1.00",
+          "desc: 49r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-107",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 1.1794871794871795,
+        "estimated_minutes": 92,
+        "eta_date": "2026-02-19T04:39:18.800582605-05:00",
+        "eta_date_high": "2026-02-19T17:06:38.185197989-05:00",
+        "eta_date_low": "2026-02-18T16:11:59.41596722-05:00",
+        "factors": [
+          "estimate: explicit (90m)",
+          "type: bug×1.0",
+          "depth: 0×1.00",
+          "desc: 45r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-108",
+        "velocity_minutes_per_day": 39
+      },
+      {
+        "agents": 2,
+        "confidence": 0.45,
+        "estimated_days": 6.128205128205129,
+        "estimated_minutes": 478,
+        "eta_date": "2026-02-24T03:25:28.031351836-05:00",
+        "eta_date_high": "2026-02-26T20:08:17.877505682-05:00",
+        "eta_date_low": "2026-02-21T10:42:38.185197989-05:00",
+        "factors": [
+          "estimate: explicit (360m)",
+          "type: feature×1.3",
+          "depth: 0×1.00",
+          "desc: 46r×1.02",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "ADV-109",
+        "velocity_minutes_per_day": 39
+      }
+    ],
+    "generated_at": "2026-02-18T05:20:51Z",
+    "output_format": "json",
+    "summary": {
+      "avg_confidence": 0.45000000000000007,
+      "earliest_eta": "2026-02-19T04:39:18.800582605-05:00",
+      "latest_eta": "2026-03-02T08:57:46.492890297-05:00",
+      "total_days": 5.870833333333334,
+      "total_minutes": 2818
+    },
+    "version": "v0.14.4"
+  },
+  "capacity": {
+    "actionable": [
+      "ADV-100",
+      "ADV-104",
+      "ADV-105"
+    ],
+    "actionable_count": 3,
+    "agents": 3,
+    "critical_path": [
+      "ADV-100",
+      "ADV-109"
+    ],
+    "critical_path_length": 2,
+    "data_hash": "82d68356fe1cc926",
+    "estimated_days": 3.9583333333333335,
+    "generated_at": "2026-02-18T05:20:51Z",
+    "open_issue_count": 9,
+    "output_format": "json",
+    "parallel_minutes": 1376,
+    "parallelizable_pct": 48.82895670688431,
+    "serial_minutes": 1442,
+    "total_days": 5.870833333333334,
+    "total_minutes": 2818,
+    "version": "v0.14.4"
+  },
+  "capacity_by_label": {
+    "actionable": [
+      "ADV-100",
+      "ADV-105"
+    ],
+    "actionable_count": 2,
+    "agents": 1,
+    "critical_path": [
+      "ADV-100",
+      "ADV-109"
+    ],
+    "critical_path_length": 2,
+    "data_hash": "82d68356fe1cc926",
+    "estimated_days": 3.3229166666666665,
+    "generated_at": "2026-02-18T05:20:51Z",
+    "label": "backend",
+    "open_issue_count": 3,
+    "output_format": "json",
+    "parallel_minutes": 153,
+    "parallelizable_pct": 9.592476489028213,
+    "serial_minutes": 1442,
+    "total_days": 3.3229166666666665,
+    "total_minutes": 1595,
+    "version": "v0.14.4"
+  },
+  "history": {
+    "commit_index": {},
+    "data_hash": "c07f594ed0b9",
+    "generated_at": "2026-02-18T05:20:51.199528329Z",
+    "git_range": "limit 20 commits",
+    "histories": {
+      "ADV-100": {
+        "bead_id": "ADV-100",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-100",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-100",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "in_progress",
+        "title": "Core orchestration rewrite"
+      },
+      "ADV-101": {
+        "bead_id": "ADV-101",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-101",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-101",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "open",
+        "title": "Cycle alpha"
+      },
+      "ADV-102": {
+        "bead_id": "ADV-102",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-102",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-102",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "open",
+        "title": "Cycle beta"
+      },
+      "ADV-103": {
+        "bead_id": "ADV-103",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-103",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-103",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "blocked",
+        "title": "Cycle gamma"
+      },
+      "ADV-104": {
+        "bead_id": "ADV-104",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-104",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-104",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "open",
+        "title": "Flaky test suite reopened"
+      },
+      "ADV-105": {
+        "bead_id": "ADV-105",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-105",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-105",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "open",
+        "title": "API label normalization"
+      },
+      "ADV-106": {
+        "bead_id": "ADV-106",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-106",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-106",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "closed",
+        "title": "Old migration cleanup"
+      },
+      "ADV-107": {
+        "bead_id": "ADV-107",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-107",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-107",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "blocked",
+        "title": "Release gate depends on reopened tests"
+      },
+      "ADV-108": {
+        "bead_id": "ADV-108",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-108",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-108",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "open",
+        "title": "UI validation edge case"
+      },
+      "ADV-109": {
+        "bead_id": "ADV-109",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-109",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "ADV-109",
+            "commit_message": "update snapshot",
+            "commit_sha": "db22250c71a1a5304fcdee57197098596b384dcc",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:49-05:00"
+          }
+        },
+        "status": "in_progress",
+        "title": "Telemetry backfill"
+      }
+    },
+    "latest_commit_sha": "61d49d182e0db6d334691c5774c146c2b34c8657",
+    "stats": {
+      "avg_commits_per_bead": 0,
+      "beads_with_commits": 0,
+      "method_distribution": {},
+      "total_beads": 10,
+      "total_commits": 0,
+      "unique_authors": 1
+    }
+  },
+  "diff": {
+    "diff": {
+      "closed_issues": null,
+      "from_revision": "61d49d182e0db6d334691c5774c146c2b34c8657",
+      "from_timestamp": "0001-01-01T00:00:00Z",
+      "metric_deltas": {
+        "avg_betweenness": 1,
+        "avg_pagerank": -0.3999999999999999,
+        "blocked_issues": 1,
+        "closed_issues": 1,
+        "component_count": 0,
+        "cycle_count": 1,
+        "open_issues": 7,
+        "total_edges": 0,
+        "total_issues": 8
+      },
+      "modified_issues": null,
+      "new_cycles": [
+        [
+          "ADV-101",
+          "ADV-103",
+          "ADV-102",
+          "ADV-101"
+        ]
+      ],
+      "new_issues": [
+        {
+          "assignee": "alex",
+          "created_at": "2024-01-02T09:00:00Z",
+          "description": "Stabilize orchestration layer before downstream feature work.",
+          "estimated_minutes": 720,
+          "id": "ADV-100",
+          "issue_type": "feature",
+          "labels": [
+            "core",
+            "backend"
+          ],
+          "priority": 0,
+          "status": "in_progress",
+          "title": "Core orchestration rewrite",
+          "updated_at": "2024-01-10T12:30:00Z"
+        },
+        {
+          "created_at": "2024-01-03T09:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "ADV-102",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "First node in explicit dependency cycle.",
+          "estimated_minutes": 180,
+          "id": "ADV-101",
+          "issue_type": "task",
+          "labels": [
+            "cycle",
+            "graph"
+          ],
+          "priority": 1,
+          "status": "open",
+          "title": "Cycle alpha",
+          "updated_at": "2024-01-11T09:00:00Z"
+        },
+        {
+          "created_at": "2024-01-03T10:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "ADV-103",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "Second node in explicit dependency cycle.",
+          "estimated_minutes": 180,
+          "id": "ADV-102",
+          "issue_type": "task",
+          "labels": [
+            "cycle",
+            "graph"
+          ],
+          "priority": 1,
+          "status": "open",
+          "title": "Cycle beta",
+          "updated_at": "2024-01-11T10:00:00Z"
+        },
+        {
+          "created_at": "2024-01-03T11:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "ADV-101",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "Third node in explicit dependency cycle.",
+          "estimated_minutes": 240,
+          "id": "ADV-103",
+          "issue_type": "task",
+          "labels": [
+            "cycle",
+            "graph"
+          ],
+          "priority": 1,
+          "status": "blocked",
+          "title": "Cycle gamma",
+          "updated_at": "2024-01-11T11:00:00Z"
+        },
+        {
+          "assignee": "sam",
+          "closed_at": "2024-01-08T15:00:00Z",
+          "created_at": "2024-01-04T09:00:00Z",
+          "description": "Was closed but regressions reopened work.",
+          "estimated_minutes": 300,
+          "id": "ADV-104",
+          "issue_type": "bug",
+          "labels": [
+            "qa",
+            "reopened"
+          ],
+          "priority": 1,
+          "status": "open",
+          "title": "Flaky test suite reopened",
+          "updated_at": "2024-01-12T08:00:00Z"
+        },
+        {
+          "created_at": "2024-01-05T09:00:00Z",
+          "description": "Label normalization must be case-insensitive.",
+          "estimated_minutes": 150,
+          "id": "ADV-105",
+          "issue_type": "task",
+          "labels": [
+            "API",
+            "api",
+            "backend"
+          ],
+          "priority": 2,
+          "status": "open",
+          "title": "API label normalization",
+          "updated_at": "2024-01-12T09:00:00Z"
+        },
+        {
+          "closed_at": "2024-01-02T09:00:00Z",
+          "created_at": "2023-12-20T09:00:00Z",
+          "description": "Legacy migration can be retired.",
+          "estimated_minutes": 60,
+          "id": "ADV-106",
+          "issue_type": "chore",
+          "labels": [
+            "maintenance"
+          ],
+          "priority": 2,
+          "status": "closed",
+          "title": "Old migration cleanup",
+          "updated_at": "2024-01-02T09:00:00Z"
+        },
+        {
+          "created_at": "2024-01-06T09:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "ADV-104",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "Release cannot proceed until reopened tests pass.",
+          "estimated_minutes": 210,
+          "id": "ADV-107",
+          "issue_type": "task",
+          "labels": [
+            "release",
+            "qa"
+          ],
+          "priority": 0,
+          "status": "blocked",
+          "title": "Release gate depends on reopened tests",
+          "updated_at": "2024-01-12T10:00:00Z"
+        },
+        {
+          "created_at": "2024-01-07T09:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "ADV-105",
+              "issue_id": "",
+              "type": "related"
+            }
+          ],
+          "description": "Frontend validation diverges on empty labels.",
+          "estimated_minutes": 90,
+          "id": "ADV-108",
+          "issue_type": "bug",
+          "labels": [
+            "frontend"
+          ],
+          "priority": 3,
+          "status": "open",
+          "title": "UI validation edge case",
+          "updated_at": "2024-01-12T11:00:00Z"
+        },
+        {
+          "assignee": "mira",
+          "created_at": "2024-01-08T09:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "ADV-100",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "Backfill telemetry before shipping dashboards.",
+          "estimated_minutes": 360,
+          "id": "ADV-109",
+          "issue_type": "feature",
+          "labels": [
+            "analytics",
+            "backend"
+          ],
+          "priority": 1,
+          "status": "in_progress",
+          "title": "Telemetry backfill",
+          "updated_at": "2024-01-12T12:00:00Z"
+        }
+      ],
+      "removed_issues": [
+        {
+          "created_at": "0001-01-01T00:00:00Z",
+          "description": "",
+          "id": "A",
+          "issue_type": "task",
+          "priority": 1,
+          "status": "open",
+          "title": "Root",
+          "updated_at": "0001-01-01T00:00:00Z"
+        },
+        {
+          "created_at": "0001-01-01T00:00:00Z",
+          "dependencies": [
+            {
+              "created_at": "0001-01-01T00:00:00Z",
+              "created_by": "",
+              "depends_on_id": "A",
+              "issue_id": "",
+              "type": "blocks"
+            }
+          ],
+          "description": "",
+          "id": "B",
+          "issue_type": "task",
+          "priority": 2,
+          "status": "blocked",
+          "title": "Blocked",
+          "updated_at": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "reopened_issues": null,
+      "resolved_cycles": null,
+      "summary": {
+        "cycles_introduced": 1,
+        "cycles_resolved": 0,
+        "health_trend": "degrading",
+        "issues_added": 10,
+        "issues_closed": 0,
+        "issues_modified": 0,
+        "issues_removed": 2,
+        "issues_reopened": 0,
+        "net_issue_change": 8,
+        "total_changes": 12
+      },
+      "to_timestamp": "2026-02-18T00:20:51.240018004-05:00"
+    },
+    "from_data_hash": "60a8d727931c6bfe",
+    "generated_at": "2026-02-18T05:20:51Z",
+    "resolved_revision": "61d49d182e0db6d334691c5774c146c2b34c8657",
+    "to_data_hash": "82d68356fe1cc926"
+  }
+}

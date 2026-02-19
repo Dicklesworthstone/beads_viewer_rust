@@ -1,0 +1,1118 @@
+{
+  "captured_at": "2026-02-18T05:20:47Z",
+  "legacy_root": "/data/projects/beads_viewer_rust/legacy_beads_viewer_code/beads_viewer",
+  "beads_file": "/data/projects/beads_viewer_rust/tests/testdata/minimal.jsonl",
+  "diff_since": "HEAD~1",
+  "triage": {
+    "data_hash": "60a8d727931c6bfe",
+    "generated_at": "2026-02-18T05:20:47Z",
+    "triage": {
+      "blockers_to_clear": [
+        {
+          "actionable": true,
+          "id": "A",
+          "title": "Root",
+          "unblocks_count": 1,
+          "unblocks_ids": [
+            "B"
+          ]
+        }
+      ],
+      "commands": {
+        "claim_top": "CI=1 br update A --status in_progress --json",
+        "list_blocked": "CI=1 br blocked --json",
+        "list_ready": "CI=1 br ready --json",
+        "refresh_triage": "bv --robot-triage",
+        "show_top": "CI=1 br show A --json"
+      },
+      "meta": {
+        "compute_time_ms": 0,
+        "generated_at": "2026-02-18T00:20:47.55279522-05:00",
+        "issue_count": 2,
+        "phase2_ready": true,
+        "version": "1.0.0"
+      },
+      "project_health": {
+        "counts": {
+          "actionable": 1,
+          "blocked": 1,
+          "by_priority": {
+            "1": 1,
+            "2": 1
+          },
+          "by_status": {
+            "blocked": 1,
+            "open": 1
+          },
+          "by_type": {
+            "task": 2
+          },
+          "closed": 0,
+          "open": 2,
+          "total": 2
+        },
+        "graph": {
+          "density": 0.5,
+          "edge_count": 1,
+          "has_cycles": false,
+          "node_count": 2,
+          "phase2_ready": true
+        },
+        "velocity": {
+          "avg_days_to_close": 0,
+          "closed_last_30_days": 0,
+          "closed_last_7_days": 0,
+          "weekly": [
+            {
+              "closed": 0,
+              "week_start": "2026-02-16T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-02-09T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-02-02T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-26T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-19T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-12T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2026-01-05T00:00:00Z"
+            },
+            {
+              "closed": 0,
+              "week_start": "2025-12-29T00:00:00Z"
+            }
+          ]
+        }
+      },
+      "quick_ref": {
+        "actionable_count": 1,
+        "blocked_count": 1,
+        "in_progress_count": 0,
+        "open_count": 2,
+        "top_picks": [
+          {
+            "id": "A",
+            "reasons": [
+              "🔓 Unblocks 1 item(s): B",
+              "📊 High centrality in dependency graph (PageRank: 100%)",
+              "⚡ Low effort, high impact - good starting point",
+              "✅ Currently unclaimed - available for work",
+              "🚨 High priority (P1) - prioritize this work"
+            ],
+            "score": 0.43651249999999997,
+            "title": "Root",
+            "unblocks": 1
+          }
+        ]
+      },
+      "quick_wins": [
+        {
+          "id": "A",
+          "reason": "Unblocks 1 items, high priority",
+          "score": 0.5,
+          "title": "Root",
+          "unblocks_ids": [
+            "B"
+          ]
+        },
+        {
+          "id": "B",
+          "reason": "Low complexity",
+          "score": 0.4,
+          "title": "Blocked"
+        }
+      ],
+      "recommendations": [
+        {
+          "action": "Quick win - start here for fast progress",
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0.13,
+            "blocker_ratio_norm": 1,
+            "pagerank": 0.22,
+            "pagerank_norm": 1,
+            "priority_boost": 0.07500000000000001,
+            "priority_boost_norm": 0.75,
+            "risk": 0.0020000000000000005,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.020000000000000004,
+            "risk_signals": {
+              "activity_churn": 0,
+              "composite_risk": 0.020000000000000004,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.1
+            },
+            "staleness": 0.025,
+            "staleness_norm": 0.5,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0,
+            "urgency_norm": 0
+          },
+          "id": "A",
+          "labels": null,
+          "priority": 1,
+          "reasons": [
+            "🔓 Unblocks 1 item(s): B",
+            "📊 High centrality in dependency graph (PageRank: 100%)",
+            "⚡ Low effort, high impact - good starting point",
+            "✅ Currently unclaimed - available for work",
+            "🚨 High priority (P1) - prioritize this work"
+          ],
+          "score": 0.43651249999999997,
+          "status": "open",
+          "title": "Root",
+          "type": "task",
+          "unblocks_ids": [
+            "B"
+          ]
+        },
+        {
+          "action": "Work on A first to unblock this",
+          "blocked_by": [
+            "A"
+          ],
+          "breakdown": {
+            "betweenness": 0,
+            "betweenness_norm": 0,
+            "blocker_ratio": 0,
+            "blocker_ratio_norm": 0,
+            "pagerank": 0.11891900713261275,
+            "pagerank_norm": 0.5405409415118761,
+            "priority_boost": 0.05,
+            "priority_boost_norm": 0.5,
+            "risk": 0.013999999999999999,
+            "risk_explanation": "Low risk - stable dependency structure",
+            "risk_norm": 0.13999999999999999,
+            "risk_signals": {
+              "activity_churn": 0,
+              "composite_risk": 0.13999999999999999,
+              "cross_repo_risk": 0,
+              "explanation": "Low risk - stable dependency structure",
+              "fan_variance": 0,
+              "status_risk": 0.7
+            },
+            "staleness": 0.025,
+            "staleness_norm": 0.5,
+            "time_to_impact": 0.026250000000000002,
+            "time_to_impact_explanation": "Leaf node, median estimate 60m",
+            "time_to_impact_norm": 0.2625,
+            "urgency": 0,
+            "urgency_norm": 0
+          },
+          "id": "B",
+          "labels": null,
+          "priority": 2,
+          "reasons": [
+            "📊 High centrality in dependency graph (PageRank: 54%)",
+            "✅ Currently unclaimed - available for work",
+            "⏳ Blocked by A - complete that first"
+          ],
+          "score": 0.1873352057060902,
+          "status": "blocked",
+          "title": "Blocked",
+          "type": "task"
+        }
+      ]
+    },
+    "usage_hints": [
+      "jq '.triage.quick_ref.top_picks[:3]' - Top 3 picks for immediate work",
+      "jq '.triage.recommendations[3:10] | map({id,title,score})' - Next candidates after top picks",
+      "jq '.triage.blockers_to_clear | map(.id)' - High-impact blockers to clear",
+      "jq '.triage.recommendations[] | select(.type == \"bug\")' - Bug-focused recommendations",
+      "jq '.triage.quick_ref.top_picks[] | select(.unblocks \u003e 2)' - High-impact picks",
+      "jq '.triage.quick_wins' - Low-effort, high-impact items",
+      "--robot-next - Get only the single top recommendation",
+      "--robot-triage-by-track - Group by execution track for multi-agent coordination",
+      "--robot-triage-by-label - Group by label for area-focused agents",
+      "jq '.triage.recommendations_by_track[].top_pick' - Top pick per track",
+      "jq '.triage.recommendations_by_label[].claim_command' - Claim commands per label",
+      "jq '.feedback.weight_adjustments' - View feedback-adjusted weights (bv-90)"
+    ]
+  },
+  "plan": {
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "skip",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "not computed for --robot-plan",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": false,
+      "ComputeCriticalPath": false,
+      "ComputeCycles": false,
+      "ComputeEigenvector": false,
+      "ComputeHITS": false,
+      "ComputeKCore": true,
+      "ComputePageRank": false,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "not computed for --robot-plan",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "not computed for --robot-plan",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "not computed for --robot-plan",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "60a8d727931c6bfe",
+    "generated_at": "2026-02-18T05:20:47Z",
+    "plan": {
+      "summary": {
+        "highest_impact": "A",
+        "impact_reason": "Unblocks 1 task",
+        "unblocks_count": 1
+      },
+      "total_actionable": 1,
+      "total_blocked": 1,
+      "tracks": [
+        {
+          "items": [
+            {
+              "id": "A",
+              "priority": 1,
+              "status": "open",
+              "title": "Root",
+              "unblocks": [
+                "B"
+              ]
+            }
+          ],
+          "reason": "Single actionable item",
+          "track_id": "track-A"
+        }
+      ]
+    },
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "Critical": {
+        "state": "skipped"
+      },
+      "Cycles": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "Eigenvector": {
+        "state": "skipped"
+      },
+      "HITS": {
+        "reason": "not computed for --robot-plan",
+        "state": "skipped"
+      },
+      "KCore": {
+        "ms": 0.023274,
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "skipped"
+      },
+      "Slack": {
+        "ms": 0.001102,
+        "state": "computed"
+      }
+    },
+    "usage_hints": [
+      "jq '.plan.tracks | length' - Number of parallel execution tracks",
+      "jq '.plan.tracks[0].items | map(.id)' - First track item IDs",
+      "jq '.plan.tracks[].items[] | select(.unblocks | length \u003e 0)' - Items that unblock others",
+      "jq '.plan.summary' - High-level execution summary",
+      "jq '[.plan.tracks[].items[]] | length' - Total items across all tracks"
+    ]
+  },
+  "insights": {
+    "Articulation": null,
+    "Authorities": [
+      {
+        "ID": "A",
+        "Value": 1
+      },
+      {
+        "ID": "B",
+        "Value": 0
+      }
+    ],
+    "Bottlenecks": [],
+    "ClusterDensity": 0.5,
+    "Cores": [
+      {
+        "ID": "A",
+        "Value": 1
+      },
+      {
+        "ID": "B",
+        "Value": 1
+      }
+    ],
+    "Cycles": null,
+    "Hubs": [
+      {
+        "ID": "B",
+        "Value": 1
+      },
+      {
+        "ID": "A",
+        "Value": 0
+      }
+    ],
+    "Influencers": [
+      {
+        "ID": "A",
+        "Value": 1
+      },
+      {
+        "ID": "B",
+        "Value": 0
+      }
+    ],
+    "Keystones": [
+      {
+        "ID": "A",
+        "Value": 2
+      },
+      {
+        "ID": "B",
+        "Value": 1
+      }
+    ],
+    "Orphans": [
+      "A"
+    ],
+    "Slack": [
+      {
+        "ID": "A",
+        "Value": 0
+      },
+      {
+        "ID": "B",
+        "Value": 0
+      }
+    ],
+    "Stats": {
+      "Config": {
+        "BetweennessIsApproximate": false,
+        "BetweennessMode": "exact",
+        "BetweennessSampleSize": 0,
+        "BetweennessSkipReason": "",
+        "BetweennessTimeout": 2000000000,
+        "ComputeArticulation": true,
+        "ComputeBetweenness": true,
+        "ComputeCriticalPath": true,
+        "ComputeCycles": true,
+        "ComputeEigenvector": true,
+        "ComputeHITS": true,
+        "ComputeKCore": true,
+        "ComputePageRank": true,
+        "ComputeSlack": true,
+        "CyclesSkipReason": "",
+        "CyclesTimeout": 2000000000,
+        "HITSSkipReason": "",
+        "HITSTimeout": 2000000000,
+        "MaxCyclesToStore": 1000,
+        "PageRankSkipReason": "",
+        "PageRankTimeout": 2000000000
+      },
+      "Density": 0.5,
+      "EdgeCount": 1,
+      "InDegree": {
+        "A": 1,
+        "B": 0
+      },
+      "NodeCount": 2,
+      "OutDegree": {
+        "A": 0,
+        "B": 1
+      },
+      "TopologicalOrder": [
+        "A",
+        "B"
+      ]
+    },
+    "Velocity": {
+      "avg_days_to_close": 0,
+      "closed_last_30_days": 0,
+      "closed_last_7_days": 0,
+      "weekly": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "advanced_insights": {
+      "config": {
+        "coverage_set_limit": 5,
+        "cycle_break_limit": 5,
+        "k_paths_limit": 5,
+        "parallel_cut_limit": 5,
+        "path_length_cap": 50,
+        "topk_set_limit": 5
+      },
+      "coverage_set": {
+        "coverage_ratio": 1,
+        "edges_covered": 1,
+        "how_to_use": "Small vertex cover touching all dependency edges. Use for breadth coverage.",
+        "items": [
+          {
+            "edges_added": 1,
+            "id": "A",
+            "selection_seq": 1,
+            "title": "Root",
+            "total_degree": 1
+          }
+        ],
+        "rationale": "Greedy vertex cover (2-approx): iteratively pick highest uncovered degree until edges are covered or cap is reached.",
+        "status": {
+          "count": 1,
+          "limited": 1,
+          "state": "available"
+        },
+        "total_edges": 1
+      },
+      "cycle_break": {
+        "advisory": "No cycles detected - dependency graph is a proper DAG.",
+        "cycle_count": 0,
+        "how_to_use": "Structural fix suggestions. Apply BEFORE working on cycle members.",
+        "status": {
+          "state": "available"
+        }
+      },
+      "k_paths": {
+        "how_to_use": "K-shortest critical paths. Focus on issues appearing in multiple paths.",
+        "paths": [
+          {
+            "issue_ids": [
+              "A",
+              "B"
+            ],
+            "length": 2,
+            "rank": 1
+          }
+        ],
+        "status": {
+          "count": 1,
+          "limited": 1,
+          "state": "available"
+        }
+      },
+      "parallel_cut": {
+        "how_to_use": "Issues that enable parallel work. Complete to maximize team throughput.",
+        "max_parallel": 1,
+        "status": {
+          "state": "available"
+        }
+      },
+      "parallel_gain": {
+        "how_to_use": "Parallelization improvement from completing each issue.",
+        "status": {
+          "reason": "Awaiting implementation (bv-129)",
+          "state": "pending"
+        }
+      },
+      "topk_set": {
+        "how_to_use": "Best k issues to complete for max downstream unlock. Work these in order.",
+        "items": [
+          {
+            "id": "A",
+            "marginal_gain": 1,
+            "title": "Root",
+            "unblocks": [
+              "B"
+            ]
+          },
+          {
+            "id": "B",
+            "marginal_gain": 0,
+            "title": "Blocked"
+          }
+        ],
+        "marginal_gain": [
+          1,
+          0
+        ],
+        "status": {
+          "count": 2,
+          "limited": 2,
+          "state": "available"
+        },
+        "total_gain": 1
+      },
+      "usage_hints": {
+        "coverage_set": "Small vertex cover touching all dependency edges. Use for breadth coverage.",
+        "cycle_break": "Structural fix suggestions. Apply BEFORE working on cycle members.",
+        "k_paths": "K-shortest critical paths. Focus on issues appearing in multiple paths.",
+        "parallel_cut": "Issues that enable parallel work. Complete to maximize team throughput.",
+        "parallel_gain": "Parallelization improvement from completing each issue.",
+        "topk_set": "Best k issues to complete for max downstream unlock. Work these in order."
+      }
+    },
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "exact",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": true,
+      "ComputeCriticalPath": true,
+      "ComputeCycles": true,
+      "ComputeEigenvector": true,
+      "ComputeHITS": true,
+      "ComputeKCore": true,
+      "ComputePageRank": true,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "60a8d727931c6bfe",
+    "full_stats": {
+      "articulation_points": null,
+      "authorities": {
+        "A": 1,
+        "B": 0
+      },
+      "betweenness": {},
+      "core_number": {
+        "A": 1,
+        "B": 1
+      },
+      "critical_path_score": {
+        "A": 2,
+        "B": 1
+      },
+      "eigenvector": {
+        "A": 1,
+        "B": 0
+      },
+      "hubs": {
+        "A": 0,
+        "B": 1
+      },
+      "pagerank": {
+        "A": 0.649122638064138,
+        "B": 0.35087736193586194
+      },
+      "slack": {
+        "A": 0,
+        "B": 0
+      }
+    },
+    "generated_at": "2026-02-18T05:20:47Z",
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "state": "computed"
+      },
+      "Critical": {
+        "state": "computed"
+      },
+      "Cycles": {
+        "state": "computed"
+      },
+      "Eigenvector": {
+        "state": "computed"
+      },
+      "HITS": {
+        "state": "computed"
+      },
+      "KCore": {
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "computed"
+      },
+      "Slack": {
+        "state": "computed"
+      }
+    },
+    "top_what_ifs": [
+      {
+        "delta": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0.2,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.125,
+          "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "B"
+          ]
+        },
+        "issue_id": "A",
+        "title": "Root"
+      }
+    ],
+    "usage_hints": [
+      "jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
+      "jq '.CriticalPath[:3]' - Top 3 critical path items",
+      "jq '.top_what_ifs[] | select(.delta.direct_unblocks \u003e 2)' - High-impact items",
+      "jq '.full_stats.pagerank | to_entries | sort_by(-.value)[:5]' - Top PageRank",
+      "jq '.full_stats.core_number | to_entries | sort_by(-.value)[:5]' - Strongly embedded nodes (k-core)",
+      "jq '.full_stats.articulation_points' - Structural cut points",
+      "jq '.Slack[:5]' - Nodes with slack (good parallel work candidates)",
+      "jq '.Cycles | length' - Count of detected cycles",
+      "jq '.advanced_insights.cycle_break' - Cycle break suggestions (bv-181)",
+      "BV_INSIGHTS_MAP_LIMIT=50 bv --robot-insights - Reduce map sizes"
+    ]
+  },
+  "priority": {
+    "analysis_config": {
+      "BetweennessIsApproximate": false,
+      "BetweennessMode": "exact",
+      "BetweennessSampleSize": 0,
+      "BetweennessSkipReason": "",
+      "BetweennessTimeout": 2000000000,
+      "ComputeArticulation": true,
+      "ComputeBetweenness": true,
+      "ComputeCriticalPath": true,
+      "ComputeCycles": true,
+      "ComputeEigenvector": true,
+      "ComputeHITS": true,
+      "ComputeKCore": true,
+      "ComputePageRank": true,
+      "ComputeSlack": true,
+      "CyclesSkipReason": "",
+      "CyclesTimeout": 2000000000,
+      "HITSSkipReason": "",
+      "HITSTimeout": 2000000000,
+      "MaxCyclesToStore": 1000,
+      "PageRankSkipReason": "",
+      "PageRankTimeout": 2000000000
+    },
+    "data_hash": "60a8d727931c6bfe",
+    "field_descriptions": {
+      "status.capped": "Whether results were truncated to prevent overload",
+      "status.phase2": "Whether expensive graph metrics (PageRank, betweenness) are included",
+      "top_reasons": "Top 3 factors contributing to priority score, ordered by weight",
+      "what_if.cascade": "Total issues transitively unblocked (including indirect)",
+      "what_if.days_saved": "Estimated days saved based on issue estimates",
+      "what_if.depth": "Critical path depth reduction if completed",
+      "what_if.parallelization_gain": "Net change in parallel work capacity (direct_unblocks - 1); positive = more parallel work possible",
+      "what_if.unblocks": "Number of issues directly waiting on this one"
+    },
+    "filters": {
+      "max_results": 10
+    },
+    "generated_at": "2026-02-18T05:20:47Z",
+    "recommendations": [
+      {
+        "confidence": 1,
+        "current_priority": 1,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:47Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "Very high: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.22
+            },
+            {
+              "emoji": "🚧",
+              "explanation": "Very high: High blocker count",
+              "factor": "blockers",
+              "weight": 0.13
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "Very high: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.07500000000000001
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 1,
+            "depth_reduction": 0.2,
+            "direct_unblocks": 1,
+            "estimated_days_saved": 0.125,
+            "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+            "parallelization_gain": 0,
+            "transitive_unblocks": 1,
+            "unblocked_issue_ids": [
+              "B"
+            ]
+          }
+        },
+        "impact_score": 0.49225,
+        "issue_id": "A",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Blocks 1 other item",
+          "Stale for 15+ days"
+        ],
+        "suggested_priority": 2,
+        "title": "Root",
+        "what_if": {
+          "blocked_reduction": 1,
+          "depth_reduction": 0.2,
+          "direct_unblocks": 1,
+          "estimated_days_saved": 0.125,
+          "explanation": "Completing this directly unblocks 1 item, clears 1 blocked",
+          "parallelization_gain": 0,
+          "transitive_unblocks": 1,
+          "unblocked_issue_ids": [
+            "B"
+          ]
+        }
+      },
+      {
+        "confidence": 1,
+        "current_priority": 2,
+        "direction": "decrease",
+        "explanation": {
+          "status": {
+            "capped": false,
+            "computed_at": "2026-02-18T05:20:47Z",
+            "data_hash": "",
+            "deterministic": true,
+            "phase2_ready": true
+          },
+          "top_reasons": [
+            {
+              "emoji": "🎯",
+              "explanation": "High: Central in dependency graph",
+              "factor": "pagerank",
+              "weight": 0.11891900713261275
+            },
+            {
+              "emoji": "⭐",
+              "explanation": "High: Explicit priority set",
+              "factor": "priority",
+              "weight": 0.05
+            },
+            {
+              "emoji": "⚡",
+              "explanation": "Moderate: Fast impact potential",
+              "factor": "time_to_impact",
+              "weight": 0.03325
+            }
+          ],
+          "what_if": {
+            "blocked_reduction": 0,
+            "depth_reduction": 0.1,
+            "direct_unblocks": 0,
+            "explanation": "No immediate downstream impact",
+            "parallelization_gain": -1,
+            "transitive_unblocks": 0
+          }
+        },
+        "impact_score": 0.24116900713261274,
+        "issue_id": "B",
+        "reasoning": [
+          "High centrality in dependency graph",
+          "Stale for 15+ days",
+          "High cohesion (k-core 1)"
+        ],
+        "suggested_priority": 3,
+        "title": "Blocked",
+        "what_if": {
+          "blocked_reduction": 0,
+          "depth_reduction": 0.1,
+          "direct_unblocks": 0,
+          "explanation": "No immediate downstream impact",
+          "parallelization_gain": -1,
+          "transitive_unblocks": 0
+        }
+      }
+    ],
+    "status": {
+      "Articulation": {
+        "state": "computed"
+      },
+      "Betweenness": {
+        "state": "computed"
+      },
+      "Critical": {
+        "state": "computed"
+      },
+      "Cycles": {
+        "state": "computed"
+      },
+      "Eigenvector": {
+        "state": "computed"
+      },
+      "HITS": {
+        "state": "computed"
+      },
+      "KCore": {
+        "state": "computed"
+      },
+      "PageRank": {
+        "state": "computed"
+      },
+      "Slack": {
+        "state": "computed"
+      }
+    },
+    "summary": {
+      "high_confidence": 2,
+      "recommendations": 2,
+      "total_issues": 2
+    },
+    "usage_hints": [
+      "jq '.recommendations[] | select(.confidence \u003e 0.7)' - Filter high confidence",
+      "jq '.recommendations[0].explanation.what_if' - Get top item's impact",
+      "jq '.recommendations | map({id: .issue_id, score: .impact_score})' - Extract IDs and scores",
+      "jq '.recommendations[] | select(.explanation.what_if.parallelization_gain \u003e 0)' - Find items that increase parallel work capacity",
+      "--robot-min-confidence 0.6 - Pre-filter by confidence",
+      "--robot-max-results 5 - Limit to top N results",
+      "--robot-by-label bug - Filter by specific label"
+    ]
+  },
+  "forecast": {
+    "agents": 2,
+    "data_hash": "60a8d727931c6bfe",
+    "forecast_count": 2,
+    "forecasts": [
+      {
+        "agents": 2,
+        "confidence": 0.15000000000000002,
+        "estimated_days": 3,
+        "estimated_minutes": 72,
+        "eta_date": "2026-02-21T00:20:47.794892145-05:00",
+        "eta_date_high": "2026-02-23T01:18:23.794892145-05:00",
+        "eta_date_low": "2026-02-18T23:23:11.794892145-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: task×1.0",
+          "depth: 2×1.20",
+          "desc: empty×1.00",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "A",
+        "velocity_minutes_per_day": 12
+      },
+      {
+        "agents": 2,
+        "confidence": 0.15000000000000002,
+        "estimated_days": 2.75,
+        "estimated_minutes": 66,
+        "eta_date": "2026-02-20T18:20:47.794892145-05:00",
+        "eta_date_high": "2026-02-22T15:13:35.794892145-05:00",
+        "eta_date_low": "2026-02-18T21:27:59.794892144-05:00",
+        "factors": [
+          "estimate: median (60m)",
+          "type: task×1.0",
+          "depth: 1×1.10",
+          "desc: empty×1.00",
+          "velocity: global (0 samples/30d)",
+          "velocity: no recent closures; using default",
+          "agents: 2"
+        ],
+        "issue_id": "B",
+        "velocity_minutes_per_day": 12
+      }
+    ],
+    "generated_at": "2026-02-18T05:20:47Z",
+    "output_format": "json",
+    "summary": {
+      "avg_confidence": 0.15000000000000002,
+      "earliest_eta": "2026-02-20T18:20:47.794892145-05:00",
+      "latest_eta": "2026-02-21T00:20:47.794892145-05:00",
+      "total_days": 0.2875,
+      "total_minutes": 138
+    },
+    "version": "v0.14.4"
+  },
+  "capacity": {
+    "actionable": [
+      "A"
+    ],
+    "actionable_count": 1,
+    "agents": 3,
+    "critical_path": [
+      "A",
+      "B"
+    ],
+    "critical_path_length": 2,
+    "data_hash": "60a8d727931c6bfe",
+    "estimated_days": 0.2875,
+    "generated_at": "2026-02-18T05:20:47Z",
+    "open_issue_count": 2,
+    "output_format": "json",
+    "parallel_minutes": 0,
+    "parallelizable_pct": 0,
+    "serial_minutes": 138,
+    "total_days": 0.2875,
+    "total_minutes": 138,
+    "version": "v0.14.4"
+  },
+  "capacity_by_label": {
+    "actionable_count": 0,
+    "agents": 1,
+    "critical_path_length": 0,
+    "data_hash": "60a8d727931c6bfe",
+    "estimated_days": 0,
+    "generated_at": "2026-02-18T05:20:47Z",
+    "label": "backend",
+    "open_issue_count": 0,
+    "output_format": "json",
+    "parallel_minutes": 0,
+    "parallelizable_pct": 0,
+    "serial_minutes": 0,
+    "total_days": 0,
+    "total_minutes": 0,
+    "version": "v0.14.4"
+  },
+  "history": {
+    "commit_index": {},
+    "data_hash": "3cf073ca78fe",
+    "generated_at": "2026-02-18T05:20:47.899380361Z",
+    "git_range": "limit 20 commits",
+    "histories": {
+      "A": {
+        "bead_id": "A",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "A",
+            "commit_message": "seed snapshot",
+            "commit_sha": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:46-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "A",
+            "commit_message": "seed snapshot",
+            "commit_sha": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:46-05:00"
+          }
+        },
+        "status": "open",
+        "title": "Root"
+      },
+      "B": {
+        "bead_id": "B",
+        "commits": null,
+        "cycle_time": null,
+        "events": [
+          {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "B",
+            "commit_message": "seed snapshot",
+            "commit_sha": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:46-05:00"
+          }
+        ],
+        "last_author": "Conformance Bot",
+        "milestones": {
+          "created": {
+            "author": "Conformance Bot",
+            "author_email": "conformance@example.com",
+            "bead_id": "B",
+            "commit_message": "seed snapshot",
+            "commit_sha": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+            "event_type": "created",
+            "timestamp": "2026-02-18T00:20:46-05:00"
+          }
+        },
+        "status": "blocked",
+        "title": "Blocked"
+      }
+    },
+    "latest_commit_sha": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+    "stats": {
+      "avg_commits_per_bead": 0,
+      "beads_with_commits": 0,
+      "method_distribution": {},
+      "total_beads": 2,
+      "total_commits": 0,
+      "unique_authors": 1
+    }
+  },
+  "diff": {
+    "diff": {
+      "closed_issues": null,
+      "from_revision": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+      "from_timestamp": "0001-01-01T00:00:00Z",
+      "metric_deltas": {
+        "avg_betweenness": 0,
+        "avg_pagerank": 0,
+        "blocked_issues": 0,
+        "closed_issues": 0,
+        "component_count": 0,
+        "cycle_count": 0,
+        "open_issues": 0,
+        "total_edges": 0,
+        "total_issues": 0
+      },
+      "modified_issues": null,
+      "new_cycles": null,
+      "new_issues": null,
+      "removed_issues": null,
+      "reopened_issues": null,
+      "resolved_cycles": null,
+      "summary": {
+        "cycles_introduced": 0,
+        "cycles_resolved": 0,
+        "health_trend": "stable",
+        "issues_added": 0,
+        "issues_closed": 0,
+        "issues_modified": 0,
+        "issues_removed": 0,
+        "issues_reopened": 0,
+        "net_issue_change": 0,
+        "total_changes": 0
+      },
+      "to_timestamp": "2026-02-18T00:20:47.946323174-05:00"
+    },
+    "from_data_hash": "60a8d727931c6bfe",
+    "generated_at": "2026-02-18T05:20:47Z",
+    "resolved_revision": "4adafd7debf27bfaddf1de7ea2184aba142e4cd8",
+    "to_data_hash": "60a8d727931c6bfe"
+  }
+}
