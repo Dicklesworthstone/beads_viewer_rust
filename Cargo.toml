@@ -16,10 +16,10 @@ harness = false
 
 [dependencies]
 anyhow = "1.0.101"
-asupersync = { version = "0.2", path = "/dp/asupersync", default-features = false, optional = true }
+asupersync = { version = "0.2.5", default-features = false, optional = true }
 chrono = { version = "0.4.43", features = ["serde"] }
 clap = { version = "4.5.59", features = ["derive", "env"] }
-ftui = { version = "0.2.0", path = "/dp/frankentui/crates/ftui", features = ["crossterm"] }
+ftui = { version = "0.2.1", features = ["crossterm"] }
 itertools = "0.14.0"
 petgraph = "0.8.3"
 serde = { version = "1.0.228", features = ["derive"] }
