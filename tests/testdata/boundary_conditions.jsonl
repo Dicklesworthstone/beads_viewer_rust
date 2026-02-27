@@ -1,0 +1,10 @@
+{"id":"BND-001","title":"Boundary root","status":"open","priority":0,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}
+{"id":"BND-002","title":"In-progress dependent","status":"in_progress","priority":1,"issue_type":"feature","dependencies":[{"depends_on_id":"BND-001","type":"blocks"}]}
+{"id":"BND-003","title":"Blocked dependent","status":"blocked","priority":5,"issue_type":"bug","dependencies":[{"depends_on_id":"BND-001","type":"blocks"}]}
+{"id":"BND-004","title":"Review with non-blocking dependency","status":"review","priority":3,"issue_type":"task","dependencies":[{"depends_on_id":"BND-001","type":"related"}]}
+{"id":"BND-005","title":"Deferred negative priority","status":"deferred","priority":-3,"issue_type":"task","labels":["backend"]}
+{"id":"BND-006","title":"Pinned oversized priority","status":"pinned","priority":99,"issue_type":"task","labels":["API","api"]}
+{"id":"BND-007","title":"Hooked work item","status":"hooked","priority":2,"issue_type":"task","labels":["qa","QA"],"estimated_minutes":15}
+{"id":"BND-008","title":"Already closed","status":"closed","priority":2,"issue_type":"task","closed_at":"2026-01-03T00:00:00Z"}
+{"id":"BND-009","title":"Tombstoned record","status":"tombstone","priority":2,"issue_type":"task","closed_at":"2026-01-04T00:00:00Z"}
+{"id":"BND-010","title":"Missing blocker reference","status":"open","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"BND-999","type":"blocks"}]}

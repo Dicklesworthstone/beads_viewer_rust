@@ -343,6 +343,32 @@ fn robot_history_core_fields_match_legacy_fixture() {
         fixture["history"]["stats"]["total_beads"]
     );
     assert!(actual["histories"].is_object());
+
+    // Validate each history entry has the expected shape.
+    let histories = actual["histories"].as_object().expect("histories object");
+    for (bead_id, entry) in histories {
+        assert!(
+            entry["bead_id"].is_string(),
+            "{bead_id}: bead_id should be a string"
+        );
+        assert!(
+            entry["events"].is_array(),
+            "{bead_id}: events should be an array"
+        );
+        assert!(
+            entry["milestones"].is_object(),
+            "{bead_id}: milestones should be an object"
+        );
+
+        // Milestones should NOT have null-valued keys (skip_serializing_if).
+        let milestones = entry["milestones"].as_object().unwrap();
+        for (ms_key, ms_val) in milestones {
+            assert!(
+                !ms_val.is_null(),
+                "{bead_id}: milestone {ms_key} should not be null"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1159,6 +1185,119 @@ fn robot_suggest_filters_work() {
 }
 
 #[test]
+fn robot_triage_single_issue_returns_valid_output() {
+    let actual = run_bvr_json(&["--robot-triage"], "tests/testdata/single_issue.jsonl");
+
+    assert_eq!(actual["triage"]["quick_ref"]["total_open"], 1);
+    assert_eq!(actual["triage"]["quick_ref"]["total_actionable"], 1);
+    assert!(actual["triage"]["recommendations"].is_array());
+    // Single issue with no deps should have exactly one recommendation.
+    assert!(
+        actual["triage"]["recommendations"]
+            .as_array()
+            .unwrap()
+            .len()
+            <= 1
+    );
+}
+
+#[test]
+fn robot_triage_all_closed_returns_zero_open() {
+    let actual = run_bvr_json(&["--robot-triage"], "tests/testdata/all_closed.jsonl");
+
+    assert_eq!(actual["triage"]["quick_ref"]["total_open"], 0);
+    assert_eq!(actual["triage"]["quick_ref"]["total_actionable"], 0);
+    // No open issues means no recommendations.
+    assert!(
+        actual["triage"]["recommendations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn robot_suggest_single_issue_has_no_duplicates() {
+    let actual = run_bvr_json(&["--robot-suggest"], "tests/testdata/single_issue.jsonl");
+
+    assert!(actual["suggestions"]["suggestions"].is_array());
+    let suggestions = actual["suggestions"]["suggestions"].as_array().unwrap();
+    // A single issue can't have duplicates.
+    for suggestion in suggestions {
+        assert_ne!(
+            suggestion["type"].as_str().unwrap(),
+            "potential_duplicate",
+            "single issue should not produce duplicate suggestions"
+        );
+    }
+}
+
+#[test]
+fn robot_plan_all_closed_has_empty_tracks() {
+    let actual = run_bvr_json(&["--robot-plan"], "tests/testdata/all_closed.jsonl");
+
+    assert!(actual["plan"]["tracks"].is_array());
+    // With all issues closed, there are no actionable open tracks.
+    let tracks = actual["plan"]["tracks"].as_array().unwrap();
+    assert!(
+        !tracks.iter().any(|track| track["issues"]
+            .as_array()
+            .is_some_and(|issues| !issues.is_empty())),
+        "all-closed input should produce no non-empty tracks"
+    );
+}
+
+#[test]
+fn robot_insights_single_issue_returns_valid_metrics() {
+    let actual = run_bvr_json(&["--robot-insights"], "tests/testdata/single_issue.jsonl");
+
+    assert!(actual["insights"]["bottlenecks"].is_array());
+    assert!(actual["insights"]["critical_path"].is_array());
+    assert!(actual["insights"]["cycles"].is_array());
+    // Single issue with no deps should have no cycles.
+    assert!(actual["insights"]["cycles"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn robot_history_single_issue_returns_valid_structure() {
+    let actual = run_bvr_json(&["--robot-history"], "tests/testdata/single_issue.jsonl");
+
+    assert_eq!(actual["stats"]["total_beads"], 1);
+    assert!(actual["histories"].is_object());
+    let histories = actual["histories"].as_object().unwrap();
+    assert_eq!(histories.len(), 1);
+    assert!(histories.contains_key("SOLO-1"));
+
+    let entry = &histories["SOLO-1"];
+    assert_eq!(entry["bead_id"], "SOLO-1");
+    assert!(entry["events"].is_array());
+    assert!(entry["milestones"].is_object());
+}
+
+#[test]
+fn robot_forecast_all_closed_returns_empty_forecasts() {
+    let actual = run_bvr_json(
+        &["--robot-forecast", "all", "--forecast-agents", "1"],
+        "tests/testdata/all_closed.jsonl",
+    );
+
+    assert_eq!(actual["forecast_count"], 0);
+    assert!(actual["forecasts"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn robot_graph_single_issue_returns_single_node() {
+    let actual = run_bvr_json(
+        &["--robot-graph", "--graph-format", "json"],
+        "tests/testdata/single_issue.jsonl",
+    );
+
+    // Graph output has top-level "nodes" as a count, and "adjacency.nodes" as a list.
+    assert_eq!(actual["nodes"], 1);
+    assert_eq!(actual["edges"], 0);
+}
+
+#[test]
 fn robot_suggest_rejects_invalid_type() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path();
@@ -1174,4 +1313,118 @@ fn robot_suggest_rejects_invalid_type() {
     command.current_dir(repo_dir);
     command.args(["--robot-suggest", "--suggest-type", "nope"]);
     command.assert().failure();
+}
+
+#[test]
+fn robot_triage_empty_fixture_returns_zero_open_and_actionable() {
+    let actual = run_bvr_json(&["--robot-triage"], "tests/testdata/empty.jsonl");
+
+    assert_eq!(actual["triage"]["quick_ref"]["total_open"], 0);
+    assert_eq!(actual["triage"]["quick_ref"]["total_actionable"], 0);
+    assert!(
+        actual["triage"]["recommendations"]
+            .as_array()
+            .expect("recommendations array")
+            .is_empty()
+    );
+    assert!(
+        actual["triage"]["quick_wins"]
+            .as_array()
+            .expect("quick_wins array")
+            .is_empty()
+    );
+}
+
+#[test]
+fn robot_boundary_fixture_keeps_closed_items_out_of_recommendations() {
+    let triage = run_bvr_json(
+        &["--robot-triage"],
+        "tests/testdata/boundary_conditions.jsonl",
+    );
+
+    assert_eq!(triage["triage"]["quick_ref"]["total_open"], 8);
+    let recommendations = triage["triage"]["recommendations"]
+        .as_array()
+        .expect("recommendations array");
+    assert!(recommendations.iter().any(|entry| entry["id"] == "BND-001"));
+    assert!(
+        recommendations
+            .iter()
+            .all(|entry| entry["id"] != "BND-008" && entry["id"] != "BND-009")
+    );
+
+    let priority = run_bvr_json(
+        &["--robot-priority", "--robot-max-results", "10"],
+        "tests/testdata/boundary_conditions.jsonl",
+    );
+    let priority_recommendations = priority["recommendations"]
+        .as_array()
+        .expect("priority recommendations");
+    assert!(!priority_recommendations.is_empty());
+    for rec in priority_recommendations {
+        let score = rec["score"].as_f64().expect("score");
+        let confidence = rec["confidence"].as_f64().expect("confidence");
+        assert!((0.0..=1.0).contains(&score));
+        assert!((0.0..=1.0).contains(&confidence));
+    }
+}
+
+#[test]
+fn robot_large_graph_fixture_reports_expected_graph_size() {
+    let graph = run_bvr_json(
+        &["--robot-graph", "--graph-format", "json"],
+        "tests/testdata/large_graph_40.jsonl",
+    );
+    assert_eq!(graph["nodes"], 40);
+    assert_eq!(graph["edges"], 39);
+
+    let triage = run_bvr_json(
+        &["--robot-triage", "--robot-max-results", "5"],
+        "tests/testdata/large_graph_40.jsonl",
+    );
+    assert_eq!(triage["triage"]["quick_ref"]["total_open"], 40);
+    assert_eq!(triage["triage"]["quick_ref"]["total_actionable"], 1);
+
+    let recommendations = triage["triage"]["recommendations"]
+        .as_array()
+        .expect("recommendations array");
+    assert!(!recommendations.is_empty());
+    assert!(recommendations.len() <= 5);
+    assert_eq!(recommendations[0]["id"], "LG-001");
+}
+
+#[test]
+fn robot_adversarial_stress_fixture_surfaces_cycles_and_cascades() {
+    let insights = run_bvr_json(
+        &["--robot-insights"],
+        "tests/testdata/adversarial_stress.jsonl",
+    );
+    let cycles = insights["insights"]["cycles"].as_array().expect("cycles");
+    assert!(!cycles.is_empty());
+
+    let alerts = run_bvr_json(
+        &["--robot-alerts", "--alert-type", "blocking_cascade"],
+        "tests/testdata/adversarial_stress.jsonl",
+    );
+    let cascade_alerts = alerts["alerts"].as_array().expect("alerts");
+    assert!(!cascade_alerts.is_empty());
+    assert!(
+        cascade_alerts
+            .iter()
+            .all(|entry| entry["type"] == "blocking_cascade")
+    );
+
+    let suggest = run_bvr_json(
+        &["--robot-suggest", "--suggest-type", "cycle"],
+        "tests/testdata/adversarial_stress.jsonl",
+    );
+    let cycle_suggestions = suggest["suggestions"]["suggestions"]
+        .as_array()
+        .expect("cycle suggestions");
+    assert!(!cycle_suggestions.is_empty());
+    assert!(
+        cycle_suggestions
+            .iter()
+            .all(|entry| entry["type"] == "cycle_warning")
+    );
 }

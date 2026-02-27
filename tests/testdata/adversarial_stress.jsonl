@@ -1,0 +1,16 @@
+{"id":"STR-001","title":"Stress root coordinator","description":"Anchor node with multiple dependents.","status":"open","priority":0,"issue_type":"feature","labels":["core","backend"],"estimated_minutes":480}
+{"id":"STR-002","title":"Cycle node alpha","description":"Cycle start.","status":"open","priority":1,"issue_type":"task","labels":["cycle"],"dependencies":[{"depends_on_id":"STR-003","type":"blocks"}]}
+{"id":"STR-003","title":"Cycle node beta","description":"Cycle end.","status":"blocked","priority":1,"issue_type":"task","labels":["cycle"],"dependencies":[{"depends_on_id":"STR-002","type":"blocks"}]}
+{"id":"STR-004","title":"Blocked by cycle","description":"Downstream of explicit cycle.","status":"open","priority":1,"issue_type":"task","dependencies":[{"depends_on_id":"STR-003","type":"blocks"}]}
+{"id":"STR-005","title":"Long-running migration","description":"Migration in progress.","status":"in_progress","priority":1,"issue_type":"task","labels":["database"],"estimated_minutes":360}
+{"id":"STR-006","title":"Validation on migration","description":"Cannot proceed before migration.","status":"blocked","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"STR-005","type":"blocks"}]}
+{"id":"STR-007","title":"Release readiness gate","description":"Depends on migration validation.","status":"open","priority":0,"issue_type":"task","labels":["release"],"dependencies":[{"depends_on_id":"STR-006","type":"blocks"}]}
+{"id":"STR-008","title":"API label normalization","description":"Normalize API labels case-insensitively.","status":"review","priority":3,"issue_type":"task","labels":["API","api","Api"]}
+{"id":"STR-009","title":"API labels normalization","description":"Normalize api label variants and casing.","status":"open","priority":3,"issue_type":"task","labels":["api"]}
+{"id":"STR-010","title":"Reopened flaky suite","description":"Closed previously but now reopened.","status":"open","priority":2,"issue_type":"bug","closed_at":"2025-12-01T00:00:00Z","updated_at":"2026-01-15T10:00:00Z","labels":["qa","reopened"]}
+{"id":"STR-011","title":"Retired migration branch","description":"Historical record.","status":"tombstone","priority":4,"issue_type":"chore","closed_at":"2025-11-01T00:00:00Z"}
+{"id":"STR-012","title":"Archived postmortem","description":"Completed doc.","status":"closed","priority":4,"issue_type":"docs","closed_at":"2025-11-02T00:00:00Z"}
+{"id":"STR-013","title":"Mixed dependency edge case","description":"Depends on both existing and missing blockers.","status":"blocked","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"STR-001","type":"blocks"},{"depends_on_id":"STR-999","type":"blocks"}]}
+{"id":"STR-014","title":"Related-only edge case","description":"Related dependency should not block readiness.","status":"open","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"STR-013","type":"related"}]}
+{"id":"STR-015","title":"Root-dependent workload A","description":"Directly blocked by root coordinator.","status":"blocked","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"STR-001","type":"blocks"}]}
+{"id":"STR-016","title":"Root-dependent workload B","description":"Also blocked by root coordinator.","status":"blocked","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"STR-001","type":"blocks"}]}
