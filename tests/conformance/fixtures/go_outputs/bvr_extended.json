@@ -114,11 +114,11 @@
           {
             "id": "bd-101",
             "reasons": [
-              "🔓 Unblocks 1 item(s): bd-103",
-              "📊 High centrality in dependency graph (PageRank: 100%)",
-              "🕐 No activity in 869 days - may need review",
-              "🚧 In progress - already being worked",
-              "🚨 High priority (P0) - prioritize this work"
+              "\ud83d\udd13 Unblocks 1 item(s): bd-103",
+              "\ud83d\udcca High centrality in dependency graph (PageRank: 100%)",
+              "\ud83d\udd50 No activity in 869 days - may need review",
+              "\ud83d\udea7 In progress - already being worked",
+              "\ud83d\udea8 High priority (P0) - prioritize this work"
             ],
             "score": 0.4446009242549478,
             "title": "Implement OAuth2 Authentication",
@@ -127,9 +127,9 @@
           {
             "id": "bd-102",
             "reasons": [
-              "📊 High centrality in dependency graph (PageRank: 54%)",
-              "✅ Currently unclaimed - available for work",
-              "🚨 High priority (P1) - prioritize this work"
+              "\ud83d\udcca High centrality in dependency graph (PageRank: 54%)",
+              "\u2705 Currently unclaimed - available for work",
+              "\ud83d\udea8 High priority (P1) - prioritize this work"
             ],
             "score": 0.2559935896830492,
             "title": "Fix memory leak in image processor",
@@ -138,8 +138,8 @@
           {
             "id": "bd-106",
             "reasons": [
-              "📊 High centrality in dependency graph (PageRank: 54%)",
-              "✅ Currently unclaimed - available for work"
+              "\ud83d\udcca High centrality in dependency graph (PageRank: 54%)",
+              "\u2705 Currently unclaimed - available for work"
             ],
             "score": 0.23474358968304915,
             "title": "Audit Logs",
@@ -222,11 +222,11 @@
           ],
           "priority": 0,
           "reasons": [
-            "🔓 Unblocks 1 item(s): bd-103",
-            "📊 High centrality in dependency graph (PageRank: 100%)",
-            "🕐 No activity in 869 days - may need review",
-            "🚧 In progress - already being worked",
-            "🚨 High priority (P0) - prioritize this work"
+            "\ud83d\udd13 Unblocks 1 item(s): bd-103",
+            "\ud83d\udcca High centrality in dependency graph (PageRank: 100%)",
+            "\ud83d\udd50 No activity in 869 days - may need review",
+            "\ud83d\udea7 In progress - already being worked",
+            "\ud83d\udea8 High priority (P0) - prioritize this work"
           ],
           "score": 0.4446009242549478,
           "status": "in_progress",
@@ -271,9 +271,9 @@
           "labels": null,
           "priority": 1,
           "reasons": [
-            "📊 High centrality in dependency graph (PageRank: 54%)",
-            "✅ Currently unclaimed - available for work",
-            "🚨 High priority (P1) - prioritize this work"
+            "\ud83d\udcca High centrality in dependency graph (PageRank: 54%)",
+            "\u2705 Currently unclaimed - available for work",
+            "\ud83d\udea8 High priority (P1) - prioritize this work"
           ],
           "score": 0.2559935896830492,
           "status": "open",
@@ -315,8 +315,8 @@
           "labels": null,
           "priority": 2,
           "reasons": [
-            "📊 High centrality in dependency graph (PageRank: 54%)",
-            "✅ Currently unclaimed - available for work"
+            "\ud83d\udcca High centrality in dependency graph (PageRank: 54%)",
+            "\u2705 Currently unclaimed - available for work"
           ],
           "score": 0.23474358968304915,
           "status": "open",
@@ -361,9 +361,9 @@
           "labels": null,
           "priority": 2,
           "reasons": [
-            "📊 High centrality in dependency graph (PageRank: 54%)",
-            "✅ Currently unclaimed - available for work",
-            "⏳ Blocked by bd-101 - complete that first"
+            "\ud83d\udcca High centrality in dependency graph (PageRank: 54%)",
+            "\u2705 Currently unclaimed - available for work",
+            "\u23f3 Blocked by bd-101 - complete that first"
           ],
           "score": 0.22733514323110507,
           "status": "blocked",
@@ -405,9 +405,9 @@
           "labels": null,
           "priority": 1,
           "reasons": [
-            "📊 High centrality in dependency graph (PageRank: 54%)",
-            "🚧 In progress - already being worked",
-            "🚨 High priority (P1) - prioritize this work"
+            "\ud83d\udcca High centrality in dependency graph (PageRank: 54%)",
+            "\ud83d\udea7 In progress - already being worked",
+            "\ud83d\udea8 High priority (P1) - prioritize this work"
           ],
           "score": 0.21081825032721696,
           "status": "in_progress",
@@ -421,7 +421,7 @@
       "jq '.triage.recommendations[3:10] | map({id,title,score})' - Next candidates after top picks",
       "jq '.triage.blockers_to_clear | map(.id)' - High-impact blockers to clear",
       "jq '.triage.recommendations[] | select(.type == \"bug\")' - Bug-focused recommendations",
-      "jq '.triage.quick_ref.top_picks[] | select(.unblocks \u003e 2)' - High-impact picks",
+      "jq '.triage.quick_ref.top_picks[] | select(.unblocks > 2)' - High-impact picks",
       "jq '.triage.quick_wins' - Low-effort, high-impact items",
       "--robot-next - Get only the single top recommendation",
       "--robot-triage-by-track - Group by execution track for multi-agent coordination",
@@ -559,7 +559,7 @@
     "usage_hints": [
       "jq '.plan.tracks | length' - Number of parallel execution tracks",
       "jq '.plan.tracks[0].items | map(.id)' - First track item IDs",
-      "jq '.plan.tracks[].items[] | select(.unblocks | length \u003e 0)' - Items that unblock others",
+      "jq '.plan.tracks[].items[] | select(.unblocks | length > 0)' - Items that unblock others",
       "jq '.plan.summary' - High-level execution summary",
       "jq '[.plan.tracks[].items[]] | length' - Total items across all tracks"
     ]
@@ -1067,7 +1067,7 @@
     "usage_hints": [
       "jq '.Bottlenecks[:5] | map(.ID)' - Top 5 bottleneck IDs",
       "jq '.CriticalPath[:3]' - Top 3 critical path items",
-      "jq '.top_what_ifs[] | select(.delta.direct_unblocks \u003e 2)' - High-impact items",
+      "jq '.top_what_ifs[] | select(.delta.direct_unblocks > 2)' - High-impact items",
       "jq '.full_stats.pagerank | to_entries | sort_by(-.value)[:5]' - Top PageRank",
       "jq '.full_stats.core_number | to_entries | sort_by(-.value)[:5]' - Strongly embedded nodes (k-core)",
       "jq '.full_stats.articulation_points' - Structural cut points",
@@ -1131,19 +1131,19 @@
           },
           "top_reasons": [
             {
-              "emoji": "🎯",
+              "emoji": "\ud83c\udfaf",
               "explanation": "Very high: Central in dependency graph",
               "factor": "pagerank",
               "weight": 0.22
             },
             {
-              "emoji": "🚧",
+              "emoji": "\ud83d\udea7",
               "explanation": "Very high: High blocker count",
               "factor": "blockers",
               "weight": 0.13
             },
             {
-              "emoji": "⭐",
+              "emoji": "\u2b50",
               "explanation": "Very high: Explicit priority set",
               "factor": "priority",
               "weight": 0.1
@@ -1198,19 +1198,19 @@
           },
           "top_reasons": [
             {
-              "emoji": "🎯",
+              "emoji": "\ud83c\udfaf",
               "explanation": "High: Central in dependency graph",
               "factor": "pagerank",
               "weight": 0.11891892903888136
             },
             {
-              "emoji": "⭐",
+              "emoji": "\u2b50",
               "explanation": "Very high: Explicit priority set",
               "factor": "priority",
               "weight": 0.07500000000000001
             },
             {
-              "emoji": "🔥",
+              "emoji": "\ud83d\udd25",
               "explanation": "High: Urgent labels/timing",
               "factor": "urgency",
               "weight": 0.05
@@ -1257,19 +1257,19 @@
           },
           "top_reasons": [
             {
-              "emoji": "🎯",
+              "emoji": "\ud83c\udfaf",
               "explanation": "High: Central in dependency graph",
               "factor": "pagerank",
               "weight": 0.11891892903888136
             },
             {
-              "emoji": "⭐",
+              "emoji": "\u2b50",
               "explanation": "Very high: Explicit priority set",
               "factor": "priority",
               "weight": 0.07500000000000001
             },
             {
-              "emoji": "🔥",
+              "emoji": "\ud83d\udd25",
               "explanation": "High: Urgent labels/timing",
               "factor": "urgency",
               "weight": 0.05
@@ -1316,19 +1316,19 @@
           },
           "top_reasons": [
             {
-              "emoji": "🎯",
+              "emoji": "\ud83c\udfaf",
               "explanation": "High: Central in dependency graph",
               "factor": "pagerank",
               "weight": 0.11891892903888136
             },
             {
-              "emoji": "⭐",
+              "emoji": "\u2b50",
               "explanation": "High: Explicit priority set",
               "factor": "priority",
               "weight": 0.05
             },
             {
-              "emoji": "🔥",
+              "emoji": "\ud83d\udd25",
               "explanation": "High: Urgent labels/timing",
               "factor": "urgency",
               "weight": 0.05
@@ -1375,19 +1375,19 @@
           },
           "top_reasons": [
             {
-              "emoji": "🎯",
+              "emoji": "\ud83c\udfaf",
               "explanation": "High: Central in dependency graph",
               "factor": "pagerank",
               "weight": 0.11891892903888136
             },
             {
-              "emoji": "⭐",
+              "emoji": "\u2b50",
               "explanation": "High: Explicit priority set",
               "factor": "priority",
               "weight": 0.05
             },
             {
-              "emoji": "🔥",
+              "emoji": "\ud83d\udd25",
               "explanation": "High: Urgent labels/timing",
               "factor": "urgency",
               "weight": 0.05
@@ -1456,10 +1456,10 @@
       "total_issues": 6
     },
     "usage_hints": [
-      "jq '.recommendations[] | select(.confidence \u003e 0.7)' - Filter high confidence",
+      "jq '.recommendations[] | select(.confidence > 0.7)' - Filter high confidence",
       "jq '.recommendations[0].explanation.what_if' - Get top item's impact",
       "jq '.recommendations | map({id: .issue_id, score: .impact_score})' - Extract IDs and scores",
-      "jq '.recommendations[] | select(.explanation.what_if.parallelization_gain \u003e 0)' - Find items that increase parallel work capacity",
+      "jq '.recommendations[] | select(.explanation.what_if.parallelization_gain > 0)' - Find items that increase parallel work capacity",
       "--robot-min-confidence 0.6 - Pre-filter by confidence",
       "--robot-max-results 5 - Limit to top N results",
       "--robot-by-label bug - Filter by specific label"
@@ -1480,9 +1480,9 @@
         "eta_date_low": "2026-02-19T13:04:01.448517725-05:00",
         "factors": [
           "estimate: median (60m)",
-          "type: feature×1.3",
-          "depth: 2×1.20",
-          "desc: 198r×1.10",
+          "type: feature\u00d71.3",
+          "depth: 2\u00d71.20",
+          "desc: 198r\u00d71.10",
           "velocity: global (0 samples/30d)",
           "velocity: no recent closures; using default",
           "agents: 2"
@@ -1500,9 +1500,9 @@
         "eta_date_low": "2026-02-18T22:44:49.448517725-05:00",
         "factors": [
           "estimate: median (60m)",
-          "type: bug×1.0",
-          "depth: 1×1.10",
-          "desc: 132r×1.07",
+          "type: bug\u00d71.0",
+          "depth: 1\u00d71.10",
+          "desc: 132r\u00d71.07",
           "velocity: global (0 samples/30d)",
           "velocity: no recent closures; using default",
           "agents: 2"
@@ -1520,9 +1520,9 @@
         "eta_date_low": "2026-02-18T21:28:01.448517725-05:00",
         "factors": [
           "estimate: median (60m)",
-          "type: task×1.0",
-          "depth: 1×1.10",
-          "desc: 24r×1.01",
+          "type: task\u00d71.0",
+          "depth: 1\u00d71.10",
+          "desc: 24r\u00d71.01",
           "velocity: global (0 samples/30d)",
           "velocity: no recent closures; using default",
           "agents: 2"
@@ -1540,9 +1540,9 @@
         "eta_date_low": "2026-02-19T04:11:13.448517726-05:00",
         "factors": [
           "estimate: median (60m)",
-          "type: feature×1.3",
-          "depth: 1×1.10",
-          "desc: 43r×1.02",
+          "type: feature\u00d71.3",
+          "depth: 1\u00d71.10",
+          "desc: 43r\u00d71.02",
           "velocity: global (0 samples/30d)",
           "velocity: no recent closures; using default",
           "agents: 2"
@@ -1560,9 +1560,9 @@
         "eta_date_low": "2026-02-19T03:52:01.448517725-05:00",
         "factors": [
           "estimate: median (60m)",
-          "type: feature×1.3",
-          "depth: 1×1.10",
-          "desc: 23r×1.01",
+          "type: feature\u00d71.3",
+          "depth: 1\u00d71.10",
+          "desc: 23r\u00d71.01",
           "velocity: global (0 samples/30d)",
           "velocity: no recent closures; using default",
           "agents: 2"
@@ -2005,5 +2005,624 @@
     "generated_at": "2026-02-18T05:20:49Z",
     "resolved_revision": "8d9bcaecf8a8e9a64632c0b8bf64df802eb99c88",
     "to_data_hash": "8a18b3bb4677c027"
+  },
+  "burndown": {
+    "actual_burn_rate": 0.017241379310344827,
+    "completed_issues": 1,
+    "daily_points": [
+      {
+        "completed": 1,
+        "date": "2026-01-01T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-02T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-03T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-04T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-05T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-06T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-07T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-08T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-09T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-10T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-11T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-12T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-13T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-14T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-15T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-16T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-17T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-18T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-19T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-20T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-21T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-22T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-23T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-24T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-25T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-26T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-27T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-28T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-29T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-30T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-31T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-01T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-02T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-03T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-04T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-05T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-06T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-07T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-08T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-09T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-10T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-11T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-12T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-13T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-14T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-15T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-16T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-17T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-18T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-19T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-20T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-21T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-22T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-23T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-24T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-25T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-26T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-02-27T00:00:00Z",
+        "remaining": 5
+      }
+    ],
+    "data_hash": "8a18b3bb4677c027",
+    "elapsed_days": 58,
+    "end_date": "2026-03-01T00:00:00Z",
+    "generated_at": "2026-02-27T19:23:40Z",
+    "ideal_burn_rate": 0.1,
+    "ideal_line": [
+      {
+        "completed": 0,
+        "date": "2026-01-01T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-02T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-03T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-04T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-05T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-06T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-07T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-08T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-09T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 0,
+        "date": "2026-01-10T00:00:00Z",
+        "remaining": 6
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-11T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-12T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-13T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-14T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-15T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-16T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-17T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-18T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-19T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 1,
+        "date": "2026-01-20T00:00:00Z",
+        "remaining": 5
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-21T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-22T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-23T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-24T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-25T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-26T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-27T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-28T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-29T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 2,
+        "date": "2026-01-30T00:00:00Z",
+        "remaining": 4
+      },
+      {
+        "completed": 3,
+        "date": "2026-01-31T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-01T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-02T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-03T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-04T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-05T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-06T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-07T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-08T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 3,
+        "date": "2026-02-09T00:00:00Z",
+        "remaining": 3
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-10T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-11T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-12T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-13T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-14T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-15T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-16T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-17T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-18T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 4,
+        "date": "2026-02-19T00:00:00Z",
+        "remaining": 2
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-20T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-21T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-22T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-23T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-24T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-25T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-26T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-27T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-02-28T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 5,
+        "date": "2026-03-01T00:00:00Z",
+        "remaining": 1
+      },
+      {
+        "completed": 6,
+        "date": "2026-03-02T00:00:00Z",
+        "remaining": 0
+      }
+    ],
+    "on_track": false,
+    "output_format": "json",
+    "projected_complete": "2026-12-15T14:23:40.827342839-05:00",
+    "remaining_days": 2,
+    "remaining_issues": 5,
+    "sprint_id": "sprint-1",
+    "sprint_name": "Sprint Alpha",
+    "start_date": "2026-01-01T00:00:00Z",
+    "total_days": 60,
+    "total_issues": 6,
+    "version": "v0.14.4"
   }
 }

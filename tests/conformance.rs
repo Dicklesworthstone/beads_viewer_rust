@@ -251,6 +251,20 @@ fn robot_forecast_core_fields_match_legacy_fixture() {
         .as_f64()
         .expect("fixture avg_confidence");
     assert!((actual_avg_conf - fixture_avg_conf).abs() < 1e-9);
+
+    // Envelope metadata parity: output_format and version fields
+    assert_eq!(
+        actual["output_format"].as_str().expect("output_format"),
+        "json",
+        "forecast output_format must be 'json'"
+    );
+    assert!(
+        actual["version"]
+            .as_str()
+            .expect("version")
+            .starts_with('v'),
+        "forecast version must start with 'v'"
+    );
 }
 
 #[test]
@@ -417,6 +431,20 @@ fn robot_capacity_core_fields_match_legacy_fixture() {
         .as_f64()
         .expect("fixture estimated_days");
     assert!((actual_estimated_days - fixture_estimated_days).abs() < 1e-9);
+
+    // Envelope metadata parity: output_format and version fields
+    assert_eq!(
+        actual["output_format"].as_str().expect("output_format"),
+        "json",
+        "capacity output_format must be 'json'"
+    );
+    assert!(
+        actual["version"]
+            .as_str()
+            .expect("version")
+            .starts_with('v'),
+        "capacity version must start with 'v'"
+    );
 
     let label_scoped = run_bvr_json(
         &[
@@ -1015,6 +1043,18 @@ fn robot_burndown_current_sprint_matches_legacy_shape() {
             .unwrap_or_default(),
         0
     );
+
+    // Envelope metadata
+    assert_eq!(
+        payload["output_format"].as_str().expect("output_format"),
+        "json"
+    );
+    assert!(
+        payload["version"]
+            .as_str()
+            .expect("version")
+            .starts_with('v')
+    );
 }
 
 #[test]
@@ -1427,4 +1467,81 @@ fn robot_adversarial_stress_fixture_surfaces_cycles_and_cascades() {
             .iter()
             .all(|entry| entry["type"] == "cycle_warning")
     );
+}
+
+#[test]
+fn robot_burndown_core_fields_match_legacy_fixture() {
+    let fixture = load_fixture("tests/conformance/fixtures/go_outputs/bvr_extended.json");
+    let expected = &fixture["burndown"];
+
+    let root = repo_root();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path();
+    let beads_dir = repo_dir.join(".beads");
+    fs::create_dir_all(&beads_dir).expect("mkdir beads");
+
+    let beads_data = fs::read_to_string(root.join("tests/testdata/synthetic_complex.jsonl"))
+        .expect("read beads");
+    fs::write(beads_dir.join("beads.jsonl"), beads_data).expect("write beads");
+
+    let sprints_data = fs::read_to_string(root.join("tests/testdata/sprints_synthetic.jsonl"))
+        .expect("read sprints");
+    fs::write(beads_dir.join("sprints.jsonl"), sprints_data).expect("write sprints");
+
+    let actual = run_bvr_json_in_dir(&["--robot-burndown", "sprint-1"], repo_dir);
+
+    // Core scalar fields
+    assert_eq!(actual["sprint_id"], expected["sprint_id"]);
+    assert_eq!(actual["sprint_name"], expected["sprint_name"]);
+    assert_eq!(actual["total_issues"], expected["total_issues"]);
+    assert_eq!(actual["completed_issues"], expected["completed_issues"]);
+    assert_eq!(actual["remaining_issues"], expected["remaining_issues"]);
+    assert_eq!(actual["total_days"], expected["total_days"]);
+    assert_eq!(actual["on_track"], expected["on_track"]);
+
+    // Envelope metadata
+    assert_eq!(
+        actual["output_format"].as_str().expect("output_format"),
+        "json"
+    );
+    assert!(
+        actual["version"]
+            .as_str()
+            .expect("version")
+            .starts_with('v')
+    );
+
+    // Burn rates should be close (both compute from same data)
+    let actual_ideal = actual["ideal_burn_rate"].as_f64().expect("ideal_burn_rate");
+    let expected_ideal = expected["ideal_burn_rate"]
+        .as_f64()
+        .expect("expected ideal");
+    assert!(
+        (actual_ideal - expected_ideal).abs() < 0.01,
+        "ideal_burn_rate: actual={actual_ideal} expected={expected_ideal}"
+    );
+
+    // Array lengths
+    let daily_len = actual["daily_points"]
+        .as_array()
+        .expect("daily_points")
+        .len();
+    let expected_daily_len = expected["daily_points"]
+        .as_array()
+        .expect("expected daily_points")
+        .len();
+    assert_eq!(daily_len, expected_daily_len);
+
+    let ideal_len = actual["ideal_line"].as_array().expect("ideal_line").len();
+    let expected_ideal_len = expected["ideal_line"]
+        .as_array()
+        .expect("expected ideal_line")
+        .len();
+    assert_eq!(ideal_len, expected_ideal_len);
+
+    // Date fields should be present and parseable
+    assert!(actual["start_date"].as_str().is_some());
+    assert!(actual["end_date"].as_str().is_some());
+    assert!(actual["generated_at"].as_str().is_some());
+    assert!(actual["data_hash"].as_str().is_some());
 }

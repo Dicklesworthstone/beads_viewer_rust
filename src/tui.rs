@@ -295,9 +295,16 @@ struct BvrApp {
     board_search_active: bool,
     board_search_query: String,
     board_search_match_cursor: usize,
+    graph_search_active: bool,
+    graph_search_query: String,
+    graph_search_match_cursor: usize,
+    insights_search_active: bool,
+    insights_search_query: String,
+    insights_search_match_cursor: usize,
     insights_panel: InsightsPanel,
     insights_show_explanations: bool,
     insights_show_calc_proof: bool,
+    detail_dep_cursor: usize,
 }
 
 impl Model for BvrApp {
@@ -548,6 +555,54 @@ impl BvrApp {
             return Cmd::None;
         }
 
+        if matches!(self.mode, ViewMode::Graph)
+            && self.focus == FocusPane::List
+            && self.graph_search_active
+        {
+            match code {
+                KeyCode::Escape => self.cancel_graph_search(),
+                KeyCode::Enter => self.finish_graph_search(),
+                KeyCode::Backspace => {
+                    self.graph_search_query.pop();
+                    self.graph_search_match_cursor = 0;
+                    self.select_current_graph_search_match();
+                }
+                KeyCode::Char('n') => self.move_graph_search_match_relative(1),
+                KeyCode::Char('N') => self.move_graph_search_match_relative(-1),
+                KeyCode::Char(ch) if !modifiers.contains(Modifiers::CTRL) && !ch.is_control() => {
+                    self.graph_search_query.push(ch);
+                    self.graph_search_match_cursor = 0;
+                    self.select_current_graph_search_match();
+                }
+                _ => {}
+            }
+            return Cmd::None;
+        }
+
+        if matches!(self.mode, ViewMode::Insights)
+            && self.focus == FocusPane::List
+            && self.insights_search_active
+        {
+            match code {
+                KeyCode::Escape => self.cancel_insights_search(),
+                KeyCode::Enter => self.finish_insights_search(),
+                KeyCode::Backspace => {
+                    self.insights_search_query.pop();
+                    self.insights_search_match_cursor = 0;
+                    self.select_current_insights_search_match();
+                }
+                KeyCode::Char('n') => self.move_insights_search_match_relative(1),
+                KeyCode::Char('N') => self.move_insights_search_match_relative(-1),
+                KeyCode::Char(ch) if !modifiers.contains(Modifiers::CTRL) && !ch.is_control() => {
+                    self.insights_search_query.push(ch);
+                    self.insights_search_match_cursor = 0;
+                    self.select_current_insights_search_match();
+                }
+                _ => {}
+            }
+            return Cmd::None;
+        }
+
         match code {
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -607,11 +662,49 @@ impl BvrApp {
             {
                 self.start_history_search();
             }
+            KeyCode::Char('/')
+                if matches!(self.mode, ViewMode::Graph) && self.focus == FocusPane::List =>
+            {
+                self.start_graph_search();
+            }
+            KeyCode::Char('/')
+                if matches!(self.mode, ViewMode::Insights) && self.focus == FocusPane::List =>
+            {
+                self.start_insights_search();
+            }
             KeyCode::Char('n') if self.board_shortcut_focus() => {
                 self.move_board_search_match_relative(1);
             }
             KeyCode::Char('N') if self.board_shortcut_focus() => {
                 self.move_board_search_match_relative(-1);
+            }
+            KeyCode::Char('n')
+                if matches!(self.mode, ViewMode::Graph)
+                    && self.focus == FocusPane::List
+                    && !self.graph_search_query.is_empty() =>
+            {
+                self.move_graph_search_match_relative(1);
+            }
+            KeyCode::Char('N')
+                if matches!(self.mode, ViewMode::Graph)
+                    && self.focus == FocusPane::List
+                    && !self.graph_search_query.is_empty() =>
+            {
+                self.move_graph_search_match_relative(-1);
+            }
+            KeyCode::Char('n')
+                if matches!(self.mode, ViewMode::Insights)
+                    && self.focus == FocusPane::List
+                    && !self.insights_search_query.is_empty() =>
+            {
+                self.move_insights_search_match_relative(1);
+            }
+            KeyCode::Char('N')
+                if matches!(self.mode, ViewMode::Insights)
+                    && self.focus == FocusPane::List
+                    && !self.insights_search_query.is_empty() =>
+            {
+                self.move_insights_search_match_relative(-1);
             }
             KeyCode::Char('j') | KeyCode::Down if self.board_shortcut_focus() => {
                 self.move_board_row_relative(1);
@@ -769,6 +862,37 @@ impl BvrApp {
                     && self.focus == FocusPane::Detail =>
             {
                 self.move_history_bead_commit_relative(-1);
+            }
+            // Board/Graph/Insights detail dependency navigation
+            KeyCode::Char('J')
+                if matches!(
+                    self.mode,
+                    ViewMode::Board | ViewMode::Graph | ViewMode::Insights
+                ) =>
+            {
+                self.move_detail_dep_relative(1);
+            }
+            KeyCode::Char('K')
+                if matches!(
+                    self.mode,
+                    ViewMode::Board | ViewMode::Graph | ViewMode::Insights
+                ) =>
+            {
+                self.move_detail_dep_relative(-1);
+            }
+            KeyCode::Char('j') | KeyCode::Down
+                if matches!(self.mode, ViewMode::Graph | ViewMode::Insights)
+                    && self.focus == FocusPane::Detail
+                    && !self.detail_dep_list().is_empty() =>
+            {
+                self.move_detail_dep_relative(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if matches!(self.mode, ViewMode::Graph | ViewMode::Insights)
+                    && self.focus == FocusPane::Detail
+                    && !self.detail_dep_list().is_empty() =>
+            {
+                self.move_detail_dep_relative(-1);
             }
             KeyCode::Home
                 if matches!(self.mode, ViewMode::History)
@@ -1252,6 +1376,41 @@ impl BvrApp {
         self.history_bead_commit_cursor = next_slot;
     }
 
+    // ── Detail dependency navigation (board/graph/insights) ─────
+
+    fn detail_dep_list(&self) -> Vec<String> {
+        let Some(issue) = self.selected_issue() else {
+            return Vec::new();
+        };
+        let mut deps = self.analyzer.graph.blockers(&issue.id);
+        deps.extend(self.analyzer.graph.dependents(&issue.id));
+        deps
+    }
+
+    fn move_detail_dep_relative(&mut self, delta: isize) {
+        if delta == 0 {
+            return;
+        }
+        if self.focus == FocusPane::List {
+            self.move_selection_relative(delta);
+            return;
+        }
+        let dep_len = self.detail_dep_list().len();
+        if dep_len == 0 {
+            self.detail_dep_cursor = 0;
+            return;
+        }
+        let max_slot = dep_len.saturating_sub(1);
+        let next_slot = if delta >= 0 {
+            self.detail_dep_cursor
+                .saturating_add(delta.unsigned_abs())
+                .min(max_slot)
+        } else {
+            self.detail_dep_cursor.saturating_sub(delta.unsigned_abs())
+        };
+        self.detail_dep_cursor = next_slot;
+    }
+
     fn history_timeline_events(&self) -> Vec<HistoryTimelineEvent> {
         let mut events = self
             .analyzer
@@ -1481,6 +1640,7 @@ impl BvrApp {
             current_slot.saturating_sub(delta.unsigned_abs())
         };
         self.selected = visible[next_slot];
+        self.detail_dep_cursor = 0;
     }
 
     fn select_first_visible(&mut self) {
@@ -1709,6 +1869,11 @@ impl BvrApp {
             return;
         }
 
+        if self.focus == FocusPane::Detail && !self.detail_dep_list().is_empty() {
+            self.move_detail_dep_relative(delta);
+            return;
+        }
+
         let lanes = self.board_lane_indices();
         let Some(lane_slot) = self.current_board_lane_slot() else {
             return;
@@ -1734,6 +1899,7 @@ impl BvrApp {
         };
 
         self.selected = indices[next_row];
+        self.detail_dep_cursor = 0;
     }
 
     fn start_board_search(&mut self) {
@@ -1812,6 +1978,142 @@ impl BvrApp {
         self.selected = matches[next];
     }
 
+    // ── Graph search ──────────────────────────────────────────
+
+    fn start_graph_search(&mut self) {
+        if !matches!(self.mode, ViewMode::Graph) || self.focus != FocusPane::List {
+            return;
+        }
+
+        self.graph_search_active = true;
+        self.graph_search_query.clear();
+        self.graph_search_match_cursor = 0;
+    }
+
+    fn finish_graph_search(&mut self) {
+        self.graph_search_active = false;
+    }
+
+    fn cancel_graph_search(&mut self) {
+        self.graph_search_active = false;
+        self.graph_search_query.clear();
+        self.graph_search_match_cursor = 0;
+    }
+
+    fn graph_search_matches(&self) -> Vec<usize> {
+        let query = self.graph_search_query.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        self.visible_issue_indices()
+            .into_iter()
+            .filter(|&index| {
+                let issue = &self.analyzer.issues[index];
+                issue.id.to_ascii_lowercase().contains(&query)
+                    || issue.title.to_ascii_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    fn select_current_graph_search_match(&mut self) {
+        let matches = self.graph_search_matches();
+        if matches.is_empty() {
+            return;
+        }
+
+        self.graph_search_match_cursor = self
+            .graph_search_match_cursor
+            .min(matches.len().saturating_sub(1));
+        self.selected = matches[self.graph_search_match_cursor];
+    }
+
+    fn move_graph_search_match_relative(&mut self, delta: isize) {
+        let matches = self.graph_search_matches();
+        if matches.is_empty() || delta == 0 {
+            return;
+        }
+
+        let len = matches.len();
+        let current = self.graph_search_match_cursor.min(len.saturating_sub(1));
+        let step = delta.unsigned_abs() % len;
+        let next = if delta > 0 {
+            (current + step) % len
+        } else {
+            (current + len - step) % len
+        };
+
+        self.graph_search_match_cursor = next;
+        self.selected = matches[next];
+    }
+
+    // ── Insights search ──────────────────────────────────────────
+
+    fn start_insights_search(&mut self) {
+        if !matches!(self.mode, ViewMode::Insights) || self.focus != FocusPane::List {
+            return;
+        }
+
+        self.insights_search_active = true;
+        self.insights_search_query.clear();
+        self.insights_search_match_cursor = 0;
+    }
+
+    fn finish_insights_search(&mut self) {
+        self.insights_search_active = false;
+    }
+
+    fn cancel_insights_search(&mut self) {
+        self.insights_search_active = false;
+        self.insights_search_query.clear();
+        self.insights_search_match_cursor = 0;
+    }
+
+    fn insights_search_matches(&self) -> Vec<usize> {
+        let query = self.insights_search_query.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        self.visible_issue_indices()
+            .into_iter()
+            .filter(|&index| {
+                let issue = &self.analyzer.issues[index];
+                issue.id.to_ascii_lowercase().contains(&query)
+                    || issue.title.to_ascii_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    fn select_current_insights_search_match(&mut self) {
+        let matches = self.insights_search_matches();
+        if matches.is_empty() {
+            return;
+        }
+
+        self.insights_search_match_cursor = self
+            .insights_search_match_cursor
+            .min(matches.len().saturating_sub(1));
+        self.selected = matches[self.insights_search_match_cursor];
+    }
+
+    fn move_insights_search_match_relative(&mut self, delta: isize) {
+        let matches = self.insights_search_matches();
+        if matches.is_empty() || delta == 0 {
+            return;
+        }
+
+        let len = matches.len();
+        let current = self.insights_search_match_cursor.min(len.saturating_sub(1));
+        let step = delta.unsigned_abs() % len;
+        let next = if delta > 0 {
+            (current + step) % len
+        } else {
+            (current + len - step) % len
+        };
+
+        self.insights_search_match_cursor = next;
+        self.selected = matches[next];
+    }
+
     fn select_edge_in_current_board_lane(&mut self, select_last: bool) {
         if !matches!(self.mode, ViewMode::Board) {
             return;
@@ -1875,8 +2177,9 @@ impl BvrApp {
             "  Ctrl+d/Ctrl+u   Jump down/up by 10 rows".to_string(),
             "  PgUp/PgDn       Jump by 10 rows".to_string(),
             "  Home/End         Jump to top/bottom".to_string(),
-            "  /               Board/History: search (board supports n/N match cycling)".to_string(),
+            "  /               Board/History/Graph/Insights: search (n/N match cycling)".to_string(),
             "  Tab              Toggle list/detail focus".to_string(),
+            "  J/K              Detail: navigate blockers/dependents (board/graph/insights)".to_string(),
             "  b/i/g/h          Toggle board/insights/graph/history".to_string(),
             "  Enter            Return to main detail pane".to_string(),
             "  o/c/r/a          Filter open/closed/ready/all".to_string(),
@@ -2067,9 +2370,29 @@ impl BvrApp {
         let insights = self.analyzer.insights();
 
         let mut lines = vec![format!(
-            "[{}] s/S cycles panel | e explanations | x calc-proof",
+            "[{}] s/S cycles panel | e explanations | x calc-proof | / search",
             self.insights_panel.label()
         )];
+        if self.insights_search_active {
+            lines.push(format!("Search (active): /{}", self.insights_search_query));
+        } else if !self.insights_search_query.is_empty() {
+            lines.push(format!(
+                "Search: /{} (n/N cycles)",
+                self.insights_search_query
+            ));
+        }
+        if !self.insights_search_query.is_empty() {
+            let matches = self.insights_search_matches();
+            if matches.is_empty() {
+                lines.push("Matches: none".to_string());
+            } else {
+                let position = self
+                    .insights_search_match_cursor
+                    .min(matches.len().saturating_sub(1))
+                    + 1;
+                lines.push(format!("Matches: {position}/{}", matches.len()));
+            }
+        }
         lines.push(String::new());
 
         match self.insights_panel {
@@ -2236,8 +2559,25 @@ impl BvrApp {
 
         let total = visible.len();
         let mut lines = vec![format!(
-            "Nodes ({total}) by critical-path score | h/l nav | Tab focus"
+            "Nodes ({total}) by critical-path score | h/l nav | / search | Tab focus"
         )];
+        if self.graph_search_active {
+            lines.push(format!("Search (active): /{}", self.graph_search_query));
+        } else if !self.graph_search_query.is_empty() {
+            lines.push(format!("Search: /{} (n/N cycles)", self.graph_search_query));
+        }
+        if !self.graph_search_query.is_empty() {
+            let matches = self.graph_search_matches();
+            if matches.is_empty() {
+                lines.push("Matches: none".to_string());
+            } else {
+                let position = self
+                    .graph_search_match_cursor
+                    .min(matches.len().saturating_sub(1))
+                    + 1;
+                lines.push(format!("Matches: {position}/{}", matches.len()));
+            }
+        }
         lines.push(String::new());
 
         lines.extend(
@@ -2536,7 +2876,9 @@ impl BvrApp {
         out.push(format!("\u{2514}{hrule}\u{2518}"));
 
         out.push(String::new());
-        // Dependency context
+        // Dependency context with detail cursor
+        let mut dep_index = 0usize;
+        let show_cursor = self.focus == FocusPane::Detail;
         if !blockers.is_empty() {
             out.push(format!("Depends on ({})", blockers.len()));
             for bid in &blockers {
@@ -2548,7 +2890,13 @@ impl BvrApp {
                     .map_or("?", |i| status_icon(&i.status));
                 let is_open = open_blockers.contains(bid);
                 let marker = if is_open { "OPEN" } else { "ok" };
-                out.push(format!("  {bstatus} {bid} [{marker}]"));
+                let prefix = if show_cursor && dep_index == self.detail_dep_cursor {
+                    ">"
+                } else {
+                    " "
+                };
+                out.push(format!("{prefix} {bstatus} {bid} [{marker}]"));
+                dep_index += 1;
             }
         }
         if !dependents.is_empty() {
@@ -2560,7 +2908,13 @@ impl BvrApp {
                     .iter()
                     .find(|i| i.id == *did)
                     .map_or("?", |i| status_icon(&i.status));
-                out.push(format!("  {dstatus} {did}"));
+                let prefix = if show_cursor && dep_index == self.detail_dep_cursor {
+                    ">"
+                } else {
+                    " "
+                };
+                out.push(format!("{prefix} {dstatus} {did}"));
+                dep_index += 1;
             }
         }
 
@@ -2727,6 +3081,51 @@ impl BvrApp {
             ));
         }
 
+        // Dependency context with detail cursor
+        let blockers = self.analyzer.graph.blockers(&issue.id);
+        let dependents = self.analyzer.graph.dependents(&issue.id);
+        if !blockers.is_empty() || !dependents.is_empty() {
+            let show_cursor = self.focus == FocusPane::Detail;
+            let mut dep_index = 0usize;
+            lines.push(String::new());
+            if !blockers.is_empty() {
+                lines.push(format!("Depends on ({})", blockers.len()));
+                for bid in &blockers {
+                    let bsi = self
+                        .analyzer
+                        .issues
+                        .iter()
+                        .find(|i| i.id == *bid)
+                        .map_or("?", |i| status_icon(&i.status));
+                    let prefix = if show_cursor && dep_index == self.detail_dep_cursor {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    lines.push(format!("{prefix} {bsi} {bid}"));
+                    dep_index += 1;
+                }
+            }
+            if !dependents.is_empty() {
+                lines.push(format!("Unblocks ({})", dependents.len()));
+                for did in &dependents {
+                    let dsi = self
+                        .analyzer
+                        .issues
+                        .iter()
+                        .find(|i| i.id == *did)
+                        .map_or("?", |i| status_icon(&i.status));
+                    let prefix = if show_cursor && dep_index == self.detail_dep_cursor {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    lines.push(format!("{prefix} {dsi} {did}"));
+                    dep_index += 1;
+                }
+            }
+        }
+
         lines.join("\n")
     }
 
@@ -2821,7 +3220,9 @@ impl BvrApp {
             self.analyzer.graph.actionable_ids().len()
         )];
 
-        // ASCII ego-node visualization
+        // ASCII ego-node visualization with detail cursor
+        let show_cursor = self.focus == FocusPane::Detail;
+        let mut dep_index = 0usize;
         lines.push(String::new());
         if !blockers.is_empty() {
             lines.push("  BLOCKED BY:".to_string());
@@ -2832,7 +3233,13 @@ impl BvrApp {
                     .iter()
                     .find(|i| i.id == *bid)
                     .map_or("?", |i| status_icon(&i.status));
-                lines.push(format!("    [{bsi}] {bid}"));
+                let prefix = if show_cursor && dep_index == self.detail_dep_cursor {
+                    ">"
+                } else {
+                    " "
+                };
+                lines.push(format!("  {prefix} [{bsi}] {bid}"));
+                dep_index += 1;
             }
             if blockers.len() > 5 {
                 lines.push(format!("    +{} more", blockers.len() - 5));
@@ -2862,7 +3269,13 @@ impl BvrApp {
                     .iter()
                     .find(|i| i.id == *did)
                     .map_or("?", |i| status_icon(&i.status));
-                lines.push(format!("    [{dsi}] {did}"));
+                let prefix = if show_cursor && dep_index == self.detail_dep_cursor {
+                    ">"
+                } else {
+                    " "
+                };
+                lines.push(format!("  {prefix} [{dsi}] {did}"));
+                dep_index += 1;
             }
             if dependents.len() > 5 {
                 lines.push(format!("    +{} more", dependents.len() - 5));
@@ -3266,9 +3679,16 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
         board_search_active: false,
         board_search_query: String::new(),
         board_search_match_cursor: 0,
+        graph_search_active: false,
+        graph_search_query: String::new(),
+        graph_search_match_cursor: 0,
+        insights_search_active: false,
+        insights_search_query: String::new(),
+        insights_search_match_cursor: 0,
         insights_panel: InsightsPanel::Bottlenecks,
         insights_show_explanations: true,
         insights_show_calc_proof: false,
+        detail_dep_cursor: 0,
     };
 
     App::new(model)
@@ -3484,9 +3904,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         }
     }
 
@@ -3845,6 +4272,75 @@ mod tests {
         let list_text = app.list_panel_text();
         assert!(list_text.contains("h/l nav"));
         assert!(list_text.contains("Tab focus"));
+        assert!(list_text.contains("/ search"));
+    }
+
+    #[test]
+    fn graph_mode_search_query_and_match_cycling_work() {
+        let mut app = new_app(ViewMode::Graph, 0);
+        assert!(!app.graph_search_active);
+
+        app.update(key(KeyCode::Char('/')));
+        assert!(app.graph_search_active);
+        assert!(app.graph_search_query.is_empty());
+
+        // Type a search query that matches issue "A"
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.graph_search_query, "a");
+        assert_eq!(selected_issue_id(&app), "A");
+
+        // Enter finishes search but keeps query
+        app.update(key(KeyCode::Enter));
+        assert!(!app.graph_search_active);
+        assert_eq!(app.graph_search_query, "a");
+
+        // n/N should cycle matches
+        app.update(key(KeyCode::Char('n')));
+
+        // Escape from new search clears query
+        app.update(key(KeyCode::Char('/')));
+        app.update(key(KeyCode::Char('x')));
+        assert_eq!(app.graph_search_query, "x");
+        app.update(key(KeyCode::Escape));
+        assert!(!app.graph_search_active);
+        assert!(app.graph_search_query.is_empty());
+    }
+
+    #[test]
+    fn insights_mode_search_query_and_match_cycling_work() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('i')));
+        assert!(matches!(app.mode, ViewMode::Insights));
+        assert!(!app.insights_search_active);
+
+        app.update(key(KeyCode::Char('/')));
+        assert!(app.insights_search_active);
+        assert!(app.insights_search_query.is_empty());
+
+        // Type a search query
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.insights_search_query, "a");
+
+        // Enter finishes search but keeps query
+        app.update(key(KeyCode::Enter));
+        assert!(!app.insights_search_active);
+        assert_eq!(app.insights_search_query, "a");
+
+        // Escape from new search clears query
+        app.update(key(KeyCode::Char('/')));
+        app.update(key(KeyCode::Char('z')));
+        assert_eq!(app.insights_search_query, "z");
+        app.update(key(KeyCode::Escape));
+        assert!(!app.insights_search_active);
+        assert!(app.insights_search_query.is_empty());
+    }
+
+    #[test]
+    fn insights_list_header_shows_search_hint() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('i')));
+        let list_text = app.list_panel_text();
+        assert!(list_text.contains("/ search"));
     }
 
     #[test]
@@ -4073,9 +4569,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.update(key(KeyCode::Char('2')));
@@ -4123,9 +4626,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.update(key(KeyCode::Char('s')));
@@ -4167,9 +4677,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4226,9 +4743,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4272,9 +4796,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4319,9 +4850,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4367,9 +4905,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4410,9 +4955,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.update(key(KeyCode::Char('/')));
@@ -4468,9 +5020,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.update(key(KeyCode::Char('/')));
@@ -4512,9 +5071,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4586,9 +5152,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         let list = app.list_panel_text();
@@ -4632,9 +5205,16 @@ mod tests {
             board_search_active: false,
             board_search_query: String::new(),
             board_search_match_cursor: 0,
+            graph_search_active: false,
+            graph_search_query: String::new(),
+            graph_search_match_cursor: 0,
+            insights_search_active: false,
+            insights_search_query: String::new(),
+            insights_search_match_cursor: 0,
             insights_panel: InsightsPanel::Bottlenecks,
             insights_show_explanations: true,
             insights_show_calc_proof: false,
+            detail_dep_cursor: 0,
         };
 
         // Default: open-first, then priority asc, then id asc → M(p1), A(p2), Z(p3)
@@ -4660,5 +5240,84 @@ mod tests {
         app.update(key(KeyCode::Char('s')));
         assert_eq!(app.list_sort, ListSort::Default);
         assert_eq!(first_rendered_issue_id(&app), "M");
+    }
+
+    #[test]
+    fn board_detail_j_k_navigate_deps_when_detail_focused() {
+        // Issue A (index 0) has no blockers but B depends on it (dependents=["B"]).
+        let mut app = new_app(ViewMode::Board, 0);
+        app.mode = ViewMode::Board;
+        assert_eq!(selected_issue_id(&app), "A");
+
+        // Tab to detail focus
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+        assert_eq!(app.detail_dep_cursor, 0);
+
+        // dep list for A = dependents=["B"] => length 1
+        let deps = app.detail_dep_list();
+        assert_eq!(deps, vec!["B".to_string()]);
+
+        // J should not move past the end
+        app.update(key(KeyCode::Char('J')));
+        assert_eq!(app.detail_dep_cursor, 0);
+
+        // Detail text should show cursor marker
+        let detail = app.detail_panel_text();
+        assert!(detail.contains('>'), "detail should show cursor marker");
+    }
+
+    #[test]
+    fn graph_detail_j_k_navigate_deps_when_detail_focused() {
+        // Issue B (index 1) depends on A (blockers=["A"]), no dependents.
+        let mut app = new_app(ViewMode::Graph, 1);
+        app.mode = ViewMode::Graph;
+        assert_eq!(selected_issue_id(&app), "B");
+
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+
+        let deps = app.detail_dep_list();
+        assert_eq!(deps, vec!["A".to_string()]);
+
+        // j in detail focus navigates deps
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(app.detail_dep_cursor, 0);
+
+        // Detail text should show cursor
+        let detail = app.detail_panel_text();
+        assert!(
+            detail.contains('>'),
+            "graph detail should show cursor marker"
+        );
+    }
+
+    #[test]
+    fn insights_detail_shows_deps_with_cursor_and_j_k_works() {
+        // Issue B (index 1) depends on A (blockers=["A"]).
+        let mut app = new_app(ViewMode::Insights, 1);
+        app.mode = ViewMode::Insights;
+        assert_eq!(selected_issue_id(&app), "B");
+
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+
+        let detail = app.detail_panel_text();
+        assert!(
+            detail.contains("Depends on"),
+            "insights detail should show dependency section"
+        );
+        assert!(detail.contains('>'), "insights detail should show cursor");
+    }
+
+    #[test]
+    fn detail_dep_cursor_resets_on_selection_change() {
+        let mut app = new_app(ViewMode::Graph, 0);
+        app.mode = ViewMode::Graph;
+        app.detail_dep_cursor = 5;
+
+        // Moving selection should reset cursor
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(app.detail_dep_cursor, 0);
     }
 }

@@ -459,6 +459,8 @@ fn main() -> ExitCode {
             forecast_count: forecasts.len(),
             forecasts,
             summary,
+            output_format: "json".to_owned(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
         };
 
         if let Err(error) = emit(cli.format, &output) {
@@ -932,6 +934,8 @@ fn build_robot_burndown_output(
         daily_points,
         ideal_line,
         scope_changes,
+        output_format: "json".to_owned(),
+        version: format!("v{}", env!("CARGO_PKG_VERSION")),
     })
 }
 
@@ -1456,6 +1460,8 @@ fn build_robot_capacity_output(issues: &[bvr::model::Issue], cli: &Cli) -> Robot
         actionable_count: actionable.len(),
         actionable,
         bottlenecks,
+        output_format: "json".to_owned(),
+        version: format!("v{}", env!("CARGO_PKG_VERSION")),
     }
 }
 
@@ -2178,6 +2184,8 @@ struct RobotBurndownOutput {
     ideal_line: Vec<BurndownPointCompat>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     scope_changes: Vec<ScopeChangeCompat>,
+    output_format: String,
+    version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2217,6 +2225,8 @@ struct RobotCapacityOutput {
     actionable: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     bottlenecks: Vec<CapacityBottleneck>,
+    output_format: String,
+    version: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2239,6 +2249,8 @@ struct RobotForecastOutput {
     forecasts: Vec<RobotForecastItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<RobotForecastSummary>,
+    output_format: String,
+    version: String,
 }
 
 #[derive(Debug, Serialize)]
