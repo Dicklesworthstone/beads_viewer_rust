@@ -218,6 +218,13 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--graph-root` | `--graph-root` | partial |
 | `--graph-depth` | `--graph-depth` | partial |
 
+### Robot Commands (Sprint/Metrics) — 3 complete
+| Legacy Flag | bvr Flag | Status | Notes |
+|---|---|---|---|
+| `--robot-sprint-list` | `--robot-sprint-list` | complete | Sprint listing with envelope metadata. |
+| `--robot-sprint-show` | `--robot-sprint-show` | complete | Sprint detail by ID. |
+| `--robot-metrics` | `--robot-metrics` | complete | Timing, cache, and memory metrics. |
+
 ### Robot Options (General) — 5 partial
 | Legacy Flag | bvr Flag | Status |
 |---|---|---|
@@ -229,12 +236,26 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--robot-triage-by-label` | `--robot-triage-by-label` | complete |
 | `--robot-triage-by-track` | `--robot-triage-by-track` | complete |
 
-### Format/Meta — 3 complete
+### Robot Commands (Metadata/Docs) — 3 complete
+| Legacy Flag | bvr Flag | Status | Notes |
+|---|---|---|---|
+| `--robot-docs` | `--robot-docs` | complete | Topic-based documentation output. |
+| `--robot-schema` | `--robot-schema` | complete | JSON Schema for all robot commands. |
+| `--schema-command` | `--schema-command` | complete | Schema for specific command. |
+
+### Format/Meta — 4 complete
 | Legacy Flag | bvr Flag | Status |
 |---|---|---|
 | `--format` | `--format` | complete |
+| `--stats` | `--stats` | complete |
 | `--help` | `--help` | complete |
 | `--version` | `--version` | complete |
+
+### Advanced Analysis Flags — 2 complete
+| Legacy Flag | bvr Flag | Status | Notes |
+|---|---|---|---|
+| `--as-of` | `--as-of` | complete | Loads issues from historical git revision. |
+| `--force-full-analysis` | `--force-full-analysis` | complete | Bypasses incremental analysis caches. |
 
 ### Rust-Only Additions
 | bvr Flag | Notes |
@@ -242,41 +263,54 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--beads-file` | Hidden; override `.beads/beads.jsonl` path. |
 | `--repo-path` | Hidden; override repository root auto-detection. |
 
-### Missing — Not Yet Ported (59 flags)
+### Missing — Not Yet Ported (54 flags)
 | Category | Flags |
 |---|---|
 | Correlation/Impact | `--robot-causality`, `--robot-confirm-correlation`, `--robot-reject-correlation`, `--robot-explain-correlation`, `--robot-correlation-stats`, `--correlation-by`, `--correlation-reason`, `--robot-impact`, `--robot-impact-network`, `--robot-related`, `--related-include-closed`, `--related-max-results`, `--related-min-relevance`, `--relations-limit`, `--relations-threshold`, `--network-depth` |
 | File Analysis | `--robot-file-beads`, `--robot-file-hotspots`, `--robot-file-relations`, `--file-beads-limit`, `--hotspots-limit` |
 | Label/Attention | `--robot-label-attention`, `--robot-label-flow`, `--robot-label-health`, `--attention-limit` |
-| Sprint | `--robot-sprint-list`, `--robot-sprint-show` |
+| Sprint | (moved to implemented) |
 | Search | `--search`, `--search-limit`, `--search-mode`, `--search-preset`, `--search-weights`, `--robot-search` |
 | Export/Pages | `--pages`, `--pages-include-closed`, `--pages-include-history`, `--pages-title`, `--preview-pages`, `--export-pages`, `--export-graph`, `--export-md`, `--watch-export`, `--no-live-reload` |
 | Script | `--emit-script`, `--script-format`, `--script-limit` |
 | Baseline/Drift | `--save-baseline`, `--baseline-info`, `--check-drift`, `--robot-drift` |
 | Feedback | `--feedback-show`, `--feedback-accept`, `--feedback-ignore`, `--feedback-reset` |
-| Workflow | `--robot-blocker-chain`, `--robot-orphans`, `--orphans-min-score`, `--priority-brief`, `--agent-brief`, `--as-of` |
-| Metadata/Docs | `--robot-schema`, `--schema-command`, `--robot-metrics`, `--robot-recipes`, `--robot-docs` |
+| Workflow | `--robot-blocker-chain`, `--robot-orphans`, `--orphans-min-score`, `--priority-brief`, `--agent-brief` |
+| Metadata/Docs | `--robot-recipes` |
 | Graph (Advanced) | `--graph-title`, `--graph-preset` |
-| Workspace/Config | `--workspace`, `--repo`, `-r`, `--recipe`, `--force-full-analysis`, `--no-hooks` |
+| Workspace/Config | `--workspace`, `--repo`, `-r`, `--recipe`, `--no-hooks` |
+
+### Harness Coverage Notes
+| Command | Fixture Status | Notes |
+|---|---|---|
+| `--robot-help` | text-only | Legacy outputs plain text, not JSON. No fixture-based conformance possible. |
+| `--robot-docs` | Rust-only | Implemented in Rust (bd-33w.2.1); legacy has its own implementation but output shape differs. |
+| `--robot-schema` | Rust-only | Implemented in Rust (bd-33w.2.1); schema shapes are implementation-specific. |
+| `--robot-metrics` | captured | Legacy outputs Go runtime stats (goroutines, GC); Rust outputs /proc/self RSS. Structure differs. |
+| `--robot-sprint-list` | captured | Only in bvr_extended.json (requires sprints file). |
+| `--robot-sprint-show` | captured | Only in bvr_extended.json (requires sprints file). |
+| `--robot-graph --graph-format=dot` | captured (text) | DOT output stored as string, not JSON. |
+| `--robot-graph --graph-format=mermaid` | captured (text) | Mermaid output stored as string, not JSON. |
 
 ### Excluded — Intentionally Out-of-Scope (12 flags)
 | Flag | Reason |
 |---|---|
 | `--update`, `--check-update`, `--rollback`, `--yes` | Self-update (Rust distribution model differs). |
-| `--cpu-profile`, `--profile-json`, `--profile-startup`, `--stats` | Dev profiling (not user-facing). |
+| `--cpu-profile`, `--profile-json`, `--profile-startup` | Dev profiling (not user-facing). |
 | `--debug-render`, `--debug-height`, `--debug-width` | TUI debug rendering (internal tooling). |
 | `--background-mode`, `--no-background-mode` | Background daemon (architecture differs). |
 
 ### Parity Summary
 | Category | Complete | Partial | Missing | Excluded | Total |
 |---|---|---|---|---|---|
-| Robot Commands | 12 | 22 | 0 | 0 | 34 |
+| Robot Commands | 18 | 22 | 0 | 0 | 40 |
 | Robot Options | 2 | 5 | 0 | 0 | 7 |
-| Format/Meta | 3 | 0 | 0 | 0 | 3 |
-| Missing Surfaces | 0 | 0 | 59 | 0 | 59 |
-| Excluded | 0 | 0 | 0 | 12 | 12 |
+| Format/Meta | 4 | 0 | 0 | 0 | 4 |
+| Advanced Analysis | 2 | 0 | 0 | 0 | 2 |
+| Missing Surfaces | 0 | 0 | 51 | 0 | 51 |
+| Excluded | 0 | 0 | 0 | 11 | 11 |
 | Rust-Only | 2 | 0 | 0 | 0 | 2 |
-| **Totals** | **19** | **27** | **59** | **12** | **117+2** |
+| **Totals** | **32** | **27** | **51** | **11** | **121+2** |
 
 ## Phased Implementation Plan
 
@@ -291,7 +325,7 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 Prerequisites: Wave 0 complete.
 | Gate | Bead | Verification |
 |---|---|---|
-| `--robot-docs`, `--robot-schema`, `--schema-command`, format stats | bd-33w.2.1 | `cargo test robot_docs` + `cargo test robot_schema` pass |
+| `--robot-docs`, `--robot-schema`, `--schema-command`, format stats | bd-33w.2.1 | `cargo test robot_docs` + `cargo test robot_schema` pass | done |
 | Go reference harness covers full robot command matrix | bd-33w.6.1 | Fixture files exist for every robot command in `tests/conformance/fixtures/go_outputs/` |
 | Fixture matrix covers parity + adversarial scenarios | bd-33w.6.2 | Each robot mode has >= 1 positive + 1 adversarial fixture |
 | Strict comparator and schema-validation test utilities | bd-33w.6.3 | Conformance tests use typed schema validation, not ad-hoc field checks |
@@ -309,7 +343,7 @@ Prerequisites: Wave 1 complete.
 | Recipe/script workflow (`--robot-recipes`, `--emit-script`, feedback) | bd-33w.2.2 | `cargo test recipe` + `cargo test emit_script` pass |
 | Label intelligence + drift baseline | bd-33w.2.3 | `cargo test label_health` + `cargo test drift` pass |
 | Semantic search + ranking | bd-33w.2.4 | `cargo test search` passes |
-| Sprint/planning adjunct surfaces | bd-33w.2.5 | `cargo test sprint_list` + `cargo test sprint_show` pass |
+| Sprint/planning adjunct surfaces | bd-33w.2.5 | `cargo test sprint_list` + `cargo test sprint_show` pass | done |
 
 ### Wave 3: Intelligence + Scale + Polish
 Prerequisites: Wave 2 complete.
@@ -346,4 +380,4 @@ Prerequisites: Wave 3 complete.
 
 ## Open Gaps to 100%
 1. Remaining TUI interaction parity (responsive history layout, file tree panel, `o`/`y` keys, search modes).
-2. 59 missing CLI flags across correlation/impact, file analysis, label analytics, sprint, search, export, script, baseline, feedback, workflow, and metadata categories.
+2. 54 missing CLI flags across correlation/impact, file analysis, label analytics, search, export, script, baseline, feedback, workflow, and metadata categories.
