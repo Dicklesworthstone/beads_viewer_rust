@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::git_history::{HistoryBeadCompat, HistoryCommitCompat, HistoryFileChangeCompat};
+use super::git_history::HistoryBeadCompat;
 
 // ---------------------------------------------------------------------------
 // Orphan detection
@@ -553,6 +553,331 @@ pub fn compute_file_index_stats(histories: &BTreeMap<String, HistoryBeadCompat>)
 }
 
 // ---------------------------------------------------------------------------
+// Impact analysis
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AffectedBead {
+    pub bead_id: String,
+    pub title: String,
+    pub status: String,
+    pub overlap_files: Vec<String>,
+    pub overlap_count: usize,
+    pub relevance: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImpactResult {
+    pub files: Vec<String>,
+    pub affected_beads: Vec<AffectedBead>,
+    pub risk_level: String,
+    pub risk_score: f64,
+    pub summary: String,
+}
+
+/// Analyze the impact of modifying a set of files.
+///
+/// Returns affected beads with relevance scoring and an overall risk level.
+#[must_use]
+pub fn analyze_impact(
+    file_paths: &[String],
+    histories: &BTreeMap<String, HistoryBeadCompat>,
+) -> ImpactResult {
+    let targets: BTreeSet<String> = file_paths.iter().map(|p| normalize_path(p)).collect();
+
+    // Find all beads that touched any of the target files
+    let mut bead_overlaps = BTreeMap::<String, BTreeSet<String>>::new();
+    for history in histories.values() {
+        for commit in history.commits.as_deref().unwrap_or_default() {
+            for file in &commit.files {
+                let norm = normalize_path(&file.path);
+                if targets.contains(&norm) {
+                    bead_overlaps
+                        .entry(history.bead_id.clone())
+                        .or_default()
+                        .insert(norm);
+                }
+            }
+        }
+    }
+
+    let mut risk_score = 0.0_f64;
+    let mut affected_beads = Vec::new();
+
+    for (bead_id, overlap_files) in &bead_overlaps {
+        let Some(history) = histories.get(bead_id) else {
+            continue;
+        };
+
+        let status_weight = match history.status.to_ascii_lowercase().as_str() {
+            "in_progress" => 0.4,
+            "open" | "ready" | "blocked" => 0.2,
+            "closed" | "tombstone" => 0.05,
+            _ => 0.1,
+        };
+
+        let overlap_ratio = if targets.is_empty() {
+            0.0
+        } else {
+            overlap_files.len() as f64 / targets.len() as f64
+        };
+
+        let relevance = (overlap_ratio * 0.5 + status_weight * 0.5).min(1.0);
+        risk_score += status_weight;
+
+        affected_beads.push(AffectedBead {
+            bead_id: bead_id.clone(),
+            title: history.title.clone(),
+            status: history.status.clone(),
+            overlap_files: overlap_files.iter().cloned().collect(),
+            overlap_count: overlap_files.len(),
+            relevance,
+        });
+    }
+
+    // Multiple file modification boosts risk
+    if file_paths.len() > 1 {
+        risk_score += 0.1;
+    }
+
+    risk_score = risk_score.min(1.0);
+
+    let risk_level = if risk_score >= 0.7 {
+        "critical"
+    } else if risk_score >= 0.4 {
+        "high"
+    } else if risk_score >= 0.2 {
+        "medium"
+    } else {
+        "low"
+    };
+
+    affected_beads.sort_by(|a, b| {
+        b.relevance
+            .total_cmp(&a.relevance)
+            .then_with(|| a.bead_id.cmp(&b.bead_id))
+    });
+
+    let summary = format!(
+        "{} file(s) affect {} bead(s), risk: {}",
+        file_paths.len(),
+        affected_beads.len(),
+        risk_level
+    );
+
+    ImpactResult {
+        files: file_paths.to_vec(),
+        affected_beads,
+        risk_level: risk_level.to_string(),
+        risk_score,
+        summary,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Co-change / file relations
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CoChangeEntry {
+    pub file_path: String,
+    pub co_change_count: usize,
+    pub total_commits: usize,
+    pub correlation: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileRelationsResult {
+    pub source_file: String,
+    pub related_files: Vec<CoChangeEntry>,
+    pub total_commits_for_source: usize,
+}
+
+/// Compute co-change relationships for a given file.
+///
+/// Finds files that are frequently modified together in the same commits,
+/// filtered by correlation threshold and result limit.
+#[must_use]
+pub fn compute_file_relations(
+    source_path: &str,
+    histories: &BTreeMap<String, HistoryBeadCompat>,
+    threshold: f64,
+    limit: usize,
+) -> FileRelationsResult {
+    let target = normalize_path(source_path);
+
+    // Collect all commits that touch the target file (deduplicated by SHA)
+    let mut target_commits = BTreeMap::<String, Vec<String>>::new(); // SHA → all files in commit
+
+    let mut seen_shas = BTreeSet::new();
+    for history in histories.values() {
+        for commit in history.commits.as_deref().unwrap_or_default() {
+            if seen_shas.contains(&commit.sha) {
+                continue;
+            }
+
+            let touches_target = commit
+                .files
+                .iter()
+                .any(|f| normalize_path(&f.path) == target);
+            if touches_target {
+                seen_shas.insert(commit.sha.clone());
+                let all_files: Vec<String> = commit
+                    .files
+                    .iter()
+                    .map(|f| normalize_path(&f.path))
+                    .filter(|p| p != &target)
+                    .collect();
+                target_commits.insert(commit.sha.clone(), all_files);
+            }
+        }
+    }
+
+    let total_commits_for_source = target_commits.len();
+
+    // Count co-changes per file
+    let mut co_counts = BTreeMap::<String, usize>::new();
+    for files in target_commits.values() {
+        for file in files {
+            *co_counts.entry(file.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut related: Vec<CoChangeEntry> = co_counts
+        .into_iter()
+        .map(|(path, count)| {
+            let correlation = if total_commits_for_source > 0 {
+                count as f64 / total_commits_for_source as f64
+            } else {
+                0.0
+            };
+            CoChangeEntry {
+                file_path: path,
+                co_change_count: count,
+                total_commits: total_commits_for_source,
+                correlation,
+            }
+        })
+        .filter(|e| e.correlation >= threshold)
+        .collect();
+
+    related.sort_by(|a, b| {
+        b.correlation
+            .total_cmp(&a.correlation)
+            .then_with(|| a.file_path.cmp(&b.file_path))
+    });
+
+    if limit > 0 {
+        related.truncate(limit);
+    }
+
+    FileRelationsResult {
+        source_file: target,
+        related_files: related,
+        total_commits_for_source,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Related work (bead-to-bead similarity via shared files)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelatedBead {
+    pub bead_id: String,
+    pub title: String,
+    pub status: String,
+    pub shared_files: Vec<String>,
+    pub shared_file_count: usize,
+    pub relevance: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelatedWorkResult {
+    pub source_bead: String,
+    pub related: Vec<RelatedBead>,
+}
+
+/// Find beads related to a given bead based on shared file modifications.
+#[must_use]
+pub fn find_related_work(
+    bead_id: &str,
+    histories: &BTreeMap<String, HistoryBeadCompat>,
+    limit: usize,
+) -> RelatedWorkResult {
+    let Some(source) = histories.get(bead_id) else {
+        return RelatedWorkResult {
+            source_bead: bead_id.to_string(),
+            related: Vec::new(),
+        };
+    };
+
+    // Gather all files touched by the source bead
+    let source_files: BTreeSet<String> = source
+        .commits
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|c| c.files.iter().map(|f| normalize_path(&f.path)))
+        .collect();
+
+    if source_files.is_empty() {
+        return RelatedWorkResult {
+            source_bead: bead_id.to_string(),
+            related: Vec::new(),
+        };
+    }
+
+    // Find other beads that share files
+    let mut related = Vec::new();
+    for (other_id, other_history) in histories {
+        if other_id == bead_id {
+            continue;
+        }
+
+        let other_files: BTreeSet<String> = other_history
+            .commits
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|c| c.files.iter().map(|f| normalize_path(&f.path)))
+            .collect();
+
+        let shared: Vec<String> = source_files.intersection(&other_files).cloned().collect();
+
+        if shared.is_empty() {
+            continue;
+        }
+
+        let relevance = shared.len() as f64 / source_files.len() as f64;
+
+        related.push(RelatedBead {
+            bead_id: other_id.clone(),
+            title: other_history.title.clone(),
+            status: other_history.status.clone(),
+            shared_file_count: shared.len(),
+            shared_files: shared,
+            relevance,
+        });
+    }
+
+    related.sort_by(|a, b| {
+        b.relevance
+            .total_cmp(&a.relevance)
+            .then_with(|| a.bead_id.cmp(&b.bead_id))
+    });
+
+    if limit > 0 {
+        related.truncate(limit);
+    }
+
+    RelatedWorkResult {
+        source_bead: bead_id.to_string(),
+        related,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Robot output structs
 // ---------------------------------------------------------------------------
 
@@ -584,6 +909,36 @@ pub struct RobotFileHotspotsOutput {
     pub version: String,
     pub hotspots: Vec<FileHotspot>,
     pub stats: FileIndexStats,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RobotImpactOutput {
+    pub generated_at: String,
+    pub data_hash: String,
+    pub output_format: String,
+    pub version: String,
+    #[serde(flatten)]
+    pub result: ImpactResult,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RobotFileRelationsOutput {
+    pub generated_at: String,
+    pub data_hash: String,
+    pub output_format: String,
+    pub version: String,
+    #[serde(flatten)]
+    pub result: FileRelationsResult,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RobotRelatedWorkOutput {
+    pub generated_at: String,
+    pub data_hash: String,
+    pub output_format: String,
+    pub version: String,
+    #[serde(flatten)]
+    pub result: RelatedWorkResult,
 }
 
 // ---------------------------------------------------------------------------
@@ -802,5 +1157,149 @@ mod tests {
 
         let stats = compute_file_index_stats(&histories);
         assert_eq!(stats.total_files, 0);
+    }
+
+    #[test]
+    fn impact_analysis_basic() {
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "bd-1".to_string(),
+            make_history("bd-1", "in_progress", &["src/main.rs"]),
+        );
+        histories.insert(
+            "bd-2".to_string(),
+            make_history("bd-2", "closed", &["src/main.rs", "src/lib.rs"]),
+        );
+
+        let result = analyze_impact(&["src/main.rs".to_string()], &histories);
+
+        assert_eq!(result.affected_beads.len(), 2);
+        assert!(!result.risk_level.is_empty());
+        assert!(result.risk_score > 0.0);
+        // in_progress bead should have higher relevance
+        assert!(result.affected_beads[0].bead_id == "bd-1");
+    }
+
+    #[test]
+    fn impact_analysis_no_overlap() {
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "bd-1".to_string(),
+            make_history("bd-1", "open", &["other.rs"]),
+        );
+
+        let result = analyze_impact(&["unrelated.rs".to_string()], &histories);
+
+        assert!(result.affected_beads.is_empty());
+        assert_eq!(result.risk_level, "low");
+    }
+
+    fn make_history_multi_file(
+        bead_id: &str,
+        status: &str,
+        file_sets: &[&[&str]],
+    ) -> HistoryBeadCompat {
+        let commits = file_sets
+            .iter()
+            .enumerate()
+            .map(|(i, files)| HistoryCommitCompat {
+                sha: format!("commit-{bead_id}-{i}"),
+                short_sha: format!("c{i}"),
+                message: format!("work on {bead_id}"),
+                author: "TestUser".to_string(),
+                author_email: "test@example.com".to_string(),
+                timestamp: format!("2026-01-{:02}T10:00:00Z", i + 1),
+                files: files
+                    .iter()
+                    .map(|p| HistoryFileChangeCompat {
+                        path: p.to_string(),
+                        action: "M".to_string(),
+                        insertions: 5,
+                        deletions: 1,
+                    })
+                    .collect(),
+                method: "explicit_id".to_string(),
+                confidence: 0.85,
+                reason: "test".to_string(),
+            })
+            .collect();
+
+        HistoryBeadCompat {
+            bead_id: bead_id.to_string(),
+            title: format!("Bead {bead_id}"),
+            status: status.to_string(),
+            events: vec![],
+            milestones: HistoryMilestonesCompat::default(),
+            commits: Some(commits),
+            cycle_time: None,
+            last_author: "TestUser".to_string(),
+        }
+    }
+
+    #[test]
+    fn file_relations_basic() {
+        let mut histories = BTreeMap::new();
+        // Two commits: one touches A+B, another touches A+C
+        histories.insert(
+            "bd-1".to_string(),
+            make_history_multi_file("bd-1", "open", &[&["a.rs", "b.rs"], &["a.rs", "c.rs"]]),
+        );
+
+        let result = compute_file_relations("a.rs", &histories, 0.0, 10);
+
+        assert_eq!(result.source_file, "a.rs");
+        assert_eq!(result.total_commits_for_source, 2);
+        assert!(result.related_files.len() >= 2); // b.rs and c.rs
+    }
+
+    #[test]
+    fn file_relations_threshold() {
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "bd-1".to_string(),
+            make_history_multi_file(
+                "bd-1",
+                "open",
+                &[&["a.rs", "b.rs"], &["a.rs", "c.rs"], &["a.rs", "b.rs"]],
+            ),
+        );
+
+        // b.rs appears 2/3 times (0.67), c.rs 1/3 (0.33)
+        let result = compute_file_relations("a.rs", &histories, 0.5, 10);
+        assert!(
+            result.related_files.iter().all(|r| r.correlation >= 0.5),
+            "All results should meet threshold"
+        );
+    }
+
+    #[test]
+    fn related_work_basic() {
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "bd-1".to_string(),
+            make_history("bd-1", "open", &["shared.rs", "only-1.rs"]),
+        );
+        histories.insert(
+            "bd-2".to_string(),
+            make_history("bd-2", "open", &["shared.rs", "only-2.rs"]),
+        );
+        histories.insert(
+            "bd-3".to_string(),
+            make_history("bd-3", "open", &["unrelated.rs"]),
+        );
+
+        let result = find_related_work("bd-1", &histories, 10);
+
+        assert_eq!(result.source_bead, "bd-1");
+        assert_eq!(result.related.len(), 1); // Only bd-2 shares files
+        assert_eq!(result.related[0].bead_id, "bd-2");
+        assert_eq!(result.related[0].shared_file_count, 1);
+    }
+
+    #[test]
+    fn related_work_missing_bead() {
+        let histories = BTreeMap::new();
+        let result = find_related_work("nonexistent", &histories, 10);
+        assert!(result.related.is_empty());
     }
 }

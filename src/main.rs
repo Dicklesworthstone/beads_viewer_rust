@@ -807,8 +807,14 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // ---- File intelligence commands (orphans, file-beads, hotspots) ----
-    if cli.robot_orphans || cli.robot_file_beads.is_some() || cli.robot_file_hotspots {
+    // ---- File intelligence commands (orphans, file-beads, hotspots, impact, relations, related) ----
+    if cli.robot_orphans
+        || cli.robot_file_beads.is_some()
+        || cli.robot_file_hotspots
+        || cli.robot_impact.is_some()
+        || cli.robot_file_relations.is_some()
+        || cli.robot_related.is_some()
+    {
         let history_output = match build_robot_history_output(&cli, &issues, &analyzer) {
             Ok(o) => o,
             Err(e) => {
@@ -885,6 +891,68 @@ fn main() -> ExitCode {
                 version: format!("v{}", env!("CARGO_PKG_VERSION")),
                 hotspots,
                 stats,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        if let Some(ref paths_str) = cli.robot_impact {
+            let file_paths: Vec<String> =
+                paths_str.split(',').map(|s| s.trim().to_owned()).collect();
+            let result = bvr::analysis::file_intel::analyze_impact(
+                &file_paths,
+                &history_output.histories_map,
+            );
+            let output = bvr::analysis::file_intel::RobotImpactOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                result,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        if let Some(ref path) = cli.robot_file_relations {
+            let result = bvr::analysis::file_intel::compute_file_relations(
+                path,
+                &history_output.histories_map,
+                cli.relations_threshold,
+                cli.relations_limit,
+            );
+            let output = bvr::analysis::file_intel::RobotFileRelationsOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                result,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        if let Some(ref bead_id) = cli.robot_related {
+            let result = bvr::analysis::file_intel::find_related_work(
+                bead_id,
+                &history_output.histories_map,
+                cli.related_limit,
+            );
+            let output = bvr::analysis::file_intel::RobotRelatedWorkOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                result,
             };
             if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
                 eprintln!("error: {error}");

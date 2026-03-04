@@ -243,6 +243,24 @@ pub struct Cli {
     pub hotspots_limit: usize,
 
     #[arg(long)]
+    pub robot_impact: Option<String>,
+
+    #[arg(long)]
+    pub robot_file_relations: Option<String>,
+
+    #[arg(long, default_value_t = 0.5)]
+    pub relations_threshold: f64,
+
+    #[arg(long, default_value_t = 10)]
+    pub relations_limit: usize,
+
+    #[arg(long)]
+    pub robot_related: Option<String>,
+
+    #[arg(long, default_value_t = 10)]
+    pub related_limit: usize,
+
+    #[arg(long)]
     pub export_md: Option<PathBuf>,
 
     #[arg(long, action = ArgAction::SetTrue)]
@@ -296,5 +314,8 @@ impl Cli {
             || self.robot_orphans
             || self.robot_file_beads.is_some()
             || self.robot_file_hotspots
+            || self.robot_impact.is_some()
+            || self.robot_file_relations.is_some()
+            || self.robot_related.is_some()
     }
 }
