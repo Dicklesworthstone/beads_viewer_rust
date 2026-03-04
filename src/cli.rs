@@ -279,6 +279,24 @@ pub struct Cli {
     pub robot_drift: bool,
 
     #[arg(long)]
+    pub search: Option<String>,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_search: bool,
+
+    #[arg(long, default_value_t = 10)]
+    pub search_limit: usize,
+
+    #[arg(long)]
+    pub search_mode: Option<String>,
+
+    #[arg(long)]
+    pub search_preset: Option<String>,
+
+    #[arg(long)]
+    pub search_weights: Option<String>,
+
+    #[arg(long)]
     pub export_md: Option<PathBuf>,
 
     #[arg(long, action = ArgAction::SetTrue)]
@@ -340,5 +358,6 @@ impl Cli {
             || self.robot_causality.is_some()
             || self.save_baseline.is_some()
             || self.robot_drift
+            || self.robot_search
     }
 }

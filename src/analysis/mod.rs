@@ -10,6 +10,7 @@ pub mod graph;
 pub mod history;
 pub mod label_intel;
 pub mod plan;
+pub mod search;
 pub mod suggest;
 pub mod triage;
 

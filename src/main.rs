@@ -1091,6 +1091,78 @@ fn main() -> ExitCode {
         return ExitCode::from(exit_code);
     }
 
+    // ---- Search commands ----
+    if cli.robot_search {
+        let query = match cli.search.as_deref() {
+            Some(q) if !q.is_empty() => q,
+            _ => {
+                eprintln!("error: --robot-search requires --search <query>");
+                return ExitCode::from(1);
+            }
+        };
+
+        let mode = cli
+            .search_mode
+            .as_deref()
+            .map(bvr::analysis::search::SearchMode::from_str_or_default)
+            .unwrap_or(bvr::analysis::search::SearchMode::Text);
+
+        let weights = if let Some(ref json) = cli.search_weights {
+            match bvr::analysis::search::SearchWeights::from_json(json) {
+                Ok(w) => w,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(1);
+                }
+            }
+        } else {
+            let preset_name = cli.search_preset.as_deref().unwrap_or("default");
+            bvr::analysis::search::get_preset(preset_name)
+        };
+
+        let results = bvr::analysis::search::execute_search(
+            query,
+            &issues,
+            &analyzer.metrics,
+            mode,
+            &weights,
+            cli.search_limit,
+        );
+
+        let preset_field = if mode == bvr::analysis::search::SearchMode::Hybrid {
+            Some(
+                cli.search_preset
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            )
+        } else {
+            None
+        };
+        let weights_field = if mode == bvr::analysis::search::SearchMode::Hybrid {
+            Some(weights)
+        } else {
+            None
+        };
+
+        let output = bvr::analysis::search::RobotSearchOutput {
+            generated_at: envelope(&issues).generated_at,
+            data_hash: compute_data_hash(&issues),
+            output_format: "json".to_owned(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            query: query.to_string(),
+            limit: cli.search_limit,
+            mode: mode.as_str().to_string(),
+            preset: preset_field,
+            weights: weights_field,
+            results,
+        };
+        if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
     if let Some(export_path) = cli.export_md.as_deref() {
         if let Err(error) = bvr::export_md::export_markdown_with_hooks(
             &issues,

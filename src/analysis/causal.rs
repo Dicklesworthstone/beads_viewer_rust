@@ -973,6 +973,11 @@ pub fn build_causality_chain(
     }
 }
 
+/// Parse an ISO-8601 timestamp string to milliseconds since epoch (public API).
+pub fn parse_timestamp_ms_pub(ts: &str) -> Option<u64> {
+    parse_timestamp_ms(ts)
+}
+
 /// Parse an ISO-8601 timestamp string to milliseconds since epoch.
 fn parse_timestamp_ms(ts: &str) -> Option<u64> {
     if ts.is_empty() {
