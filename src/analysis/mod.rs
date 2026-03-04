@@ -1,9 +1,12 @@
 pub mod alerts;
+pub mod correlation;
 pub mod diff;
+pub mod file_intel;
 pub mod forecast;
 pub mod git_history;
 pub mod graph;
 pub mod history;
+pub mod label_intel;
 pub mod plan;
 pub mod suggest;
 pub mod triage;

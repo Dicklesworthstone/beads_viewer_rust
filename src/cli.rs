@@ -17,6 +17,13 @@ pub enum GraphFormat {
     Mermaid,
 }
 
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum GraphPreset {
+    #[default]
+    Compact,
+    Roomy,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "bvr",
@@ -130,6 +137,15 @@ pub struct Cli {
     #[arg(long, default_value_t = 0)]
     pub graph_depth: usize,
 
+    #[arg(long, value_enum, default_value_t = GraphPreset::Compact)]
+    pub graph_preset: GraphPreset,
+
+    #[arg(long)]
+    pub graph_title: Option<String>,
+
+    #[arg(long)]
+    pub export_graph: Option<PathBuf>,
+
     #[arg(long)]
     pub forecast_label: Option<String>,
 
@@ -178,6 +194,54 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub robot_metrics: bool,
 
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_label_health: bool,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_label_flow: bool,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_label_attention: bool,
+
+    #[arg(long, default_value_t = 0)]
+    pub attention_limit: usize,
+
+    #[arg(long)]
+    pub robot_explain_correlation: Option<String>,
+
+    #[arg(long)]
+    pub robot_confirm_correlation: Option<String>,
+
+    #[arg(long)]
+    pub robot_reject_correlation: Option<String>,
+
+    #[arg(long)]
+    pub correlation_by: Option<String>,
+
+    #[arg(long)]
+    pub correlation_reason: Option<String>,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_correlation_stats: bool,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_orphans: bool,
+
+    #[arg(long, default_value_t = 30)]
+    pub orphans_min_score: u32,
+
+    #[arg(long)]
+    pub robot_file_beads: Option<String>,
+
+    #[arg(long, default_value_t = 20)]
+    pub file_beads_limit: usize,
+
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_file_hotspots: bool,
+
+    #[arg(long, default_value_t = 10)]
+    pub hotspots_limit: usize,
+
     #[arg(long)]
     pub export_md: Option<PathBuf>,
 
@@ -222,5 +286,15 @@ impl Cli {
             || self.robot_sprint_list
             || self.robot_sprint_show.is_some()
             || self.robot_metrics
+            || self.robot_label_health
+            || self.robot_label_flow
+            || self.robot_label_attention
+            || self.robot_explain_correlation.is_some()
+            || self.robot_confirm_correlation.is_some()
+            || self.robot_reject_correlation.is_some()
+            || self.robot_correlation_stats
+            || self.robot_orphans
+            || self.robot_file_beads.is_some()
+            || self.robot_file_hotspots
     }
 }

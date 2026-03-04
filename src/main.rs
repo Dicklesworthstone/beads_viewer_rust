@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -16,7 +17,7 @@ use bvr::analysis::git_history::{
 use bvr::analysis::suggest::{SuggestOptions, SuggestionType};
 use bvr::analysis::triage::TriageOptions;
 use bvr::analysis::{Analyzer, Insights, MetricStatus};
-use bvr::cli::{Cli, GraphFormat};
+use bvr::cli::{Cli, GraphFormat, GraphPreset};
 use bvr::loader;
 use bvr::robot::{
     compute_data_hash, default_field_descriptions, emit_with_stats, envelope, generate_robot_docs,
@@ -319,8 +320,29 @@ fn main() -> ExitCode {
     }
 
     if cli.robot_graph {
-        let output = build_robot_graph_output(&issues, &analyzer, &cli);
+        let output = build_robot_graph_output(&issues, &analyzer, &cli, None);
         if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(export_path) = cli.export_graph.as_deref() {
+        let output = build_robot_graph_output(
+            &issues,
+            &analyzer,
+            &cli,
+            Some(resolve_graph_export_format(export_path, cli.graph_format)),
+        );
+
+        if let Err(error) = write_graph_export_snapshot(
+            export_path,
+            &output,
+            cli.graph_title.as_deref(),
+            cli.graph_preset,
+        ) {
             eprintln!("error: {error}");
             return ExitCode::from(1);
         }
@@ -582,6 +604,294 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
         return ExitCode::SUCCESS;
+    }
+
+    if cli.robot_label_health {
+        let output = RobotLabelHealthOutput {
+            generated_at: envelope(&issues).generated_at,
+            data_hash: compute_data_hash(&issues),
+            output_format: "json".to_owned(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            result: bvr::analysis::label_intel::compute_all_label_health(
+                &issues,
+                &analyzer.graph,
+                &analyzer.metrics,
+            ),
+        };
+        if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if cli.robot_label_flow {
+        let output = RobotLabelFlowOutput {
+            generated_at: envelope(&issues).generated_at,
+            data_hash: compute_data_hash(&issues),
+            output_format: "json".to_owned(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            flow: bvr::analysis::label_intel::compute_cross_label_flow(&issues),
+        };
+        if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if cli.robot_label_attention {
+        let limit = cli.attention_limit;
+        let output = RobotLabelAttentionOutput {
+            generated_at: envelope(&issues).generated_at,
+            data_hash: compute_data_hash(&issues),
+            output_format: "json".to_owned(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            limit,
+            result: bvr::analysis::label_intel::compute_label_attention(
+                &issues,
+                &analyzer.metrics,
+                limit,
+            ),
+        };
+        if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // ---- Correlation audit commands ----
+    if cli.robot_explain_correlation.is_some()
+        || cli.robot_confirm_correlation.is_some()
+        || cli.robot_reject_correlation.is_some()
+        || cli.robot_correlation_stats
+    {
+        let repo_root = cli.repo_path.clone().unwrap_or_else(|| PathBuf::from("."));
+        let feedback_path = bvr::analysis::correlation::default_feedback_path(&repo_root);
+
+        if cli.robot_correlation_stats {
+            let store = match bvr::analysis::correlation::FeedbackStore::open(&feedback_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let output = bvr::analysis::correlation::RobotCorrelationStatsOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                stats: store.stats(),
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        // explain / confirm / reject all need SHA:beadID parsing + history context
+        let raw_arg = cli
+            .robot_explain_correlation
+            .as_deref()
+            .or(cli.robot_confirm_correlation.as_deref())
+            .or(cli.robot_reject_correlation.as_deref())
+            .unwrap();
+
+        let (commit_sha, bead_id) = match bvr::analysis::correlation::parse_correlation_arg(raw_arg)
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        };
+
+        // Build history to find the correlated commit
+        let history_output = match build_robot_history_output(&cli, &issues, &analyzer) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        };
+
+        // Search for the commit in the history data
+        let commit_entry = history_output
+            .histories_map
+            .values()
+            .filter(|h| h.bead_id == bead_id)
+            .flat_map(|h| h.commits.as_deref().unwrap_or_default())
+            .find(|c| c.sha.starts_with(&commit_sha) || commit_sha.starts_with(&c.sha));
+
+        let Some(commit_entry) = commit_entry else {
+            eprintln!("error: no correlation found for commit {commit_sha} and bead {bead_id}");
+            return ExitCode::from(1);
+        };
+
+        let mut store = match bvr::analysis::correlation::FeedbackStore::open(&feedback_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        };
+
+        if cli.robot_explain_correlation.is_some() {
+            let existing = store.get(&commit_entry.sha, &bead_id);
+            let explanation =
+                bvr::analysis::correlation::build_explanation(commit_entry, &bead_id, existing);
+            let output = bvr::analysis::correlation::RobotExplainOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                explanation,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        } else {
+            let by = cli.correlation_by.as_deref().unwrap_or("cli");
+            let reason = cli.correlation_reason.as_deref().unwrap_or("");
+
+            let (status, feedback) = if cli.robot_confirm_correlation.is_some() {
+                let fb = match store.confirm(
+                    &commit_entry.sha,
+                    &bead_id,
+                    by,
+                    commit_entry.confidence,
+                    reason,
+                ) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                };
+                ("confirmed", fb)
+            } else {
+                let fb = match store.reject(
+                    &commit_entry.sha,
+                    &bead_id,
+                    by,
+                    commit_entry.confidence,
+                    reason,
+                ) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                };
+                ("rejected", fb)
+            };
+
+            let output = bvr::analysis::correlation::RobotCorrelationActionOutput {
+                status: status.to_string(),
+                commit: feedback.commit_sha,
+                bead: feedback.bead_id,
+                by: feedback.feedback_by,
+                reason: feedback.reason,
+                orig_conf: feedback.original_conf,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
+
+        return ExitCode::SUCCESS;
+    }
+
+    // ---- File intelligence commands (orphans, file-beads, hotspots) ----
+    if cli.robot_orphans || cli.robot_file_beads.is_some() || cli.robot_file_hotspots {
+        let history_output = match build_robot_history_output(&cli, &issues, &analyzer) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        };
+
+        if cli.robot_orphans {
+            let repo_root = cli.repo_path.clone().unwrap_or_else(|| PathBuf::from("."));
+            let all_commits = match bvr::analysis::git_history::load_git_commits(
+                &repo_root,
+                cli.history_limit,
+                cli.history_since.as_deref(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+
+            let report = bvr::analysis::file_intel::detect_orphans(
+                &all_commits,
+                &history_output.histories_map,
+                &history_output.commit_index,
+                cli.orphans_min_score,
+            );
+            let output = bvr::analysis::file_intel::RobotOrphansOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                report,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        if let Some(ref path) = cli.robot_file_beads {
+            let result = bvr::analysis::file_intel::lookup_file_beads(
+                path,
+                &history_output.histories_map,
+                cli.file_beads_limit,
+            );
+            let output = bvr::analysis::file_intel::RobotFileBeadsOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                result,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        if cli.robot_file_hotspots {
+            let hotspots = bvr::analysis::file_intel::compute_hotspots(
+                &history_output.histories_map,
+                cli.hotspots_limit,
+            );
+            let stats =
+                bvr::analysis::file_intel::compute_file_index_stats(&history_output.histories_map);
+            let output = bvr::analysis::file_intel::RobotFileHotspotsOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                hotspots,
+                stats,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
     }
 
     if let Some(export_path) = cli.export_md.as_deref() {
@@ -1744,6 +2054,7 @@ fn build_robot_graph_output(
     issues: &[bvr::model::Issue],
     analyzer: &Analyzer,
     cli: &Cli,
+    graph_format_override: Option<GraphFormat>,
 ) -> RobotGraphOutput {
     let mut filtered_issues = filter_graph_issues(
         issues,
@@ -1753,7 +2064,8 @@ fn build_robot_graph_output(
     );
     filtered_issues.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let format = graph_format_name(cli.graph_format).to_string();
+    let graph_format = graph_format_override.unwrap_or(cli.graph_format);
+    let format = graph_format_name(graph_format).to_string();
     let filters_applied = collect_graph_filters(cli);
     let data_hash = compute_data_hash(issues);
 
@@ -1778,7 +2090,7 @@ fn build_robot_graph_output(
 
     let mut graph = None;
     let mut adjacency = None;
-    let explanation = match cli.graph_format {
+    let explanation = match graph_format {
         GraphFormat::Json => {
             adjacency = Some(build_graph_adjacency(
                 &filtered_issues,
@@ -1796,6 +2108,7 @@ fn build_robot_graph_output(
                 &filtered_issues,
                 &edges,
                 &analyzer.metrics.pagerank,
+                cli.graph_preset,
             ));
             GraphExplanation {
                 what: "Dependency graph in Graphviz DOT format".to_string(),
@@ -1997,14 +2310,102 @@ const fn graph_format_name(format: GraphFormat) -> &'static str {
     }
 }
 
+fn resolve_graph_export_format(path: &Path, fallback: GraphFormat) -> GraphFormat {
+    let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
+        return fallback;
+    };
+
+    if extension.eq_ignore_ascii_case("json") {
+        GraphFormat::Json
+    } else if extension.eq_ignore_ascii_case("dot") {
+        GraphFormat::Dot
+    } else if extension.eq_ignore_ascii_case("mmd") || extension.eq_ignore_ascii_case("mermaid") {
+        GraphFormat::Mermaid
+    } else {
+        fallback
+    }
+}
+
+fn write_graph_export_snapshot(
+    path: &Path,
+    output: &RobotGraphOutput,
+    title: Option<&str>,
+    preset: GraphPreset,
+) -> bvr::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+
+    let payload = render_graph_export_snapshot(output, title, preset)?;
+    fs::write(path, payload)?;
+    Ok(())
+}
+
+fn render_graph_export_snapshot(
+    output: &RobotGraphOutput,
+    title: Option<&str>,
+    preset: GraphPreset,
+) -> bvr::Result<String> {
+    let title = title.map(str::trim).filter(|value| !value.is_empty());
+    let preset_name = match preset {
+        GraphPreset::Compact => "compact",
+        GraphPreset::Roomy => "roomy",
+    };
+
+    match output.format.as_str() {
+        "json" => {
+            let mut line = serde_json::to_string_pretty(output)?;
+            line.push('\n');
+            Ok(line)
+        }
+        "dot" => {
+            let graph = output
+                .graph
+                .clone()
+                .unwrap_or_else(|| "digraph G {\n    // no matching issues\n}\n".to_string());
+            if let Some(graph_title) = title {
+                return Ok(format!("// {graph_title}\n{graph}"));
+            }
+            Ok(graph)
+        }
+        "mermaid" => {
+            let graph = output
+                .graph
+                .clone()
+                .unwrap_or_else(|| "graph TD\n    %% no matching issues\n".to_string());
+            let mut lines = Vec::<String>::new();
+            if let Some(graph_title) = title {
+                lines.push(format!("%% {graph_title}"));
+            }
+            lines.push(format!("%% preset: {preset_name}"));
+            lines.push(graph);
+            Ok(lines.join("\n"))
+        }
+        other => Err(bvr::error::BvrError::InvalidArgument(format!(
+            "unsupported graph export format: {other}"
+        ))),
+    }
+}
+
 fn generate_dot(
     issues: &[bvr::model::Issue],
     edges: &[GraphAdjacencyEdge],
     pagerank: &std::collections::HashMap<String, f64>,
+    preset: GraphPreset,
 ) -> String {
     let mut out = String::new();
     out.push_str("digraph G {\n");
     out.push_str("    rankdir=LR;\n");
+    match preset {
+        GraphPreset::Compact => {
+            out.push_str("    nodesep=0.35;\n");
+            out.push_str("    ranksep=0.45;\n");
+        }
+        GraphPreset::Roomy => {
+            out.push_str("    nodesep=0.75;\n");
+            out.push_str("    ranksep=1.00;\n");
+        }
+    }
     out.push_str("    node [shape=box, fontname=\"Helvetica\", fontsize=10];\n");
     out.push_str("    edge [fontname=\"Helvetica\", fontsize=8];\n\n");
 
@@ -2244,6 +2645,9 @@ fn print_robot_help() {
     println!("  --robot-burndown <id|current> Sprint burndown data");
     println!("  --robot-capacity          Capacity simulation output");
     println!("  --robot-graph             Graph export (json|dot|mermaid)");
+    println!("  --export-graph <file>     Write graph snapshot to file (.json|.dot|.mmd)");
+    println!("  --graph-title <text>      Optional title comment for exported graph files");
+    println!("  --graph-preset <preset>   DOT spacing preset: compact (default) or roomy");
     println!(
         "  --robot-forecast <id|all> ETA forecast (--forecast-label, --forecast-sprint, --forecast-agents)"
     );
@@ -2587,6 +2991,34 @@ impl MetricsMemory {
             });
         Self { rss_mb }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct RobotLabelHealthOutput {
+    generated_at: String,
+    data_hash: String,
+    output_format: String,
+    version: String,
+    result: bvr::analysis::label_intel::LabelHealthResult,
+}
+
+#[derive(Debug, Serialize)]
+struct RobotLabelFlowOutput {
+    generated_at: String,
+    data_hash: String,
+    output_format: String,
+    version: String,
+    flow: bvr::analysis::label_intel::CrossLabelFlow,
+}
+
+#[derive(Debug, Serialize)]
+struct RobotLabelAttentionOutput {
+    generated_at: String,
+    data_hash: String,
+    output_format: String,
+    version: String,
+    limit: usize,
+    result: bvr::analysis::label_intel::LabelAttentionResult,
 }
 
 #[cfg(test)]
