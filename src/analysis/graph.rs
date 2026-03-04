@@ -169,11 +169,70 @@ impl IssueGraph {
 
     #[must_use]
     pub fn actionable_ids(&self) -> Vec<String> {
+        // Phase 1: Compute directly blocked issues (open blocking dependencies).
+        let mut directly_blocked = HashSet::<String>::new();
+        for (id, issue) in &self.issues {
+            if issue.is_closed_like() {
+                continue;
+            }
+            if !self.open_blockers(id).is_empty() {
+                directly_blocked.insert(id.clone());
+            }
+        }
+
+        // Phase 2: Build parent->children index from parent-child dependencies.
+        // A child has a dep with dep_type="parent-child" and depends_on_id pointing
+        // to the parent. We invert: parent -> [children].
+        let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
+        for issue in self.issues.values() {
+            for dep in &issue.dependencies {
+                if dep.is_parent_child() && !dep.depends_on_id.trim().is_empty() {
+                    if self.issues.contains_key(&dep.depends_on_id) {
+                        children_of
+                            .entry(dep.depends_on_id.clone())
+                            .or_default()
+                            .push(issue.id.clone());
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Propagate blocked status through parent-child relationships.
+        // If a parent is blocked, its children are also blocked (transitively).
+        let mut blocked = directly_blocked.clone();
+        let max_depth = 50;
+        for _ in 0..max_depth {
+            let mut newly_blocked = Vec::<String>::new();
+            for parent_id in &blocked {
+                if let Some(children) = children_of.get(parent_id) {
+                    for child_id in children {
+                        if !blocked.contains(child_id) {
+                            if self
+                                .issues
+                                .get(child_id)
+                                .is_some_and(|issue| !issue.is_closed_like())
+                            {
+                                newly_blocked.push(child_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            if newly_blocked.is_empty() {
+                break;
+            }
+            for id in newly_blocked {
+                blocked.insert(id);
+            }
+        }
+
+        // Phase 4: Collect actionable issues (open, not blocked).
         let mut ids = self.issue_ids_sorted();
         ids.retain(|id| {
             self.issues
                 .get(id)
-                .is_some_and(|issue| issue.is_open_like() && self.open_blockers(id).is_empty())
+                .is_some_and(|issue| issue.is_open_like())
+                && !blocked.contains(id)
         });
         ids
     }
@@ -987,5 +1046,138 @@ mod tests {
         let metrics = graph.compute_metrics();
         assert_eq!(metrics.blocks_count.get("bd-3q0"), Some(&1));
         assert!(metrics.cycles.is_empty());
+    }
+
+    #[test]
+    fn actionable_excludes_children_of_blocked_parent_epic() {
+        // Parent epic E is blocked by blocker B.
+        // Child task C has a parent-child dep on E.
+        // C should NOT be actionable because its parent E is blocked.
+        let issues = vec![
+            Issue {
+                id: "B".to_string(),
+                title: "Blocker".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "E".to_string(),
+                title: "Epic".to_string(),
+                status: "blocked".to_string(),
+                issue_type: "epic".to_string(),
+                priority: 2,
+                dependencies: vec![Dependency {
+                    issue_id: "E".to_string(),
+                    depends_on_id: "B".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "Child task".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 3,
+                dependencies: vec![Dependency {
+                    issue_id: "C".to_string(),
+                    depends_on_id: "E".to_string(),
+                    dep_type: "parent-child".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+
+        let graph = IssueGraph::build(&issues);
+        let actionable = graph.actionable_ids();
+
+        // Only B should be actionable (it has no blockers).
+        // E is blocked by B, and C is blocked transitively via parent E.
+        assert_eq!(actionable, vec!["B".to_string()]);
+    }
+
+    #[test]
+    fn actionable_includes_children_of_unblocked_parent() {
+        // Parent epic E has no blockers.
+        // Child task C has a parent-child dep on E.
+        // Both should be actionable.
+        let issues = vec![
+            Issue {
+                id: "E".to_string(),
+                title: "Epic".to_string(),
+                status: "open".to_string(),
+                issue_type: "epic".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "Child task".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![Dependency {
+                    issue_id: "C".to_string(),
+                    depends_on_id: "E".to_string(),
+                    dep_type: "parent-child".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+
+        let graph = IssueGraph::build(&issues);
+        let actionable = graph.actionable_ids();
+
+        assert_eq!(actionable, vec!["C".to_string(), "E".to_string()]);
+    }
+
+    #[test]
+    fn actionable_handles_mixed_prefix_datasets() {
+        // Dataset with mixed prefixes (bd- and bv- style IDs).
+        // This tests graceful handling of mixed-prefix datasets.
+        let issues = vec![
+            Issue {
+                id: "bd-100".to_string(),
+                title: "Beads style".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "bv-200".to_string(),
+                title: "Viewer style".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![Dependency {
+                    issue_id: "bv-200".to_string(),
+                    depends_on_id: "bd-100".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "gh-300".to_string(),
+                title: "GitHub style".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 3,
+                ..Issue::default()
+            },
+        ];
+
+        let graph = IssueGraph::build(&issues);
+        let actionable = graph.actionable_ids();
+
+        // bd-100 is actionable (no blockers), gh-300 is actionable
+        // bv-200 is blocked by bd-100
+        assert_eq!(actionable, vec!["bd-100".to_string(), "gh-300".to_string()]);
     }
 }

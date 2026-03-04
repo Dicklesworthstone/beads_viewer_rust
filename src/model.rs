@@ -91,6 +91,12 @@ impl Dependency {
         let t = self.dep_type.trim().to_ascii_lowercase();
         t.is_empty() || t == "blocks"
     }
+
+    #[must_use]
+    pub fn is_parent_child(&self) -> bool {
+        let t = self.dep_type.trim().to_ascii_lowercase();
+        t == "parent-child"
+    }
 }
 
 impl Issue {
