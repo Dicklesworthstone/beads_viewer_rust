@@ -3,6 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use tempfile::tempdir;
@@ -72,6 +73,74 @@ fn load_fixture(path: &str) -> Value {
     let fixture_path = root.join(path);
     let fixture_text = fs::read_to_string(fixture_path).expect("fixture file");
     serde_json::from_str(&fixture_text).expect("fixture json")
+}
+
+#[test]
+fn debug_render_cli_outputs_requested_dimensions() {
+    let temp = tempdir().expect("tempdir");
+    let repo_dir = temp.path();
+    fs::create_dir_all(repo_dir.join(".beads")).expect("create .beads");
+    fs::write(
+        repo_dir.join(".beads/beads.jsonl"),
+        concat!(
+            "{\"id\":\"DBG-1\",\"title\":\"Debug One\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\"}\n",
+            "{\"id\":\"DBG-2\",\"title\":\"Debug Two\",\"status\":\"in_progress\",\"priority\":2,\"issue_type\":\"feature\"}\n"
+        ),
+    )
+    .expect("write beads");
+
+    let bvr_bin = std::env::var("CARGO_BIN_EXE_bvr").expect("CARGO_BIN_EXE_bvr env var");
+    let mut command = Command::new(bvr_bin);
+    command.current_dir(repo_dir);
+    command.args([
+        "--debug-render",
+        "main",
+        "--debug-width",
+        "42",
+        "--debug-height",
+        "10",
+    ]);
+
+    let output = command.assert().success().get_output().stdout.clone();
+    let text = String::from_utf8(output).expect("valid UTF-8");
+    let lines: Vec<&str> = text.lines().collect();
+
+    assert_eq!(
+        lines.len(),
+        10,
+        "expected one output line per requested row"
+    );
+    assert!(
+        lines.iter().all(|line| line.chars().count() <= 42),
+        "rendered lines should fit within requested width"
+    );
+    assert!(
+        text.contains("DBG-1"),
+        "main debug render should include issue markers: {text}"
+    );
+}
+
+#[test]
+fn debug_render_cli_rejects_unknown_view() {
+    let temp = tempdir().expect("tempdir");
+    let repo_dir = temp.path();
+    fs::create_dir_all(repo_dir.join(".beads")).expect("create .beads");
+    fs::write(
+        repo_dir.join(".beads/beads.jsonl"),
+        "{\"id\":\"DBG-1\",\"title\":\"Debug One\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\"}\n",
+    )
+    .expect("write beads");
+
+    let bvr_bin = std::env::var("CARGO_BIN_EXE_bvr").expect("CARGO_BIN_EXE_bvr env var");
+    let mut command = Command::new(bvr_bin);
+    command.current_dir(repo_dir);
+    command.args(["--debug-render", "bogus"]);
+
+    command.assert().failure().stderr(
+        predicate::str::contains("Unknown debug-render view 'bogus'").and(
+            predicate::str::contains("insights, board, history, main, graph"),
+        ),
+    );
 }
 
 #[test]

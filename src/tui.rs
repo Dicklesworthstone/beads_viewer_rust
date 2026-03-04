@@ -4421,12 +4421,12 @@ fn remote_to_commit_url(remote: &str, sha: &str) -> Option<String> {
     Some(format!("{web_base}/commit/{sha}"))
 }
 
-pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
+fn new_app(issues: Vec<Issue>, mode: ViewMode) -> BvrApp {
     let repo_root = loader::get_beads_dir(None)
         .ok()
         .and_then(|beads_dir| beads_dir.parent().map(std::path::Path::to_path_buf));
 
-    let model = BvrApp {
+    BvrApp {
         analyzer: Analyzer::new(issues),
         repo_root,
         selected: 0,
@@ -4434,7 +4434,7 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
         list_sort: ListSort::Default,
         board_grouping: BoardGrouping::Status,
         board_empty_visibility: EmptyLaneVisibility::Auto,
-        mode: ViewMode::Main,
+        mode,
         mode_before_history: ViewMode::Main,
         focus: FocusPane::List,
         focus_before_help: FocusPane::List,
@@ -4469,19 +4469,88 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
         detail_dep_cursor: 0,
         #[cfg(test)]
         key_trace: Vec::new(),
-    };
+    }
+}
 
+pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
+    let model = new_app(issues, ViewMode::Main);
     App::new(model)
         .screen_mode(ScreenMode::AltScreen)
         .run()
         .map_err(|error| BvrError::Tui(error.to_string()))
 }
 
+/// Render a named TUI view non-interactively at the given dimensions and
+/// return the textual output. Supported view names: `insights`, `board`,
+/// `history`, `main`, `graph`.
+pub fn render_debug_view(
+    issues: Vec<Issue>,
+    view_name: &str,
+    width: u16,
+    height: u16,
+) -> Result<String> {
+    let mode = match view_name {
+        "insights" => ViewMode::Insights,
+        "board" => ViewMode::Board,
+        "history" => ViewMode::History,
+        "main" => ViewMode::Main,
+        "graph" => ViewMode::Graph,
+        other => {
+            return Err(BvrError::InvalidArgument(format!(
+                "Unknown debug-render view '{other}'. Supported: insights, board, history, main, graph"
+            )));
+        }
+    };
+
+    let app = new_app(issues, mode);
+    let mut pool = ftui::GraphemePool::default();
+    let mut frame = Frame::new(width, height, &mut pool);
+    app.view(&mut frame);
+    Ok(buffer_to_text(&frame.buffer, &pool))
+}
+
+/// Convert a rendered buffer to a plain-text string (one line per row,
+/// trailing whitespace trimmed).
+fn buffer_to_text(buf: &ftui::Buffer, pool: &ftui::GraphemePool) -> String {
+    let mut out = String::with_capacity((buf.width() as usize + 1) * buf.height() as usize);
+    for y in 0..buf.height() {
+        if y > 0 {
+            out.push('\n');
+        }
+        let mut row = String::with_capacity(buf.width() as usize);
+        for x in 0..buf.width() {
+            if let Some(cell) = buf.get(x, y) {
+                if cell.is_continuation() {
+                    continue;
+                }
+                if cell.is_empty() {
+                    row.push(' ');
+                } else if let Some(c) = cell.content.as_char() {
+                    row.push(c);
+                } else if let Some(gid) = cell.content.grapheme_id() {
+                    if let Some(text) = pool.get(gid) {
+                        row.push_str(text);
+                    } else {
+                        row.push('?');
+                    }
+                } else {
+                    row.push(' ');
+                }
+            } else {
+                row.push(' ');
+            }
+        }
+        let trimmed = row.trim_end();
+        out.push_str(trimmed);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BoardGrouping, BvrApp, EmptyLaneVisibility, FocusPane, HistoryViewMode, InsightsPanel,
-        ListFilter, ListSort, Msg, ViewMode,
+        ListFilter, ListSort, Msg, ViewMode, render_debug_view,
     };
     use crate::analysis::Analyzer;
     use crate::model::{Dependency, Issue};
@@ -4734,6 +4803,45 @@ mod tests {
                 }
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn render_debug_view_supports_all_named_views() {
+        for view in ["insights", "board", "history", "main", "graph"] {
+            let output =
+                render_debug_view(sample_issues(), view, 80, 12).expect("debug render succeeds");
+            assert_eq!(
+                output.lines().count(),
+                12,
+                "expected one line per requested row for view {view}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_debug_view_respects_dimensions() {
+        let width = 32_u16;
+        let height = 7_u16;
+        let output = render_debug_view(sample_issues(), "main", width, height)
+            .expect("main debug render succeeds");
+        let lines: Vec<&str> = output.lines().collect();
+
+        assert_eq!(lines.len(), usize::from(height));
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.chars().count() <= usize::from(width)),
+            "every rendered line should fit within the requested width"
+        );
+    }
+
+    #[test]
+    fn render_debug_view_rejects_unknown_view() {
+        let error = render_debug_view(sample_issues(), "bogus", 80, 10)
+            .expect_err("unknown view should fail");
+        let message = error.to_string();
+        assert!(message.contains("Unknown debug-render view 'bogus'"));
+        assert!(message.contains("insights, board, history, main, graph"));
     }
 
     #[test]

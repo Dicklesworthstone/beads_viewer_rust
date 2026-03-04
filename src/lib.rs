@@ -10,6 +10,7 @@
 #![allow(clippy::suboptimal_flops)]
 #![allow(clippy::too_many_lines)]
 
+pub mod agents;
 pub mod analysis;
 pub mod cli;
 pub mod error;

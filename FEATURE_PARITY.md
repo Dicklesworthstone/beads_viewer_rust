@@ -313,7 +313,7 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 |---|---|
 | `--update`, `--check-update`, `--rollback`, `--yes` | Self-update (Rust distribution model differs). |
 | `--cpu-profile`, `--profile-json`, `--profile-startup` | Dev profiling (not user-facing). |
-| `--debug-render`, `--debug-height`, `--debug-width` | TUI debug rendering (internal tooling). |
+| ~~`--debug-render`, `--debug-height`, `--debug-width`~~ | **Implemented** — non-interactive TUI rendering for CI/diagnostics. |
 | `--background-mode`, `--no-background-mode` | Background daemon (architecture differs). |
 
 ### Parity Summary

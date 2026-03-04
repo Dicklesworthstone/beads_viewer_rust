@@ -312,6 +312,39 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub no_hooks: bool,
 
+    /// Render a named TUI view non-interactively and output to stdout.
+    /// Supported views: insights, board, history, main, graph.
+    #[arg(long)]
+    pub debug_render: Option<String>,
+
+    /// Width in columns for debug render (default 180).
+    #[arg(long, default_value_t = 180)]
+    pub debug_width: u16,
+
+    /// Height in rows for debug render (default 50).
+    #[arg(long, default_value_t = 50)]
+    pub debug_height: u16,
+
+    /// Check agent file blurb status.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agents_check: bool,
+
+    /// Add beads workflow blurb to agent file (creates AGENTS.md if needed).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agents_add: bool,
+
+    /// Update blurb to current version in agent file.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agents_update: bool,
+
+    /// Remove blurb from agent file.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agents_remove: bool,
+
+    /// Dry-run mode for agents commands (show what would change without writing).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agents_dry_run: bool,
+
     #[arg(long)]
     pub as_of: Option<String>,
 
@@ -369,5 +402,10 @@ impl Cli {
             || self.save_baseline.is_some()
             || self.robot_drift
             || self.robot_search
+    }
+
+    #[must_use]
+    pub fn is_agents_command(&self) -> bool {
+        self.agents_check || self.agents_add || self.agents_update || self.agents_remove
     }
 }

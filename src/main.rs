@@ -90,6 +90,35 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // --agents-* commands don't need issues loaded
+    if cli.is_agents_command() {
+        let work_dir = cli
+            .workspace
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        let result = if cli.agents_check {
+            Ok(bvr::agents::agents_check(&work_dir))
+        } else if cli.agents_add {
+            bvr::agents::agents_add(&work_dir, cli.agents_dry_run)
+        } else if cli.agents_update {
+            bvr::agents::agents_update(&work_dir, cli.agents_dry_run)
+        } else {
+            bvr::agents::agents_remove(&work_dir, cli.agents_dry_run)
+        };
+
+        match result {
+            Ok(r) => {
+                println!("{}", r.message);
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
     let mut issues = match load_issues(&cli) {
         Ok(issues) => issues,
         Err(error) => {
@@ -1189,6 +1218,19 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
         return ExitCode::SUCCESS;
+    }
+
+    if let Some(ref view_name) = cli.debug_render {
+        match bvr::tui::render_debug_view(issues, view_name, cli.debug_width, cli.debug_height) {
+            Ok(output) => {
+                println!("{output}");
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
     }
 
     match bvr::tui::run_tui(issues) {
