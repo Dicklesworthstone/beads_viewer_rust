@@ -17,7 +17,7 @@ use bvr::analysis::git_history::{
 use bvr::analysis::suggest::{SuggestOptions, SuggestionType};
 use bvr::analysis::triage::TriageOptions;
 use bvr::analysis::{Analyzer, Insights, MetricStatus};
-use bvr::cli::{Cli, GraphFormat, GraphPreset};
+use bvr::cli::{Cli, GraphFormat, GraphPreset, GraphStyle};
 use bvr::loader;
 use bvr::robot::{
     compute_data_hash, default_field_descriptions, emit_with_stats, envelope, generate_robot_docs,
@@ -330,21 +330,36 @@ fn main() -> ExitCode {
     }
 
     if let Some(export_path) = cli.export_graph.as_deref() {
-        let output = build_robot_graph_output(
-            &issues,
-            &analyzer,
-            &cli,
-            Some(resolve_graph_export_format(export_path, cli.graph_format)),
-        );
+        let export_target = resolve_graph_export_target(export_path, cli.graph_format);
 
-        if let Err(error) = write_graph_export_snapshot(
-            export_path,
-            &output,
-            cli.graph_title.as_deref(),
-            cli.graph_preset,
-        ) {
-            eprintln!("error: {error}");
-            return ExitCode::from(1);
+        match export_target {
+            GraphExportTarget::Text(format) => {
+                let output = build_robot_graph_output(&issues, &analyzer, &cli, Some(format));
+                if let Err(error) = write_graph_export_snapshot(
+                    export_path,
+                    &output,
+                    cli.graph_title.as_deref(),
+                    cli.graph_preset,
+                    cli.graph_style,
+                ) {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            }
+            GraphExportTarget::Static(format) => {
+                let graph_data = build_graph_export_data(&issues, &analyzer, &cli);
+                if let Err(error) = write_static_graph_export_snapshot(
+                    export_path,
+                    format,
+                    &graph_data,
+                    cli.graph_title.as_deref(),
+                    cli.graph_preset,
+                    cli.graph_style,
+                ) {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            }
         }
 
         return ExitCode::SUCCESS;
@@ -2325,46 +2340,35 @@ fn build_robot_graph_output(
     cli: &Cli,
     graph_format_override: Option<GraphFormat>,
 ) -> RobotGraphOutput {
-    let mut filtered_issues = filter_graph_issues(
-        issues,
-        cli.label.as_deref(),
-        cli.graph_root.as_deref(),
-        cli.graph_depth,
-    );
-    filtered_issues.sort_by(|left, right| left.id.cmp(&right.id));
-
+    let graph_data = build_graph_export_data(issues, analyzer, cli);
     let graph_format = graph_format_override.unwrap_or(cli.graph_format);
     let format = graph_format_name(graph_format).to_string();
-    let filters_applied = collect_graph_filters(cli);
-    let data_hash = compute_data_hash(issues);
 
-    if filtered_issues.is_empty() {
+    if graph_data.filtered_issues.is_empty() {
         return RobotGraphOutput {
             format,
             graph: None,
             nodes: 0,
             edges: 0,
-            filters_applied,
+            filters_applied: graph_data.filters_applied,
             explanation: GraphExplanation {
                 what: "Empty graph - no issues match the filter criteria".to_string(),
                 how_to_render: None,
                 when_to_use: "Adjust filter parameters to include more issues".to_string(),
             },
-            data_hash,
+            data_hash: graph_data.data_hash,
             adjacency: None,
         };
     }
-
-    let edges = build_graph_edges(&filtered_issues);
 
     let mut graph = None;
     let mut adjacency = None;
     let explanation = match graph_format {
         GraphFormat::Json => {
             adjacency = Some(build_graph_adjacency(
-                &filtered_issues,
-                &edges,
-                &analyzer.metrics.pagerank,
+                &graph_data.filtered_issues,
+                &graph_data.edges,
+                &graph_data.pagerank,
             ));
             GraphExplanation {
                 what: "Dependency graph as JSON adjacency list".to_string(),
@@ -2374,9 +2378,9 @@ fn build_robot_graph_output(
         }
         GraphFormat::Dot => {
             graph = Some(generate_dot(
-                &filtered_issues,
-                &edges,
-                &analyzer.metrics.pagerank,
+                &graph_data.filtered_issues,
+                &graph_data.edges,
+                &graph_data.pagerank,
                 cli.graph_preset,
             ));
             GraphExplanation {
@@ -2390,7 +2394,10 @@ fn build_robot_graph_output(
             }
         }
         GraphFormat::Mermaid => {
-            graph = Some(generate_mermaid(&filtered_issues, &edges));
+            graph = Some(generate_mermaid(
+                &graph_data.filtered_issues,
+                &graph_data.edges,
+            ));
             GraphExplanation {
                 what: "Dependency graph in Mermaid diagram format".to_string(),
                 how_to_render: Some(
@@ -2407,12 +2414,44 @@ fn build_robot_graph_output(
     RobotGraphOutput {
         format,
         graph,
-        nodes: filtered_issues.len(),
-        edges: edges.len(),
-        filters_applied,
+        nodes: graph_data.filtered_issues.len(),
+        edges: graph_data.edges.len(),
+        filters_applied: graph_data.filters_applied,
         explanation,
-        data_hash,
+        data_hash: graph_data.data_hash,
         adjacency,
+    }
+}
+
+struct GraphExportData {
+    filtered_issues: Vec<bvr::model::Issue>,
+    edges: Vec<GraphAdjacencyEdge>,
+    filters_applied: BTreeMap<String, String>,
+    data_hash: String,
+    pagerank: std::collections::HashMap<String, f64>,
+    critical_depth: std::collections::HashMap<String, usize>,
+}
+
+fn build_graph_export_data(
+    issues: &[bvr::model::Issue],
+    analyzer: &Analyzer,
+    cli: &Cli,
+) -> GraphExportData {
+    let mut filtered_issues = filter_graph_issues(
+        issues,
+        cli.label.as_deref(),
+        cli.graph_root.as_deref(),
+        cli.graph_depth,
+    );
+    filtered_issues.sort_by(|left, right| left.id.cmp(&right.id));
+
+    GraphExportData {
+        edges: build_graph_edges(&filtered_issues),
+        filters_applied: collect_graph_filters(cli),
+        data_hash: compute_data_hash(issues),
+        pagerank: analyzer.metrics.pagerank.clone(),
+        critical_depth: analyzer.metrics.critical_depth.clone(),
+        filtered_issues,
     }
 }
 
@@ -2579,19 +2618,202 @@ const fn graph_format_name(format: GraphFormat) -> &'static str {
     }
 }
 
-fn resolve_graph_export_format(path: &Path, fallback: GraphFormat) -> GraphFormat {
+#[derive(Debug, Clone, Copy)]
+enum StaticGraphFormat {
+    Svg,
+    Png,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GraphExportTarget {
+    Text(GraphFormat),
+    Static(StaticGraphFormat),
+}
+
+#[derive(Debug, Clone)]
+struct StaticGraphNode {
+    id: String,
+    title: String,
+    status: String,
+    priority: i32,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Debug, Clone)]
+struct StaticGraphLayout {
+    width: u32,
+    height: u32,
+    title: String,
+    style: GraphStyle,
+    preset: GraphPreset,
+    filters: String,
+    data_hash: String,
+    nodes: Vec<StaticGraphNode>,
+    edges: Vec<GraphAdjacencyEdge>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RgbaColor {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+}
+
+impl RgbaColor {
+    const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 255 }
+    }
+}
+
+#[derive(Debug)]
+struct PngCanvas {
+    width: usize,
+    height: usize,
+    pixels: Vec<u8>,
+}
+
+impl PngCanvas {
+    fn new(width: usize, height: usize, background: RgbaColor) -> Self {
+        let mut pixels = vec![0_u8; width.saturating_mul(height).saturating_mul(4)];
+        for chunk in pixels.chunks_exact_mut(4) {
+            chunk[0] = background.r;
+            chunk[1] = background.g;
+            chunk[2] = background.b;
+            chunk[3] = background.a;
+        }
+        Self {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    fn set_pixel(&mut self, x: i32, y: i32, color: RgbaColor) {
+        let Ok(x) = usize::try_from(x) else {
+            return;
+        };
+        let Ok(y) = usize::try_from(y) else {
+            return;
+        };
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let idx = (y * self.width + x) * 4;
+        self.pixels[idx] = color.r;
+        self.pixels[idx + 1] = color.g;
+        self.pixels[idx + 2] = color.b;
+        self.pixels[idx + 3] = color.a;
+    }
+
+    fn fill_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: RgbaColor) {
+        let right = x.saturating_add(width);
+        let bottom = y.saturating_add(height);
+        for yy in y..bottom {
+            for xx in x..right {
+                self.set_pixel(xx, yy, color);
+            }
+        }
+    }
+
+    fn stroke_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: RgbaColor) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        let right = x.saturating_add(width - 1);
+        let bottom = y.saturating_add(height - 1);
+        for xx in x..=right {
+            self.set_pixel(xx, y, color);
+            self.set_pixel(xx, bottom, color);
+        }
+        for yy in y..=bottom {
+            self.set_pixel(x, yy, color);
+            self.set_pixel(right, yy, color);
+        }
+    }
+
+    fn draw_line(
+        &mut self,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        color: RgbaColor,
+        dashed: bool,
+        thick: bool,
+    ) {
+        let mut x = x0;
+        let mut y = y0;
+        let dx = (x1 - x0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let dy = -(y1 - y0).abs();
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        let mut step = 0_i32;
+
+        loop {
+            let draw = !dashed || ((step / 8) % 2 == 0);
+            if draw {
+                self.set_pixel(x, y, color);
+                if thick {
+                    self.set_pixel(x + 1, y, color);
+                    self.set_pixel(x - 1, y, color);
+                    self.set_pixel(x, y + 1, color);
+                    self.set_pixel(x, y - 1, color);
+                }
+            }
+
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = err.saturating_mul(2);
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+            step = step.saturating_add(1);
+        }
+    }
+}
+
+const fn graph_preset_name(preset: GraphPreset) -> &'static str {
+    match preset {
+        GraphPreset::Compact => "compact",
+        GraphPreset::Roomy => "roomy",
+    }
+}
+
+const fn graph_style_name(style: GraphStyle) -> &'static str {
+    match style {
+        GraphStyle::Force => "force",
+        GraphStyle::Grid => "grid",
+    }
+}
+
+fn resolve_graph_export_target(path: &Path, fallback: GraphFormat) -> GraphExportTarget {
     let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
-        return fallback;
+        return GraphExportTarget::Text(fallback);
     };
 
     if extension.eq_ignore_ascii_case("json") {
-        GraphFormat::Json
+        GraphExportTarget::Text(GraphFormat::Json)
     } else if extension.eq_ignore_ascii_case("dot") {
-        GraphFormat::Dot
+        GraphExportTarget::Text(GraphFormat::Dot)
     } else if extension.eq_ignore_ascii_case("mmd") || extension.eq_ignore_ascii_case("mermaid") {
-        GraphFormat::Mermaid
+        GraphExportTarget::Text(GraphFormat::Mermaid)
+    } else if extension.eq_ignore_ascii_case("svg") {
+        GraphExportTarget::Static(StaticGraphFormat::Svg)
+    } else if extension.eq_ignore_ascii_case("png") {
+        GraphExportTarget::Static(StaticGraphFormat::Png)
     } else {
-        fallback
+        GraphExportTarget::Text(fallback)
     }
 }
 
@@ -2600,12 +2822,13 @@ fn write_graph_export_snapshot(
     output: &RobotGraphOutput,
     title: Option<&str>,
     preset: GraphPreset,
+    style: GraphStyle,
 ) -> bvr::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
 
-    let payload = render_graph_export_snapshot(output, title, preset)?;
+    let payload = render_graph_export_snapshot(output, title, preset, style)?;
     fs::write(path, payload)?;
     Ok(())
 }
@@ -2614,12 +2837,11 @@ fn render_graph_export_snapshot(
     output: &RobotGraphOutput,
     title: Option<&str>,
     preset: GraphPreset,
+    style: GraphStyle,
 ) -> bvr::Result<String> {
     let title = title.map(str::trim).filter(|value| !value.is_empty());
-    let preset_name = match preset {
-        GraphPreset::Compact => "compact",
-        GraphPreset::Roomy => "roomy",
-    };
+    let preset_name = graph_preset_name(preset);
+    let style_name = graph_style_name(style);
 
     match output.format.as_str() {
         "json" => {
@@ -2632,10 +2854,14 @@ fn render_graph_export_snapshot(
                 .graph
                 .clone()
                 .unwrap_or_else(|| "digraph G {\n    // no matching issues\n}\n".to_string());
+            let mut lines = Vec::<String>::new();
             if let Some(graph_title) = title {
-                return Ok(format!("// {graph_title}\n{graph}"));
+                lines.push(format!("// {graph_title}"));
             }
-            Ok(graph)
+            lines.push(format!("// preset: {preset_name}"));
+            lines.push(format!("// style: {style_name}"));
+            lines.push(graph);
+            Ok(lines.join("\n"))
         }
         "mermaid" => {
             let graph = output
@@ -2647,6 +2873,7 @@ fn render_graph_export_snapshot(
                 lines.push(format!("%% {graph_title}"));
             }
             lines.push(format!("%% preset: {preset_name}"));
+            lines.push(format!("%% style: {style_name}"));
             lines.push(graph);
             Ok(lines.join("\n"))
         }
@@ -2654,6 +2881,482 @@ fn render_graph_export_snapshot(
             "unsupported graph export format: {other}"
         ))),
     }
+}
+
+fn write_static_graph_export_snapshot(
+    path: &Path,
+    format: StaticGraphFormat,
+    graph_data: &GraphExportData,
+    title: Option<&str>,
+    preset: GraphPreset,
+    style: GraphStyle,
+) -> bvr::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+
+    let layout = build_static_graph_layout(graph_data, title, preset, style);
+    match format {
+        StaticGraphFormat::Svg => {
+            let payload = render_static_svg_snapshot(&layout);
+            fs::write(path, payload)?;
+            Ok(())
+        }
+        StaticGraphFormat::Png => render_static_png_snapshot(path, &layout),
+    }
+}
+
+fn build_static_graph_layout(
+    graph_data: &GraphExportData,
+    title: Option<&str>,
+    preset: GraphPreset,
+    style: GraphStyle,
+) -> StaticGraphLayout {
+    let title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Graph Snapshot")
+        .to_string();
+    let filters = if graph_data.filters_applied.is_empty() {
+        "none".to_string()
+    } else {
+        graph_data
+            .filters_applied
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    match style {
+        GraphStyle::Grid => build_grid_layout(graph_data, title, preset, style, filters),
+        GraphStyle::Force => build_force_layout(graph_data, title, preset, style, filters),
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn build_grid_layout(
+    graph_data: &GraphExportData,
+    title: String,
+    preset: GraphPreset,
+    style: GraphStyle,
+    filters: String,
+) -> StaticGraphLayout {
+    let (node_w, node_h, col_gap, row_gap, padding, header_h) = match preset {
+        GraphPreset::Compact => (168.0, 70.0, 62.0, 34.0, 28.0, 110.0),
+        GraphPreset::Roomy => (192.0, 84.0, 92.0, 52.0, 36.0, 134.0),
+    };
+
+    let mut levels = BTreeMap::<usize, Vec<&bvr::model::Issue>>::new();
+    for issue in &graph_data.filtered_issues {
+        let level = graph_data
+            .critical_depth
+            .get(&issue.id)
+            .copied()
+            .unwrap_or(1)
+            .max(1);
+        levels.entry(level).or_default().push(issue);
+    }
+
+    let mut ordered_levels = levels.keys().copied().collect::<Vec<_>>();
+    ordered_levels.sort_unstable();
+    for issues in levels.values_mut() {
+        issues.sort_by(|left, right| {
+            let left_rank = graph_data
+                .pagerank
+                .get(&left.id)
+                .copied()
+                .unwrap_or_default();
+            let right_rank = graph_data
+                .pagerank
+                .get(&right.id)
+                .copied()
+                .unwrap_or_default();
+            let delta = (right_rank - left_rank).abs();
+            if delta > 1e-9 {
+                right_rank
+                    .partial_cmp(&left_rank)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                left.id.cmp(&right.id)
+            }
+        });
+    }
+
+    let mut nodes = Vec::<StaticGraphNode>::new();
+    let mut max_rows = 1_usize;
+    for (column, level) in ordered_levels.iter().enumerate() {
+        let Some(bucket) = levels.get(level) else {
+            continue;
+        };
+        max_rows = max_rows.max(bucket.len());
+        for (row, issue) in bucket.iter().enumerate() {
+            let x = padding + column as f64 * (node_w + col_gap);
+            let y = header_h + padding + row as f64 * (node_h + row_gap);
+            nodes.push(StaticGraphNode {
+                id: issue.id.clone(),
+                title: truncate_runes(&issue.title, 34),
+                status: issue.status.clone(),
+                priority: issue.priority,
+                x,
+                y,
+                width: node_w,
+                height: node_h,
+            });
+        }
+    }
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let width = if ordered_levels.is_empty() {
+        760_u32
+    } else {
+        (padding * 2.0
+            + ordered_levels.len() as f64 * node_w
+            + (ordered_levels.len().saturating_sub(1)) as f64 * col_gap)
+            .ceil()
+            .max(760.0) as u32
+    };
+    let height = (header_h
+        + padding * 2.0
+        + max_rows as f64 * node_h
+        + max_rows.saturating_sub(1) as f64 * row_gap)
+        .ceil()
+        .max(540.0) as u32;
+
+    StaticGraphLayout {
+        width,
+        height,
+        title,
+        style,
+        preset,
+        filters,
+        data_hash: graph_data.data_hash.clone(),
+        nodes,
+        edges: graph_data.edges.clone(),
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn build_force_layout(
+    graph_data: &GraphExportData,
+    title: String,
+    preset: GraphPreset,
+    style: GraphStyle,
+    filters: String,
+) -> StaticGraphLayout {
+    let (width, height, header_h, node_w, node_h, margin) = match preset {
+        GraphPreset::Compact => (980_u32, 720_u32, 112.0, 150.0, 66.0, 88.0),
+        GraphPreset::Roomy => (1280_u32, 900_u32, 132.0, 176.0, 78.0, 112.0),
+    };
+
+    let mut ordered = graph_data.filtered_issues.clone();
+    ordered.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut nodes = Vec::<StaticGraphNode>::new();
+    let count = ordered.len().max(1);
+    let radius_base = (f64::from(width.min(height)) * 0.34).max(120.0);
+    let cx = f64::from(width) / 2.0;
+    let cy = header_h + (f64::from(height) - header_h) / 2.0;
+
+    for (index, issue) in ordered.iter().enumerate() {
+        let angle = std::f64::consts::TAU * (index as f64 / count as f64);
+        let rank = graph_data
+            .pagerank
+            .get(&issue.id)
+            .copied()
+            .unwrap_or_default();
+        let radial_jitter = rank.mul_add(45.0, 0.0).clamp(0.0, 62.0);
+        let radius = radius_base + radial_jitter;
+        let x = (cx + radius * angle.cos() - node_w / 2.0)
+            .clamp(margin, f64::from(width) - margin - node_w);
+        let y = (cy + radius * angle.sin() - node_h / 2.0)
+            .clamp(header_h + 12.0, f64::from(height) - margin - node_h);
+        nodes.push(StaticGraphNode {
+            id: issue.id.clone(),
+            title: truncate_runes(&issue.title, 34),
+            status: issue.status.clone(),
+            priority: issue.priority,
+            x,
+            y,
+            width: node_w,
+            height: node_h,
+        });
+    }
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+
+    StaticGraphLayout {
+        width,
+        height,
+        title,
+        style,
+        preset,
+        filters,
+        data_hash: graph_data.data_hash.clone(),
+        nodes,
+        edges: graph_data.edges.clone(),
+    }
+}
+
+fn render_static_svg_snapshot(layout: &StaticGraphLayout) -> String {
+    let mut out = String::new();
+    let style_name = graph_style_name(layout.style);
+    let preset_name = graph_preset_name(layout.preset);
+    let _ = writeln!(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+    let _ = writeln!(
+        out,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">",
+        layout.width, layout.height, layout.width, layout.height
+    );
+    let _ = writeln!(out, "<!-- format: svg -->");
+    let _ = writeln!(out, "<!-- style: {style_name} -->");
+    let _ = writeln!(out, "<!-- preset: {preset_name} -->");
+    let _ = writeln!(
+        out,
+        "<!-- filters: {} -->",
+        escape_xml_text(&layout.filters)
+    );
+    let _ = writeln!(out, "<!-- data_hash: {} -->", layout.data_hash);
+    let _ = writeln!(
+        out,
+        "<!-- counts: nodes={} edges={} -->",
+        layout.nodes.len(),
+        layout.edges.len()
+    );
+    let _ = writeln!(
+        out,
+        "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"#F8FAFC\"/>",
+        layout.width, layout.height
+    );
+    let _ = writeln!(
+        out,
+        "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"82\" fill=\"#E2E8F0\"/>",
+        layout.width
+    );
+    let _ = writeln!(
+        out,
+        "<text x=\"24\" y=\"34\" font-size=\"20\" font-weight=\"700\" fill=\"#0F172A\">{}</text>",
+        escape_xml_text(&layout.title)
+    );
+    let _ = writeln!(
+        out,
+        "<text x=\"24\" y=\"60\" font-size=\"12\" fill=\"#334155\">style={} preset={} filters={}</text>",
+        style_name,
+        preset_name,
+        escape_xml_text(&layout.filters)
+    );
+
+    let centers = layout
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.clone(),
+                (
+                    node.x + node.width / 2.0,
+                    node.y + node.height / 2.0,
+                    node.width,
+                    node.height,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for edge in &layout.edges {
+        let Some(&(from_x, from_y, _, _)) = centers.get(&edge.from) else {
+            continue;
+        };
+        let Some(&(to_x, to_y, _, _)) = centers.get(&edge.to) else {
+            continue;
+        };
+        let is_blocks = edge.edge_type == "blocks";
+        let stroke = if is_blocks { "#E11D48" } else { "#64748B" };
+        let width = if is_blocks { 2 } else { 1 };
+        let dash = if is_blocks {
+            String::new()
+        } else {
+            " stroke-dasharray=\"6 5\"".to_string()
+        };
+        let _ = writeln!(
+            out,
+            "<line x1=\"{from_x:.1}\" y1=\"{from_y:.1}\" x2=\"{to_x:.1}\" y2=\"{to_y:.1}\" stroke=\"{stroke}\" stroke-width=\"{width}\"{dash}/>"
+        );
+    }
+
+    for node in &layout.nodes {
+        let fill = dot_status_color(&node.status);
+        let x = node.x;
+        let y = node.y;
+        let w = node.width;
+        let h = node.height;
+        let _ = writeln!(
+            out,
+            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{w:.1}\" height=\"{h:.1}\" rx=\"8\" ry=\"8\" fill=\"{fill}\" stroke=\"#334155\" stroke-width=\"1\"/>"
+        );
+        let _ = writeln!(
+            out,
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-size=\"12\" font-weight=\"700\" fill=\"#0F172A\">{}</text>",
+            x + 10.0,
+            y + 20.0,
+            escape_xml_text(&truncate_runes(&node.id, 24))
+        );
+        let _ = writeln!(
+            out,
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-size=\"11\" fill=\"#0F172A\">{}</text>",
+            x + 10.0,
+            y + 38.0,
+            escape_xml_text(&truncate_runes(&node.title, 30))
+        );
+        let _ = writeln!(
+            out,
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-size=\"10\" fill=\"#334155\">P{} {}</text>",
+            x + 10.0,
+            y + h - 12.0,
+            node.priority,
+            escape_xml_text(&node.status)
+        );
+    }
+
+    let _ = writeln!(out, "</svg>");
+    out
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn render_static_png_snapshot(path: &Path, layout: &StaticGraphLayout) -> bvr::Result<()> {
+    let mut canvas = PngCanvas::new(
+        layout.width as usize,
+        layout.height as usize,
+        RgbaColor::rgb(248, 250, 252),
+    );
+    canvas.fill_rect(
+        0,
+        0,
+        i32::try_from(layout.width).unwrap_or(i32::MAX),
+        82,
+        RgbaColor::rgb(226, 232, 240),
+    );
+
+    let centers = layout
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.clone(),
+                (
+                    (node.x + node.width / 2.0).round() as i32,
+                    (node.y + node.height / 2.0).round() as i32,
+                ),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for edge in &layout.edges {
+        let Some(&(from_x, from_y)) = centers.get(&edge.from) else {
+            continue;
+        };
+        let Some(&(to_x, to_y)) = centers.get(&edge.to) else {
+            continue;
+        };
+        let is_blocks = edge.edge_type == "blocks";
+        let color = if is_blocks {
+            RgbaColor::rgb(225, 29, 72)
+        } else {
+            RgbaColor::rgb(100, 116, 139)
+        };
+        canvas.draw_line(from_x, from_y, to_x, to_y, color, !is_blocks, is_blocks);
+    }
+
+    for node in &layout.nodes {
+        let fill = status_fill_color(&node.status);
+        let x = node.x.round() as i32;
+        let y = node.y.round() as i32;
+        let w = node.width.round() as i32;
+        let h = node.height.round() as i32;
+        canvas.fill_rect(x, y, w, h, fill);
+        canvas.stroke_rect(x, y, w, h, RgbaColor::rgb(51, 65, 85));
+    }
+
+    let file = fs::File::create(path)?;
+    let mut encoder = png::Encoder::new(file, layout.width, layout.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .add_text_chunk("Title".to_string(), layout.title.clone())
+        .map_err(|error| {
+            bvr::error::BvrError::InvalidArgument(format!("png metadata write failed: {error}"))
+        })?;
+    encoder
+        .add_text_chunk(
+            "Style".to_string(),
+            graph_style_name(layout.style).to_string(),
+        )
+        .map_err(|error| {
+            bvr::error::BvrError::InvalidArgument(format!("png metadata write failed: {error}"))
+        })?;
+    encoder
+        .add_text_chunk(
+            "Preset".to_string(),
+            graph_preset_name(layout.preset).to_string(),
+        )
+        .map_err(|error| {
+            bvr::error::BvrError::InvalidArgument(format!("png metadata write failed: {error}"))
+        })?;
+    encoder
+        .add_text_chunk(
+            "Counts".to_string(),
+            format!("nodes={},edges={}", layout.nodes.len(), layout.edges.len()),
+        )
+        .map_err(|error| {
+            bvr::error::BvrError::InvalidArgument(format!("png metadata write failed: {error}"))
+        })?;
+
+    let mut writer = encoder.write_header().map_err(|error| {
+        bvr::error::BvrError::InvalidArgument(format!("png header write failed: {error}"))
+    })?;
+    writer.write_image_data(&canvas.pixels).map_err(|error| {
+        bvr::error::BvrError::InvalidArgument(format!("png data write failed: {error}"))
+    })?;
+    Ok(())
+}
+
+fn status_fill_color(status: &str) -> RgbaColor {
+    let normalized = status.trim().to_ascii_lowercase();
+    if is_closed_like_status(&normalized) {
+        return RgbaColor::rgb(207, 216, 220);
+    }
+    match normalized.as_str() {
+        "open" => RgbaColor::rgb(200, 230, 201),
+        "in_progress" => RgbaColor::rgb(187, 222, 251),
+        "blocked" => RgbaColor::rgb(255, 205, 210),
+        _ => RgbaColor::rgb(255, 255, 255),
+    }
+}
+
+fn escape_xml_text(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn generate_dot(
@@ -2914,9 +3617,12 @@ fn print_robot_help() {
     println!("  --robot-burndown <id|current> Sprint burndown data");
     println!("  --robot-capacity          Capacity simulation output");
     println!("  --robot-graph             Graph export (json|dot|mermaid)");
-    println!("  --export-graph <file>     Write graph snapshot to file (.json|.dot|.mmd)");
+    println!(
+        "  --export-graph <file>     Write graph snapshot to file (.json|.dot|.mmd|.svg|.png)"
+    );
     println!("  --graph-title <text>      Optional title comment for exported graph files");
-    println!("  --graph-preset <preset>   DOT spacing preset: compact (default) or roomy");
+    println!("  --graph-preset <preset>   Graph layout spacing preset: compact (default) or roomy");
+    println!("  --graph-style <style>     Static snapshot layout style: force (default) or grid");
     println!(
         "  --robot-forecast <id|all> ETA forecast (--forecast-label, --forecast-sprint, --forecast-agents)"
     );

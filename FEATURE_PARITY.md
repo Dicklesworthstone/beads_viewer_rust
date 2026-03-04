@@ -218,14 +218,15 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--graph-root` | `--graph-root` | partial |
 | `--graph-depth` | `--graph-depth` | partial |
 
-### Export/Graph Snapshot Flags — 5 complete
+### Export/Graph Snapshot Flags — 6 complete
 | Legacy Flag | bvr Flag | Status | Notes |
 |---|---|---|---|
 | `--export-md` | `--export-md` | complete | Markdown report export. |
 | `--no-hooks` | `--no-hooks` | complete | Skip export hook execution. |
-| `--export-graph` | `--export-graph` | complete | Deterministic graph snapshot file output. |
-| `--graph-title` | `--graph-title` | complete | Optional title metadata for exported graph text. |
-| `--graph-preset` | `--graph-preset` | complete | Layout density preset (`compact`/`roomy`) for DOT snapshots. |
+| `--export-graph` | `--export-graph` | complete | Deterministic graph snapshot output for `.json/.dot/.mmd/.svg/.png` with extension-based format inference. |
+| `--graph-title` | `--graph-title` | complete | Optional title metadata for exported graph snapshots (text + static). |
+| `--graph-preset` | `--graph-preset` | complete | Layout density preset (`compact`/`roomy`) for text and static snapshots. |
+| `--graph-style` | `--graph-style` | complete | Static snapshot layout style (`force`/`grid`). |
 
 ### Workspace/Repo Scoping — 3 complete
 | Legacy Flag | bvr Flag | Status |

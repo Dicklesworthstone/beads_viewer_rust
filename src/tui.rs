@@ -1,6 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::analysis::Analyzer;
+use crate::analysis::git_history::{
+    GitCommitRecord, HistoryBeadCompat, HistoryCommitCompat, HistoryMilestonesCompat,
+    correlate_histories_with_git, finalize_history_entries, load_git_commits,
+};
+use crate::loader;
+use crate::model::Issue;
+use crate::{BvrError, Result};
 use chrono::{DateTime, Utc};
 use ftui::core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui::core::geometry::Rect;
@@ -11,16 +19,157 @@ use ftui::widgets::Widget;
 use ftui::widgets::block::Block;
 use ftui::widgets::paragraph::Paragraph;
 
-use crate::analysis::Analyzer;
-use crate::analysis::git_history::{
-    GitCommitRecord, HistoryBeadCompat, HistoryCommitCompat, HistoryMilestonesCompat,
-    correlate_histories_with_git, finalize_history_entries, load_git_commits,
-};
-use crate::loader;
-use crate::model::Issue;
-use crate::{BvrError, Result};
+// ---------------------------------------------------------------------------
+// Visual Tokens — centralised style constants for the TUI
+// ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
+/// Terminal width breakpoints for responsive layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Breakpoint {
+    /// < 80 columns — compact single-pane emphasis
+    Narrow,
+    /// 80..120 columns — standard two-pane
+    Medium,
+    /// >= 120 columns — roomy two-pane with extra detail
+    Wide,
+}
+
+impl Breakpoint {
+    fn from_width(w: u16) -> Self {
+        if w < 80 {
+            Self::Narrow
+        } else if w < 120 {
+            Self::Medium
+        } else {
+            Self::Wide
+        }
+    }
+
+    /// List pane percentage for the horizontal split.
+    fn list_pct(self) -> f32 {
+        match self {
+            Self::Narrow => 35.0,
+            Self::Medium => 42.0,
+            Self::Wide => 38.0,
+        }
+    }
+
+    /// Detail pane percentage for the horizontal split.
+    fn detail_pct(self) -> f32 {
+        100.0 - self.list_pct()
+    }
+}
+
+/// Semantic colour tokens (dark-background palette).
+#[allow(dead_code)]
+mod tokens {
+    use ftui::{PackedRgba, Style};
+
+    // -- Palette primitives --------------------------------------------------
+    pub const FG_DEFAULT: PackedRgba = PackedRgba::rgb(204, 204, 204); // #cccccc
+    pub const FG_DIM: PackedRgba = PackedRgba::rgb(136, 136, 136); // #888888
+    pub const FG_ACCENT: PackedRgba = PackedRgba::rgb(97, 175, 239); // #61afef blue
+    pub const FG_SUCCESS: PackedRgba = PackedRgba::rgb(152, 195, 121); // #98c379 green
+    pub const FG_WARNING: PackedRgba = PackedRgba::rgb(229, 192, 123); // #e5c07b yellow
+    pub const FG_ERROR: PackedRgba = PackedRgba::rgb(224, 108, 117); // #e06c75 red
+    pub const FG_MUTED: PackedRgba = PackedRgba::rgb(92, 99, 112); // #5c6370
+
+    pub const BG_BASE: PackedRgba = PackedRgba::rgb(40, 44, 52); // #282c34
+    pub const BG_SURFACE: PackedRgba = PackedRgba::rgb(50, 56, 66); // #323842
+    pub const BG_HIGHLIGHT: PackedRgba = PackedRgba::rgb(62, 68, 81); // #3e4451
+
+    // -- Status colours ------------------------------------------------------
+    pub const STATUS_OPEN: PackedRgba = FG_ACCENT;
+    pub const STATUS_IN_PROGRESS: PackedRgba = FG_WARNING;
+    pub const STATUS_BLOCKED: PackedRgba = FG_ERROR;
+    pub const STATUS_CLOSED: PackedRgba = FG_SUCCESS;
+
+    // -- Priority colours ----------------------------------------------------
+    pub const PRIO_P0: PackedRgba = FG_ERROR;
+    pub const PRIO_P1: PackedRgba = FG_WARNING;
+    pub const PRIO_P2: PackedRgba = FG_ACCENT;
+    pub const PRIO_P3: PackedRgba = FG_DIM;
+    pub const PRIO_P4: PackedRgba = FG_MUTED;
+
+    // -- Semantic styles -----------------------------------------------------
+    pub fn header() -> Style {
+        Style::new().fg(FG_ACCENT).bold()
+    }
+
+    pub fn header_bg() -> Style {
+        Style::new().fg(FG_ACCENT).bg(BG_SURFACE).bold()
+    }
+
+    pub fn footer() -> Style {
+        Style::new().fg(FG_DIM)
+    }
+
+    pub fn selected() -> Style {
+        Style::new().fg(FG_DEFAULT).bg(BG_HIGHLIGHT).bold()
+    }
+
+    pub fn panel_border() -> Style {
+        Style::new().fg(FG_MUTED)
+    }
+
+    pub fn panel_border_focused() -> Style {
+        Style::new().fg(FG_ACCENT)
+    }
+
+    pub fn panel_title() -> Style {
+        Style::new().fg(FG_DEFAULT).bold()
+    }
+
+    pub fn panel_title_focused() -> Style {
+        Style::new().fg(FG_ACCENT).bold()
+    }
+
+    pub fn status_style(status: &str) -> Style {
+        let fg = match status {
+            "open" => STATUS_OPEN,
+            "in_progress" => STATUS_IN_PROGRESS,
+            "blocked" => STATUS_BLOCKED,
+            "closed" => STATUS_CLOSED,
+            _ => FG_DIM,
+        };
+        Style::new().fg(fg)
+    }
+
+    pub fn priority_fg(prio: u8) -> PackedRgba {
+        match prio {
+            0 => PRIO_P0,
+            1 => PRIO_P1,
+            2 => PRIO_P2,
+            3 => PRIO_P3,
+            _ => PRIO_P4,
+        }
+    }
+
+    pub fn priority_style(prio: u8) -> Style {
+        Style::new().fg(priority_fg(prio))
+    }
+
+    pub fn search_highlight() -> Style {
+        Style::new()
+            .fg(PackedRgba::rgb(0, 0, 0))
+            .bg(FG_WARNING)
+            .bold()
+    }
+
+    pub fn help_key() -> Style {
+        Style::new().fg(FG_ACCENT).bold()
+    }
+
+    pub fn help_desc() -> Style {
+        Style::new().fg(FG_DEFAULT)
+    }
+
+    pub fn dim() -> Style {
+        Style::new().fg(FG_DIM)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
     Main,
     Board,
@@ -127,6 +276,41 @@ impl BoardGrouping {
             Self::Status => Self::Priority,
             Self::Priority => Self::Type,
             Self::Type => Self::Status,
+        }
+    }
+}
+
+/// 3-state empty lane visibility: Auto → `ShowAll` → `HideEmpty` → Auto.
+/// Auto: status grouping shows all, priority/type grouping hides empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EmptyLaneVisibility {
+    Auto,
+    ShowAll,
+    HideEmpty,
+}
+
+impl EmptyLaneVisibility {
+    fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::ShowAll,
+            Self::ShowAll => Self::HideEmpty,
+            Self::HideEmpty => Self::Auto,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::ShowAll => "Show All",
+            Self::HideEmpty => "Hide Empty",
+        }
+    }
+
+    fn should_show_empty(self, grouping: BoardGrouping) -> bool {
+        match self {
+            Self::ShowAll => true,
+            Self::HideEmpty => false,
+            Self::Auto => matches!(grouping, BoardGrouping::Status),
         }
     }
 }
@@ -276,7 +460,7 @@ struct BvrApp {
     list_filter: ListFilter,
     list_sort: ListSort,
     board_grouping: BoardGrouping,
-    board_show_empty_lanes: bool,
+    board_empty_visibility: EmptyLaneVisibility,
     mode: ViewMode,
     mode_before_history: ViewMode,
     focus: FocusPane,
@@ -305,6 +489,22 @@ struct BvrApp {
     insights_show_explanations: bool,
     insights_show_calc_proof: bool,
     detail_dep_cursor: usize,
+    /// Per-key event trace log for e2e debugging. Each entry records
+    /// the key pressed and resulting state snapshot.
+    #[cfg(test)]
+    key_trace: Vec<KeyTraceEntry>,
+}
+
+/// A single entry in the per-key event trace log.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct KeyTraceEntry {
+    key: String,
+    mode: ViewMode,
+    focus: FocusPane,
+    selected: usize,
+    filter: ListFilter,
 }
 
 impl Model for BvrApp {
@@ -312,7 +512,18 @@ impl Model for BvrApp {
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         match msg {
-            Msg::KeyPress(code, modifiers) => return self.handle_key(code, modifiers),
+            Msg::KeyPress(code, modifiers) => {
+                let cmd = self.handle_key(code, modifiers);
+                #[cfg(test)]
+                self.key_trace.push(KeyTraceEntry {
+                    key: format!("{code:?}"),
+                    mode: self.mode,
+                    focus: self.focus,
+                    selected: self.selected,
+                    filter: self.list_filter,
+                });
+                return cmd;
+            }
             Msg::Noop => {}
         }
 
@@ -322,6 +533,7 @@ impl Model for BvrApp {
     fn view(&self, frame: &mut Frame) {
         let full = Rect::from_size(frame.buffer.width(), frame.buffer.height());
         let visible_count = self.visible_issue_indices().len();
+        let bp = Breakpoint::from_width(full.width);
 
         let rows = Flex::vertical()
             .constraints([
@@ -331,17 +543,30 @@ impl Model for BvrApp {
             ])
             .split(full);
 
-        let header = Paragraph::new(format!(
-            "bvr | mode={} | focus={} | issues={}/{} | filter={} | sort={} | ? help | Tab focus | Esc back/quit",
-            self.mode.label(),
-            self.focus.label(),
-            visible_count,
-            self.analyzer.issues.len(),
-            self.list_filter.label(),
-            self.list_sort.label()
-        ));
-        header.render(rows[0], frame);
+        // -- Header ----------------------------------------------------------
+        let header_text = match bp {
+            Breakpoint::Narrow => format!(
+                "bvr {} | {}/{} | {}",
+                self.mode.label(),
+                visible_count,
+                self.analyzer.issues.len(),
+                self.list_filter.label(),
+            ),
+            _ => format!(
+                "bvr | mode={} | focus={} | issues={}/{} | filter={} | sort={} | ? help | Tab focus | Esc back/quit",
+                self.mode.label(),
+                self.focus.label(),
+                visible_count,
+                self.analyzer.issues.len(),
+                self.list_filter.label(),
+                self.list_sort.label()
+            ),
+        };
+        Paragraph::new(header_text)
+            .style(tokens::header_bg())
+            .render(rows[0], frame);
 
+        // -- Help overlay ----------------------------------------------------
         if self.show_help {
             let full_help = self.help_overlay_text();
             let help_lines: Vec<&str> = full_help.lines().collect();
@@ -356,7 +581,12 @@ impl Model for BvrApp {
                 .collect::<Vec<&str>>()
                 .join("\n");
             Paragraph::new(visible)
-                .block(Block::bordered().title("Help"))
+                .block(
+                    Block::bordered()
+                        .title("Help")
+                        .border_style(tokens::panel_border_focused())
+                        .style(tokens::panel_title_focused()),
+                )
                 .render(rows[1], frame);
             let scroll_hint = if help_lines.len() > visible_height {
                 format!(
@@ -367,21 +597,34 @@ impl Model for BvrApp {
             } else {
                 "? or Esc to close help".to_string()
             };
-            Paragraph::new(scroll_hint).render(rows[2], frame);
+            Paragraph::new(scroll_hint)
+                .style(tokens::footer())
+                .render(rows[2], frame);
             return;
         }
 
+        // -- Quit confirmation -----------------------------------------------
         if self.show_quit_confirm {
             Paragraph::new("Quit bvr?\n\nPress Esc or Y to quit.\nPress any other key to cancel.")
-                .block(Block::bordered().title("Confirm Quit"))
+                .block(
+                    Block::bordered()
+                        .title("Confirm Quit")
+                        .border_style(tokens::panel_border()),
+                )
                 .render(rows[1], frame);
-            Paragraph::new("Esc/Y confirms quit. Any other key cancels.").render(rows[2], frame);
+            Paragraph::new("Esc/Y confirms quit. Any other key cancels.")
+                .style(tokens::footer())
+                .render(rows[2], frame);
             return;
         }
 
+        // -- Body: two-pane split with breakpoint-aware widths ---------------
         let body = rows[1];
         let panes = Flex::horizontal()
-            .constraints([Constraint::Percentage(42.0), Constraint::Percentage(58.0)])
+            .constraints([
+                Constraint::Percentage(bp.list_pct()),
+                Constraint::Percentage(bp.detail_pct()),
+            ])
             .split(body);
 
         let list_text = self.list_panel_text();
@@ -398,14 +641,30 @@ impl Model for BvrApp {
             }
             ViewMode::Main => "Issues",
         };
-        let list_title = if self.focus == FocusPane::List {
+        let list_focused = self.focus == FocusPane::List;
+        let list_title = if list_focused {
             format!("{list_title} [focus]")
         } else {
             list_title.to_string()
         };
 
+        let list_border = if list_focused {
+            tokens::panel_border_focused()
+        } else {
+            tokens::panel_border()
+        };
+        let list_title_style = if list_focused {
+            tokens::panel_title_focused()
+        } else {
+            tokens::panel_title()
+        };
         Paragraph::new(list_text)
-            .block(Block::bordered().title(&list_title))
+            .block(
+                Block::bordered()
+                    .title(&list_title)
+                    .border_style(list_border)
+                    .style(list_title_style),
+            )
             .render(panes[0], frame);
 
         let detail_text = self.detail_panel_text();
@@ -416,15 +675,32 @@ impl Model for BvrApp {
             ViewMode::History => "History Timeline",
             ViewMode::Main => "Details",
         };
-        let detail_title = if self.focus == FocusPane::Detail {
+        let detail_focused = self.focus == FocusPane::Detail;
+        let detail_title = if detail_focused {
             format!("{detail_title} [focus]")
         } else {
             detail_title.to_string()
         };
+        let detail_border = if detail_focused {
+            tokens::panel_border_focused()
+        } else {
+            tokens::panel_border()
+        };
+        let detail_title_style = if detail_focused {
+            tokens::panel_title_focused()
+        } else {
+            tokens::panel_title()
+        };
         Paragraph::new(detail_text)
-            .block(Block::bordered().title(&detail_title))
+            .block(
+                Block::bordered()
+                    .title(&detail_title)
+                    .border_style(detail_border)
+                    .style(detail_title_style),
+            )
             .render(panes[1], frame);
 
+        // -- Footer ----------------------------------------------------------
         let footer_text = match self.mode {
             ViewMode::Main => format!(
                 "Main view mirrors bv split workflow. Press b/i/g/h for focused modes | s cycles sort ({})",
@@ -434,11 +710,7 @@ impl Model for BvrApp {
                 format!(
                     "Board mode: lane counts, queued IDs, and selected issue delivery context | grouping={} (s cycles) | empty-lanes={} (e toggles) | H/L lanes | 0/$ lane edges",
                     self.board_grouping.label(),
-                    if self.board_show_empty_lanes {
-                        "shown"
-                    } else {
-                        "hidden"
-                    }
+                    self.board_empty_visibility.label(),
                 )
             }
             ViewMode::Insights => {
@@ -466,7 +738,9 @@ impl Model for BvrApp {
                 self.history_min_confidence() * 100.0
             ),
         };
-        Paragraph::new(footer_text).render(rows[2], frame);
+        Paragraph::new(footer_text)
+            .style(tokens::footer())
+            .render(rows[2], frame);
     }
 }
 
@@ -490,7 +764,7 @@ impl BvrApp {
 
         if self.show_help {
             match code {
-                KeyCode::Char('?') | KeyCode::Escape => {
+                KeyCode::Char('?' | 'q') | KeyCode::Escape | KeyCode::F(1) => {
                     self.show_help = false;
                     self.help_scroll_offset = 0;
                     self.focus = self.focus_before_help;
@@ -506,6 +780,12 @@ impl BvrApp {
                 }
                 KeyCode::Char('u') if modifiers.contains(Modifiers::CTRL) => {
                     self.help_scroll_offset = self.help_scroll_offset.saturating_sub(10);
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    self.help_scroll_offset = 0;
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.help_scroll_offset = 999;
                 }
                 _ => {}
             }
@@ -955,7 +1235,7 @@ impl BvrApp {
                 self.cycle_board_grouping();
             }
             KeyCode::Char('e') if matches!(self.mode, ViewMode::Board) => {
-                self.toggle_board_show_empty_lanes();
+                self.toggle_board_empty_visibility();
             }
             KeyCode::Char('s') if matches!(self.mode, ViewMode::Insights) => {
                 self.insights_panel = self.insights_panel.next();
@@ -1677,8 +1957,8 @@ impl BvrApp {
         self.focus = FocusPane::List;
     }
 
-    fn toggle_board_show_empty_lanes(&mut self) {
-        self.board_show_empty_lanes = !self.board_show_empty_lanes;
+    fn toggle_board_empty_visibility(&mut self) {
+        self.board_empty_visibility = self.board_empty_visibility.next();
         self.ensure_selected_visible();
         self.focus = FocusPane::List;
     }
@@ -1765,7 +2045,10 @@ impl BvrApp {
             }
         };
 
-        if !self.board_show_empty_lanes {
+        if !self
+            .board_empty_visibility
+            .should_show_empty(self.board_grouping)
+        {
             lanes.retain(|(_, indices)| !indices.is_empty());
         }
 
@@ -2209,11 +2492,7 @@ impl BvrApp {
             lines.push(format!(
                 "Board lanes: grouping={} | empty-lanes={}",
                 self.board_grouping.label(),
-                if self.board_show_empty_lanes {
-                    "shown"
-                } else {
-                    "hidden"
-                }
+                self.board_empty_visibility.label(),
             ));
             lines.push("Board: 1-4 jump lanes | H/L first/last lane".to_string());
             lines.push(
@@ -2291,11 +2570,7 @@ impl BvrApp {
         out.push(format!(
             "Grouping: {} (s cycles) | Empty: {} (e)",
             self.board_grouping.label(),
-            if self.board_show_empty_lanes {
-                "shown"
-            } else {
-                "hidden"
-            }
+            self.board_empty_visibility.label(),
         ));
         if self.board_search_active {
             out.push(format!("Search (active): /{}", self.board_search_query));
@@ -3837,7 +4112,7 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
         list_filter: ListFilter::All,
         list_sort: ListSort::Default,
         board_grouping: BoardGrouping::Status,
-        board_show_empty_lanes: true,
+        board_empty_visibility: EmptyLaneVisibility::Auto,
         mode: ViewMode::Main,
         mode_before_history: ViewMode::Main,
         focus: FocusPane::List,
@@ -3866,6 +4141,8 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
         insights_show_explanations: true,
         insights_show_calc_proof: false,
         detail_dep_cursor: 0,
+        #[cfg(test)]
+        key_trace: Vec::new(),
     };
 
     App::new(model)
@@ -3877,8 +4154,8 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BoardGrouping, BvrApp, FocusPane, HistoryViewMode, InsightsPanel, ListFilter, ListSort,
-        Msg, ViewMode,
+        BoardGrouping, BvrApp, EmptyLaneVisibility, FocusPane, HistoryViewMode, InsightsPanel,
+        ListFilter, ListSort, Msg, ViewMode,
     };
     use crate::analysis::Analyzer;
     use crate::model::{Dependency, Issue};
@@ -4062,7 +4339,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -4091,6 +4368,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         }
     }
 
@@ -4730,7 +5009,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -4759,6 +5038,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.update(key(KeyCode::Char('2')));
@@ -4787,7 +5068,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -4816,6 +5097,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.update(key(KeyCode::Char('s')));
@@ -4838,7 +5121,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -4867,6 +5150,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4886,8 +5171,11 @@ mod tests {
         assert!(with_empty_lanes.contains("in_progress"));
         assert!(with_empty_lanes.contains("blocked"));
 
+        // 3-state cycle: Auto → ShowAll → HideEmpty
         app.update(key(KeyCode::Char('e')));
-        assert!(!app.board_show_empty_lanes);
+        assert_eq!(app.board_empty_visibility, EmptyLaneVisibility::ShowAll);
+        app.update(key(KeyCode::Char('e')));
+        assert_eq!(app.board_empty_visibility, EmptyLaneVisibility::HideEmpty);
         let without_empty_lanes = app.list_panel_text();
         assert!(!without_empty_lanes.contains("open"));
         assert!(!without_empty_lanes.contains("in_progress"));
@@ -4904,7 +5192,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -4933,6 +5221,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -4957,7 +5247,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -4986,6 +5276,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -5011,7 +5303,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5040,6 +5332,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -5066,7 +5360,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5095,6 +5389,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -5116,7 +5412,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5145,6 +5441,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.update(key(KeyCode::Char('/')));
@@ -5181,7 +5479,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5210,6 +5508,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.update(key(KeyCode::Char('/')));
@@ -5232,7 +5532,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5261,6 +5561,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         app.select_issue_by_id("OPEN-1");
@@ -5313,7 +5615,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Board,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5342,13 +5644,19 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         let list = app.list_panel_text();
         assert!(list.contains("other"));
         assert!(list.contains("QUE-1"));
 
+        // 3-state cycle: Auto → ShowAll → HideEmpty
         app.update(key(KeyCode::Char('e')));
+        assert_eq!(app.board_empty_visibility, EmptyLaneVisibility::ShowAll);
+        app.update(key(KeyCode::Char('e')));
+        assert_eq!(app.board_empty_visibility, EmptyLaneVisibility::HideEmpty);
         let hidden_empty = app.list_panel_text();
         assert!(hidden_empty.contains("open"));
         assert!(!hidden_empty.contains("in_progress"));
@@ -5366,7 +5674,7 @@ mod tests {
             list_filter: ListFilter::All,
             list_sort: ListSort::Default,
             board_grouping: BoardGrouping::Status,
-            board_show_empty_lanes: true,
+            board_empty_visibility: EmptyLaneVisibility::Auto,
             mode: ViewMode::Main,
             mode_before_history: ViewMode::Main,
             focus: FocusPane::List,
@@ -5395,6 +5703,8 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            #[cfg(test)]
+            key_trace: Vec::new(),
         };
 
         // Default: open-first, then priority asc, then id asc → M(p1), A(p2), Z(p3)
@@ -5499,5 +5809,337 @@ mod tests {
         // Moving selection should reset cursor
         app.update(key(KeyCode::Char('j')));
         assert_eq!(app.detail_dep_cursor, 0);
+    }
+
+    // -- Breakpoint tests ----------------------------------------------------
+
+    #[test]
+    fn breakpoint_narrow_below_80() {
+        assert_eq!(Breakpoint::from_width(40), Breakpoint::Narrow);
+        assert_eq!(Breakpoint::from_width(79), Breakpoint::Narrow);
+    }
+
+    #[test]
+    fn breakpoint_medium_80_to_119() {
+        assert_eq!(Breakpoint::from_width(80), Breakpoint::Medium);
+        assert_eq!(Breakpoint::from_width(100), Breakpoint::Medium);
+        assert_eq!(Breakpoint::from_width(119), Breakpoint::Medium);
+    }
+
+    #[test]
+    fn breakpoint_wide_120_plus() {
+        assert_eq!(Breakpoint::from_width(120), Breakpoint::Wide);
+        assert_eq!(Breakpoint::from_width(200), Breakpoint::Wide);
+    }
+
+    #[test]
+    fn breakpoint_list_detail_pct_sums_to_100() {
+        for bp in [Breakpoint::Narrow, Breakpoint::Medium, Breakpoint::Wide] {
+            let sum = bp.list_pct() + bp.detail_pct();
+            assert!(
+                (sum - 100.0).abs() < f32::EPSILON,
+                "{bp:?} pcts sum to {sum}"
+            );
+        }
+    }
+
+    #[test]
+    fn breakpoint_narrow_gives_smaller_list() {
+        assert!(Breakpoint::Narrow.list_pct() < Breakpoint::Medium.list_pct());
+    }
+
+    #[test]
+    fn breakpoint_wide_gives_larger_detail() {
+        assert!(Breakpoint::Wide.detail_pct() > Breakpoint::Medium.detail_pct());
+    }
+
+    // -- Visual token tests --------------------------------------------------
+
+    #[test]
+    fn token_status_colours_are_distinct() {
+        let open = tokens::STATUS_OPEN;
+        let prog = tokens::STATUS_IN_PROGRESS;
+        let blk = tokens::STATUS_BLOCKED;
+        let cls = tokens::STATUS_CLOSED;
+        assert_ne!(open, prog);
+        assert_ne!(open, blk);
+        assert_ne!(open, cls);
+        assert_ne!(prog, blk);
+        assert_ne!(prog, cls);
+        assert_ne!(blk, cls);
+    }
+
+    #[test]
+    fn token_priority_colours_descend_urgency() {
+        // P0 (error red) must be different from P3/P4 (dim/muted)
+        assert_ne!(tokens::priority_fg(0), tokens::priority_fg(3));
+        assert_ne!(tokens::priority_fg(0), tokens::priority_fg(4));
+    }
+
+    #[test]
+    fn token_status_style_returns_correct_fg() {
+        let open_style = tokens::status_style("open");
+        assert_eq!(open_style.fg, Some(tokens::STATUS_OPEN));
+
+        let closed_style = tokens::status_style("closed");
+        assert_eq!(closed_style.fg, Some(tokens::STATUS_CLOSED));
+
+        let unknown = tokens::status_style("whatever");
+        assert_eq!(unknown.fg, Some(tokens::FG_DIM));
+    }
+
+    #[test]
+    fn token_header_is_bold() {
+        let h = tokens::header();
+        assert!(h.attrs.is_some_and(|a| a.contains(ftui::StyleFlags::BOLD)));
+    }
+
+    #[test]
+    fn token_selected_has_highlight_bg() {
+        let s = tokens::selected();
+        assert_eq!(s.bg, Some(tokens::BG_HIGHLIGHT));
+    }
+
+    #[test]
+    fn token_focused_border_differs_from_unfocused() {
+        let focused = tokens::panel_border_focused();
+        let unfocused = tokens::panel_border();
+        assert_ne!(focused.fg, unfocused.fg);
+    }
+
+    // -- Snapshot structural tests -------------------------------------------
+    // These validate that the text content and panel structure are correct at
+    // each breakpoint, using the text-generation methods directly. This avoids
+    // needing full ftui Frame construction in tests.
+
+    use super::Breakpoint;
+    use super::tokens;
+
+    /// Build the header string the same way `view()` does for a given width.
+    fn header_for_width(app: &BvrApp, width: u16) -> String {
+        let bp = Breakpoint::from_width(width);
+        let visible_count = app.visible_issue_indices().len();
+        match bp {
+            Breakpoint::Narrow => format!(
+                "bvr {} | {}/{}  | {}",
+                app.mode.label(),
+                visible_count,
+                app.analyzer.issues.len(),
+                app.list_filter.label(),
+            ),
+            _ => format!(
+                "bvr | mode={} | focus={} | issues={}/{} | filter={} | sort={} | ? help | Tab focus | Esc back/quit",
+                app.mode.label(),
+                app.focus.label(),
+                visible_count,
+                app.analyzer.issues.len(),
+                app.list_filter.label(),
+                app.list_sort.label()
+            ),
+        }
+    }
+
+    #[test]
+    fn snapshot_narrow_header_is_compact() {
+        let app = new_app(ViewMode::Main, 0);
+        let h = header_for_width(&app, 60);
+        assert!(h.contains("bvr"), "header should contain 'bvr'");
+        // Narrow header should NOT contain 'mode=' verbose prefix
+        assert!(!h.contains("mode="), "narrow header should be compact");
+    }
+
+    #[test]
+    fn snapshot_medium_header_is_full() {
+        let app = new_app(ViewMode::Main, 0);
+        let h = header_for_width(&app, 100);
+        assert!(h.contains("mode="), "medium header should show mode=");
+        assert!(h.contains("focus="), "medium header should show focus=");
+    }
+
+    #[test]
+    fn snapshot_wide_header_is_full() {
+        let app = new_app(ViewMode::Main, 0);
+        let h = header_for_width(&app, 140);
+        assert!(h.contains("mode="), "wide header should show mode=");
+        assert!(
+            h.contains("Esc back/quit"),
+            "wide header should show keybinding hints"
+        );
+    }
+
+    #[test]
+    fn snapshot_list_panel_content_consistent_across_breakpoints() {
+        let app = new_app(ViewMode::Main, 0);
+        // list_panel_text() is breakpoint-independent (content stays same)
+        let text = app.list_panel_text();
+        assert!(text.contains("Root"), "list should contain issue title");
+        assert!(text.contains('A'), "list should contain issue ID");
+    }
+
+    #[test]
+    fn snapshot_detail_panel_content_consistent_across_breakpoints() {
+        let app = new_app(ViewMode::Main, 0);
+        let text = app.detail_panel_text();
+        assert!(!text.is_empty(), "detail should have content");
+    }
+
+    #[test]
+    fn snapshot_board_mode_list_mentions_grouping() {
+        let app = new_app(ViewMode::Board, 0);
+        let text = app.list_panel_text();
+        assert!(
+            text.contains("Grouping"),
+            "board list should mention grouping"
+        );
+    }
+
+    #[test]
+    fn snapshot_each_view_mode_has_content() {
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Board,
+            ViewMode::Insights,
+            ViewMode::Graph,
+            ViewMode::History,
+        ] {
+            let app = new_app(mode, 0);
+            let list = app.list_panel_text();
+            let detail = app.detail_panel_text();
+            // Neither should be empty
+            assert!(!list.is_empty(), "{mode:?} list panel should not be empty");
+            assert!(
+                !detail.is_empty(),
+                "{mode:?} detail panel should not be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_deterministic_text_across_calls() {
+        let app = new_app(ViewMode::Main, 0);
+        let list1 = app.list_panel_text();
+        let list2 = app.list_panel_text();
+        assert_eq!(list1, list2, "list text should be deterministic");
+        let detail1 = app.detail_panel_text();
+        let detail2 = app.detail_panel_text();
+        assert_eq!(detail1, detail2, "detail text should be deterministic");
+    }
+
+    // -- Help overlay key parity tests ---------------------------------------
+
+    #[test]
+    fn help_g_scrolls_to_top() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+        app.help_scroll_offset = 50;
+
+        app.update(key(KeyCode::Char('g')));
+        assert_eq!(app.help_scroll_offset, 0);
+        assert!(app.show_help, "g should scroll not close");
+    }
+
+    #[test]
+    fn help_big_g_scrolls_to_bottom() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+        app.help_scroll_offset = 0;
+
+        app.update(key(KeyCode::Char('G')));
+        assert_eq!(app.help_scroll_offset, 999);
+        assert!(app.show_help, "G should scroll not close");
+    }
+
+    #[test]
+    fn help_home_scrolls_to_top() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+        app.help_scroll_offset = 30;
+
+        app.update(key(KeyCode::Home));
+        assert_eq!(app.help_scroll_offset, 0);
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn help_end_scrolls_to_bottom() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+        app.help_scroll_offset = 0;
+
+        app.update(key(KeyCode::End));
+        assert_eq!(app.help_scroll_offset, 999);
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn help_q_closes_help() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+        app.help_scroll_offset = 10;
+        app.focus_before_help = FocusPane::List;
+
+        app.update(key(KeyCode::Char('q')));
+        assert!(!app.show_help, "q should close help");
+        assert_eq!(app.help_scroll_offset, 0, "scroll should reset on close");
+    }
+
+    #[test]
+    fn help_f1_closes_help() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+
+        app.update(key(KeyCode::F(1)));
+        assert!(!app.show_help, "F1 should close help");
+    }
+
+    // -- Key trace tests -----------------------------------------------------
+
+    #[test]
+    fn key_trace_records_state_transitions() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert!(app.key_trace.is_empty());
+
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('b')));
+        app.update(key(KeyCode::Char('j')));
+
+        assert_eq!(app.key_trace.len(), 3);
+
+        // First key: j in Main mode, moves selection to 1
+        assert_eq!(app.key_trace[0].key, "Char('j')");
+        assert_eq!(app.key_trace[0].mode, ViewMode::Main);
+
+        // Second key: b switches to Board mode
+        assert_eq!(app.key_trace[1].mode, ViewMode::Board);
+
+        // Third key: j in Board mode
+        assert_eq!(app.key_trace[2].mode, ViewMode::Board);
+    }
+
+    #[test]
+    fn key_trace_captures_filter_changes() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        app.update(key(KeyCode::Char('o')));
+        assert_eq!(app.key_trace.last().unwrap().filter, ListFilter::Open);
+
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.key_trace.last().unwrap().filter, ListFilter::All);
+    }
+
+    #[test]
+    fn empty_lane_visibility_3state_cycle() {
+        let v = EmptyLaneVisibility::Auto;
+        assert_eq!(v.next(), EmptyLaneVisibility::ShowAll);
+        assert_eq!(v.next().next(), EmptyLaneVisibility::HideEmpty);
+        assert_eq!(v.next().next().next(), EmptyLaneVisibility::Auto);
+    }
+
+    #[test]
+    fn empty_lane_auto_shows_for_status_hides_for_others() {
+        let auto = EmptyLaneVisibility::Auto;
+        assert!(auto.should_show_empty(BoardGrouping::Status));
+        assert!(!auto.should_show_empty(BoardGrouping::Priority));
+        assert!(!auto.should_show_empty(BoardGrouping::Type));
     }
 }

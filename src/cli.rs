@@ -24,6 +24,13 @@ pub enum GraphPreset {
     Roomy,
 }
 
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum GraphStyle {
+    #[default]
+    Force,
+    Grid,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "bvr",
@@ -139,6 +146,9 @@ pub struct Cli {
 
     #[arg(long, value_enum, default_value_t = GraphPreset::Compact)]
     pub graph_preset: GraphPreset,
+
+    #[arg(long, value_enum, default_value_t = GraphStyle::Force)]
+    pub graph_style: GraphStyle,
 
     #[arg(long)]
     pub graph_title: Option<String>,

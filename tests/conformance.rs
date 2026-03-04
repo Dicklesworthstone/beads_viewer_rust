@@ -2278,7 +2278,87 @@ fn export_graph_mermaid_honors_extension_and_title() {
     let mermaid_text = fs::read_to_string(&export_path).expect("exported mermaid graph");
     assert!(mermaid_text.contains("%% Minimal Flow"));
     assert!(mermaid_text.contains("%% preset: compact"));
+    assert!(mermaid_text.contains("%% style: force"));
     assert!(mermaid_text.contains("graph TD"));
+}
+
+#[test]
+fn export_graph_svg_honors_title_style_and_preset() {
+    let bvr_bin = std::env::var("CARGO_BIN_EXE_bvr").expect("CARGO_BIN_EXE_bvr env var");
+    let root = repo_root();
+    let beads_path = root.join("tests/testdata/adversarial_parity.jsonl");
+    let temp = tempdir().expect("tempdir");
+    let export_path = temp.path().join("deps.svg");
+
+    let mut command = Command::new(bvr_bin);
+    command.args([
+        "--export-graph",
+        export_path.to_str().expect("export path"),
+        "--graph-title",
+        "SVG Snapshot",
+        "--graph-style",
+        "grid",
+        "--graph-preset",
+        "roomy",
+        "--beads-file",
+    ]);
+    command.arg(&beads_path);
+    command.assert().success();
+
+    let svg = fs::read_to_string(&export_path).expect("exported svg graph");
+    assert!(svg.contains("<?xml version=\"1.0\""));
+    assert!(svg.contains("<svg "));
+    assert!(svg.contains("SVG Snapshot"));
+    assert!(svg.contains("<!-- style: grid -->"));
+    assert!(svg.contains("<!-- preset: roomy -->"));
+}
+
+#[test]
+fn export_graph_png_writes_png_and_style_variants_differ() {
+    let bvr_bin = std::env::var("CARGO_BIN_EXE_bvr").expect("CARGO_BIN_EXE_bvr env var");
+    let root = repo_root();
+    let beads_path = root.join("tests/testdata/adversarial_parity.jsonl");
+    let temp = tempdir().expect("tempdir");
+    let force_path = temp.path().join("deps-force.png");
+    let grid_path = temp.path().join("deps-grid.png");
+
+    let mut force = Command::new(&bvr_bin);
+    force.args([
+        "--export-graph",
+        force_path.to_str().expect("force path"),
+        "--graph-style",
+        "force",
+        "--graph-preset",
+        "compact",
+        "--beads-file",
+    ]);
+    force.arg(&beads_path);
+    force.assert().success();
+
+    let mut grid = Command::new(&bvr_bin);
+    grid.args([
+        "--export-graph",
+        grid_path.to_str().expect("grid path"),
+        "--graph-style",
+        "grid",
+        "--graph-preset",
+        "compact",
+        "--beads-file",
+    ]);
+    grid.arg(&beads_path);
+    grid.assert().success();
+
+    let force_png = fs::read(&force_path).expect("force png");
+    let grid_png = fs::read(&grid_path).expect("grid png");
+    let signature = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    assert!(
+        force_png.starts_with(&signature),
+        "force export must be PNG"
+    );
+    assert!(grid_png.starts_with(&signature), "grid export must be PNG");
+    assert!(force_png.len() > 512, "force PNG should not be tiny");
+    assert!(grid_png.len() > 512, "grid PNG should not be tiny");
+    assert_ne!(force_png, grid_png, "graph-style should impact PNG output");
 }
 
 #[test]
@@ -2322,6 +2402,7 @@ fn parity_ledger_documents_all_implemented_bvr_flags() {
         "--graph-root",
         "--graph-depth",
         "--graph-preset",
+        "--graph-style",
         "--graph-title",
         "--export-graph",
         "--robot-max-results",

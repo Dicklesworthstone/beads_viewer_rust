@@ -39,6 +39,8 @@ cargo run -- --robot-label-attention --attention-limit 5
 cargo run -- --export-graph /tmp/deps.json
 cargo run -- --export-graph /tmp/deps.dot --graph-preset roomy --graph-title "Dependency Snapshot"
 cargo run -- --export-graph /tmp/deps.mmd --graph-title "Docs Diagram"
+cargo run -- --export-graph /tmp/deps.svg --graph-style grid --graph-preset roomy --graph-title "Team Dependency Map"
+cargo run -- --export-graph /tmp/deps.png --graph-style force --graph-title "Snapshot"
 
 # run against an explicit fixture file
 cargo run -- --robot-triage --beads-file tests/testdata/minimal.jsonl

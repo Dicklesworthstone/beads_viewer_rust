@@ -22,6 +22,7 @@ clap = { version = "4.5.59", features = ["derive", "env"] }
 ftui = { version = "0.2.1", features = ["crossterm"] }
 itertools = "0.14.0"
 petgraph = "0.8.3"
+png = "0.17.16"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = "0.9.34"
