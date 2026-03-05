@@ -523,6 +523,7 @@ struct BvrApp {
     history_git_cache: Option<HistoryGitCache>,
     history_search_active: bool,
     history_search_query: String,
+    history_search_match_cursor: usize,
     history_show_file_tree: bool,
     history_file_tree_cursor: usize,
     history_file_tree_filter: Option<String>,
@@ -1023,6 +1024,20 @@ impl BvrApp {
                 self.move_board_search_match_relative(-1);
             }
             KeyCode::Char('n')
+                if matches!(self.mode, ViewMode::History)
+                    && self.focus == FocusPane::List
+                    && !self.history_search_query.is_empty() =>
+            {
+                self.move_history_search_match_relative(1);
+            }
+            KeyCode::Char('N')
+                if matches!(self.mode, ViewMode::History)
+                    && self.focus == FocusPane::List
+                    && !self.history_search_query.is_empty() =>
+            {
+                self.move_history_search_match_relative(-1);
+            }
+            KeyCode::Char('n')
                 if matches!(self.mode, ViewMode::Graph)
                     && self.focus == FocusPane::List
                     && !self.graph_search_query.is_empty() =>
@@ -1131,6 +1146,22 @@ impl BvrApp {
             }
             KeyCode::Char('f' | 'F') if matches!(self.mode, ViewMode::History) => {
                 self.toggle_history_file_tree();
+            }
+            // File tree navigation (when file tree has focus in history mode)
+            KeyCode::Char('j') | KeyCode::Down
+                if matches!(self.mode, ViewMode::History) && self.history_file_tree_focus =>
+            {
+                self.move_file_tree_cursor_relative(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if matches!(self.mode, ViewMode::History) && self.history_file_tree_focus =>
+            {
+                self.move_file_tree_cursor_relative(-1);
+            }
+            KeyCode::Enter
+                if matches!(self.mode, ViewMode::History) && self.history_file_tree_focus =>
+            {
+                self.file_tree_toggle_or_filter();
             }
             KeyCode::Char('o') => self.set_list_filter(ListFilter::Open),
             KeyCode::Char('c') => self.set_list_filter(ListFilter::Closed),
@@ -1415,6 +1446,7 @@ impl BvrApp {
 
         self.history_search_active = true;
         self.history_search_query.clear();
+        self.history_search_match_cursor = 0;
         self.history_event_cursor = 0;
         self.history_related_bead_cursor = 0;
         self.history_bead_commit_cursor = 0;
@@ -1426,6 +1458,7 @@ impl BvrApp {
 
     fn cancel_history_search(&mut self) {
         self.history_search_active = false;
+        self.history_search_match_cursor = 0;
         self.history_search_query.clear();
         self.history_event_cursor = 0;
         self.history_related_bead_cursor = 0;
@@ -1442,6 +1475,52 @@ impl BvrApp {
             self.history_file_tree_focus = false;
             self.history_file_tree_filter = None;
             self.history_status_msg = "File tree hidden".into();
+        }
+    }
+
+    fn move_file_tree_cursor_relative(&mut self, delta: isize) {
+        let flat = self.history_flat_file_list();
+        if flat.is_empty() {
+            return;
+        }
+        let len = flat.len();
+        let cur = self.history_file_tree_cursor.min(len.saturating_sub(1));
+        self.history_file_tree_cursor = if delta > 0 {
+            (cur + delta as usize).min(len.saturating_sub(1))
+        } else {
+            cur.saturating_sub(delta.unsigned_abs())
+        };
+    }
+
+    fn file_tree_toggle_or_filter(&mut self) {
+        let flat = self.history_flat_file_list();
+        let cursor = self.history_file_tree_cursor.min(flat.len().saturating_sub(1));
+        if let Some(entry) = flat.get(cursor) {
+            if entry.is_dir {
+                // Toggle expand/collapse on directory nodes
+                let path = entry.path.clone();
+                if let Some(nodes) = self.history_git_cache.as_ref().map(|_| self.history_file_tree_nodes()) {
+                    // Rebuild with toggle — we toggle the filter instead
+                    if self.history_file_tree_filter.as_deref() == Some(&path) {
+                        self.history_file_tree_filter = None;
+                        self.history_status_msg = "Filter cleared".into();
+                    } else {
+                        self.history_file_tree_filter = Some(path.clone());
+                        self.history_status_msg = format!("Filtered to: {path}");
+                    }
+                    let _ = nodes; // suppress unused
+                }
+            } else {
+                // Filter by this file
+                let path = entry.path.clone();
+                if self.history_file_tree_filter.as_deref() == Some(&path) {
+                    self.history_file_tree_filter = None;
+                    self.history_status_msg = "Filter cleared".into();
+                } else {
+                    self.history_file_tree_filter = Some(path.clone());
+                    self.history_status_msg = format!("Filtered to: {path}");
+                }
+            }
         }
     }
 
@@ -1629,6 +1708,66 @@ impl BvrApp {
         if let Some(index) = visible.first().copied() {
             self.selected = index;
             self.focus = FocusPane::List;
+            self.history_bead_commit_cursor = 0;
+        }
+    }
+
+    /// Compute indices matching the current history search query.
+    /// In bead mode: returns matching issue indices.
+    /// In git mode: returns matching commit indices.
+    fn history_search_matches(&self) -> Vec<usize> {
+        let query = self.history_search_query.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+
+        if matches!(self.history_view_mode, HistoryViewMode::Git) {
+            let cache = match &self.history_git_cache {
+                Some(c) => c,
+                None => return Vec::new(),
+            };
+            cache
+                .commits
+                .iter()
+                .enumerate()
+                .filter(|(_, commit)| {
+                    commit.sha.to_ascii_lowercase().contains(&query)
+                        || commit.message.to_ascii_lowercase().contains(&query)
+                        || commit.author.to_ascii_lowercase().contains(&query)
+                        || commit
+                            .files
+                            .iter()
+                            .any(|f| f.path.to_ascii_lowercase().contains(&query))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            self.history_visible_issue_indices()
+        }
+    }
+
+    fn move_history_search_match_relative(&mut self, delta: isize) {
+        let matches = self.history_search_matches();
+        if matches.is_empty() || delta == 0 {
+            return;
+        }
+
+        let len = matches.len();
+        let current = self.history_search_match_cursor.min(len.saturating_sub(1));
+        let step = delta.unsigned_abs() % len;
+        let next = if delta > 0 {
+            (current + step) % len
+        } else {
+            (current + len - step) % len
+        };
+
+        self.history_search_match_cursor = next;
+
+        if matches!(self.history_view_mode, HistoryViewMode::Git) {
+            self.history_event_cursor = matches[next];
+            self.history_related_bead_cursor = 0;
+        } else {
+            self.selected = matches[next];
             self.history_bead_commit_cursor = 0;
         }
     }
@@ -3189,8 +3328,10 @@ impl BvrApp {
             if self.history_search_active {
                 lines.push(format!("Search (active): /{}", self.history_search_query));
             } else if !query.is_empty() {
+                let matches = self.history_search_matches();
+                let mc = matches.len();
                 lines.push(format!(
-                    "Search: /{} (Esc clears)",
+                    "Search: /{} ({mc} matches, n/N cycles)",
                     self.history_search_query
                 ));
             }
@@ -3249,8 +3390,9 @@ impl BvrApp {
         if self.history_search_active {
             lines.push(format!("Search (active): /{}", self.history_search_query));
         } else if !query.is_empty() {
+            let mc = visible.len();
             lines.push(format!(
-                "Search: /{} (Esc clears)",
+                "Search: /{} ({mc} matches, n/N cycles)",
                 self.history_search_query
             ));
         }
@@ -4449,6 +4591,7 @@ fn new_app(issues: Vec<Issue>, mode: ViewMode) -> BvrApp {
         history_git_cache: None,
         history_search_active: false,
         history_search_query: String::new(),
+        history_search_match_cursor: 0,
         history_show_file_tree: false,
         history_file_tree_cursor: 0,
         history_file_tree_filter: None,
@@ -4750,6 +4893,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5464,6 +5608,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5528,6 +5673,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5586,6 +5732,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5662,6 +5809,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5722,6 +5870,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5783,6 +5932,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5845,6 +5995,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5902,6 +6053,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -5974,6 +6126,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -6032,6 +6185,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -6120,6 +6274,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -6184,6 +6339,7 @@ mod tests {
             history_git_cache: None,
             history_search_active: false,
             history_search_query: String::new(),
+            history_search_match_cursor: 0,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,

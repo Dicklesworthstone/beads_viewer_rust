@@ -41,10 +41,26 @@ cargo run -- --export-graph /tmp/deps.dot --graph-preset roomy --graph-title "De
 cargo run -- --export-graph /tmp/deps.mmd --graph-title "Docs Diagram"
 cargo run -- --export-graph /tmp/deps.svg --graph-style grid --graph-preset roomy --graph-title "Team Dependency Map"
 cargo run -- --export-graph /tmp/deps.png --graph-style force --graph-title "Snapshot"
+cargo run -- --export-pages ./bv-pages --pages-title "Sprint Dashboard"
+cargo run -- --preview-pages ./bv-pages
+cargo run -- --preview-pages ./bv-pages --no-live-reload
+cargo run -- --export-pages ./bv-pages --watch-export
+cargo run -- --pages
+cargo run -- --background-mode --robot-triage
+cargo run -- --no-background-mode --robot-triage
 
 # run against an explicit fixture file
 cargo run -- --robot-triage --beads-file tests/testdata/minimal.jsonl
 ```
+
+Background mode compatibility controls (TUI only) are accepted with legacy precedence:
+- CLI flags: `--background-mode` / `--no-background-mode`
+- Env override: `BV_BACKGROUND_MODE=1|0`
+- User config fallback: `~/.config/bv/config.yaml` with:
+  ```yaml
+  experimental:
+    background_mode: true
+  ```
 
 Bare command launches the interactive TUI:
 

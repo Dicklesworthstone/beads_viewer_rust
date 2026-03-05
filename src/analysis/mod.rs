@@ -1,4 +1,5 @@
 pub mod alerts;
+pub mod brief;
 pub mod causal;
 pub mod correlation;
 pub mod diff;
@@ -10,6 +11,7 @@ pub mod graph;
 pub mod history;
 pub mod label_intel;
 pub mod plan;
+pub mod recipe;
 pub mod search;
 pub mod suggest;
 pub mod triage;

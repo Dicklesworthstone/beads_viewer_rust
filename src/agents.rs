@@ -159,7 +159,10 @@ fn get_blurb_version(content: &str) -> u32 {
 /// Detect an agent file in a single directory.
 fn detect_agent_file(work_dir: &Path) -> AgentFileDetection {
     // Try uppercase variants first
-    for &filename in SUPPORTED_FILES.iter().filter(|f| f.starts_with(|c: char| c.is_uppercase())) {
+    for &filename in SUPPORTED_FILES
+        .iter()
+        .filter(|f| f.starts_with(|c: char| c.is_uppercase()))
+    {
         let path = work_dir.join(filename);
         if let Some(det) = check_agent_file(&path, filename) {
             return det;
@@ -167,7 +170,10 @@ fn detect_agent_file(work_dir: &Path) -> AgentFileDetection {
     }
 
     // Try lowercase variants
-    for &filename in SUPPORTED_FILES.iter().filter(|f| f.starts_with(|c: char| c.is_lowercase())) {
+    for &filename in SUPPORTED_FILES
+        .iter()
+        .filter(|f| f.starts_with(|c: char| c.is_lowercase()))
+    {
         let path = work_dir.join(filename);
         if let Some(det) = check_agent_file(&path, filename) {
             return det;
@@ -274,9 +280,7 @@ fn remove_legacy_blurb(content: &str) -> String {
         return content.to_string();
     };
     // Back up to the heading marker
-    let start = content[..start_byte]
-        .rfind('#')
-        .unwrap_or(start_byte);
+    let start = content[..start_byte].rfind('#').unwrap_or(start_byte);
 
     // Find end: "bv already computes the hard parts"
     let end = if let Some(pos) = content[start..].find("bv already computes the hard parts") {
@@ -328,22 +332,24 @@ fn update_blurb(content: &str) -> String {
 // File operations
 // ---------------------------------------------------------------------------
 
-/// Atomic file write via temp-file + rename.
+/// Write file contents, using temp-file + rename when possible for atomicity.
 fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     use std::io::Write;
 
-    let dir = path
-        .parent()
-        .ok_or_else(|| BvrError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no parent dir")))?;
+    let dir = path.parent().unwrap_or(Path::new("."));
 
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .map_err(BvrError::Io)?;
-
-    tmp.write_all(content).map_err(BvrError::Io)?;
-    tmp.as_file().sync_all().map_err(BvrError::Io)?;
-
-    tmp.persist(path)
-        .map_err(|e| BvrError::Io(e.error))?;
+    // Try atomic temp-file + rename first
+    match tempfile::NamedTempFile::new_in(dir) {
+        Ok(mut tmp) => {
+            tmp.write_all(content).map_err(BvrError::Io)?;
+            tmp.as_file().sync_all().map_err(BvrError::Io)?;
+            tmp.persist(path).map_err(|e| BvrError::Io(e.error))?;
+        }
+        Err(_) => {
+            // Fall back to direct write (e.g. when dir is not writable for temp files)
+            std::fs::write(path, content).map_err(BvrError::Io)?;
+        }
+    }
 
     Ok(())
 }
@@ -438,10 +444,7 @@ pub fn agents_add(work_dir: &Path, dry_run: bool) -> Result<AgentsResult> {
         // File exists but no blurb — append
         if dry_run {
             return Ok(AgentsResult {
-                message: format!(
-                    "[dry-run] Would append blurb to {}.",
-                    path.display()
-                ),
+                message: format!("[dry-run] Would append blurb to {}.", path.display()),
                 changed: false,
             });
         }
@@ -468,7 +471,10 @@ pub fn agents_add(work_dir: &Path, dry_run: bool) -> Result<AgentsResult> {
     atomic_write(&path, content.as_bytes())?;
 
     Ok(AgentsResult {
-        message: format!("Created {} with beads workflow instructions.", path.display()),
+        message: format!(
+            "Created {} with beads workflow instructions.",
+            path.display()
+        ),
         changed: true,
     })
 }
@@ -522,10 +528,7 @@ pub fn agents_update(work_dir: &Path, dry_run: bool) -> Result<AgentsResult> {
     atomic_write(path, new_content.as_bytes())?;
 
     Ok(AgentsResult {
-        message: format!(
-            "Updated blurb to v{BLURB_VERSION} in {}.",
-            path.display()
-        ),
+        message: format!("Updated blurb to v{BLURB_VERSION} in {}.", path.display()),
         changed: true,
     })
 }
@@ -580,7 +583,9 @@ mod tests {
 
     #[test]
     fn contains_blurb_detects_current_marker() {
-        assert!(contains_blurb("before\n<!-- bv-agent-instructions-v1 -->\nstuff\n<!-- end-bv-agent-instructions -->\nafter"));
+        assert!(contains_blurb(
+            "before\n<!-- bv-agent-instructions-v1 -->\nstuff\n<!-- end-bv-agent-instructions -->\nafter"
+        ));
         assert!(!contains_blurb("no marker here"));
     }
 
@@ -651,8 +656,15 @@ mod tests {
     #[test]
     fn agents_check_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = agents_check(tmp.path());
-        assert!(result.message.contains("No agent file found"));
+        // Nest 4 levels deep so the 3-level parent walk stays inside the temp dir
+        let nested = tmp.path().join("a/b/c/d");
+        std::fs::create_dir_all(&nested).unwrap();
+        let result = agents_check(&nested);
+        assert!(
+            result.message.contains("No agent file found"),
+            "unexpected message: {}",
+            result.message
+        );
         assert!(!result.changed);
     }
 

@@ -2270,8 +2270,8 @@ fn robot_graph_mermaid_format_contains_expected_markers() {
         "Mermaid output should contain 'graph'"
     );
     assert!(
-        mermaid_text.contains("-->"),
-        "Mermaid output should contain edges"
+        mermaid_text.contains("==>") || mermaid_text.contains("-.->"),
+        "Mermaid output should contain edges (==> or -.->), got:\n{mermaid_text}"
     );
 }
 

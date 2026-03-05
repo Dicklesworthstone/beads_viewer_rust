@@ -45,6 +45,11 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if cli.background_mode && cli.no_background_mode {
+        eprintln!("error: --background-mode and --no-background-mode are mutually exclusive");
+        return ExitCode::from(2);
+    }
+
     // --robot-schema and --robot-docs don't need issues loaded
     if cli.robot_schema {
         let schemas = generate_robot_schemas();
@@ -90,21 +95,95 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // --agents-* commands don't need issues loaded
-    if cli.is_agents_command() {
+    // Operational/admin command surface compatibility.
+    if cli.is_operational_command() {
+        let outcome = handle_operational_commands(&cli);
+        if outcome.to_stderr {
+            eprintln!("{}", outcome.message);
+        } else {
+            println!("{}", outcome.message);
+        }
+        return outcome.exit_code;
+    }
+
+    // --robot-recipes doesn't need issues loaded
+    if cli.robot_recipes {
+        let recipes = bvr::analysis::recipe::list_recipes();
+        let output = bvr::analysis::recipe::RobotRecipesOutput {
+            generated_at: Utc::now().to_rfc3339(),
+            data_hash: String::new(),
+            output_format: "json".to_string(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            recipes,
+        };
+        if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // --feedback-show and --feedback-reset don't need issues loaded
+    if cli.feedback_show || cli.feedback_reset {
         let work_dir = cli
             .workspace
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let result = if cli.agents_check {
-            Ok(bvr::agents::agents_check(&work_dir))
-        } else if cli.agents_add {
+        if cli.feedback_reset {
+            let mut feedback = bvr::analysis::recipe::FeedbackData::load(&work_dir);
+            feedback.reset();
+            if let Err(error) = feedback.save(&work_dir) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            println!("Feedback data reset successfully.");
+            return ExitCode::SUCCESS;
+        }
+
+        let feedback = bvr::analysis::recipe::FeedbackData::load(&work_dir);
+        let output = bvr::analysis::recipe::RobotFeedbackOutput {
+            generated_at: Utc::now().to_rfc3339(),
+            data_hash: String::new(),
+            output_format: "json".to_string(),
+            version: format!("v{}", env!("CARGO_PKG_VERSION")),
+            stats: feedback.stats(),
+        };
+        if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // --agents-* commands don't need issues loaded
+    if cli.is_agents_command() {
+        let agents_action_count = usize::from(cli.agents_check)
+            + usize::from(cli.agents_add)
+            + usize::from(cli.agents_update)
+            + usize::from(cli.agents_remove);
+        if agents_action_count > 1 {
+            eprintln!(
+                "error: only one of --agents-check/--agents-add/--agents-update/--agents-remove may be used at a time.\n\
+                 Remediation: rerun with exactly one action flag (or only --agents-dry-run/--agents-force for default check mode)."
+            );
+            return ExitCode::from(2);
+        }
+
+        let work_dir = cli
+            .workspace
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        let result = if cli.agents_add {
             bvr::agents::agents_add(&work_dir, cli.agents_dry_run)
         } else if cli.agents_update {
             bvr::agents::agents_update(&work_dir, cli.agents_dry_run)
-        } else {
+        } else if cli.agents_remove {
             bvr::agents::agents_remove(&work_dir, cli.agents_dry_run)
+        } else {
+            // Legacy parity: with only --agents-dry-run/--agents-force set, default to status check.
+            Ok(bvr::agents::agents_check(&work_dir))
         };
 
         match result {
@@ -117,6 +196,26 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         }
+    }
+
+    // --pages wizard and --preview-pages do not require loading issues.
+    if cli.pages {
+        bvr::export_pages::print_pages_wizard();
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(bundle_path) = cli.preview_pages.as_deref() {
+        if let Err(error) = bvr::export_pages::run_preview_server(bundle_path, !cli.no_live_reload)
+        {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if cli.watch_export && cli.export_pages.is_none() {
+        eprintln!("error: --watch-export requires --export-pages <dir>");
+        return ExitCode::from(2);
     }
 
     let mut issues = match load_issues(&cli) {
@@ -1207,6 +1306,279 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // --emit-script: generate shell script from triage recommendations
+    if cli.emit_script {
+        let triage = analyzer.triage(TriageOptions {
+            group_by_track: false,
+            group_by_label: false,
+            max_recommendations: cli.script_limit.max(10),
+        });
+
+        let mut recommendations = triage.result.recommendations;
+
+        // Apply recipe filter if specified
+        if let Some(ref recipe_name) = cli.recipe {
+            if let Some(recipe) = bvr::analysis::recipe::find_recipe(recipe_name) {
+                let actionable_ids: Vec<String> = triage
+                    .result
+                    .quick_ref
+                    .top_picks
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .collect();
+                recommendations = bvr::analysis::recipe::apply_recipe(
+                    &recipe,
+                    &recommendations,
+                    &issues,
+                    &actionable_ids,
+                    &analyzer.metrics.pagerank,
+                );
+            } else {
+                eprintln!("error: unknown recipe '{recipe_name}'");
+                eprintln!("Available recipes:");
+                for r in bvr::analysis::recipe::list_recipes() {
+                    eprintln!("  {} - {}", r.name, r.description);
+                }
+                return ExitCode::from(1);
+            }
+        }
+
+        let format = bvr::analysis::recipe::ScriptFormat::from_str_or_default(&cli.script_format);
+        let script = bvr::analysis::recipe::emit_script(
+            &recommendations,
+            cli.script_limit,
+            format,
+            &Utc::now().to_rfc3339(),
+            &compute_data_hash(&issues),
+        );
+        println!("{script}");
+        return ExitCode::SUCCESS;
+    }
+
+    // --feedback-accept / --feedback-ignore: record feedback on a recommendation
+    if cli.feedback_accept.is_some() || cli.feedback_ignore.is_some() {
+        let work_dir = cli
+            .workspace
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        let (issue_id, action) = if let Some(ref id) = cli.feedback_accept {
+            (id.as_str(), "accept")
+        } else {
+            (cli.feedback_ignore.as_deref().unwrap(), "ignore")
+        };
+
+        // Look up the issue's triage score
+        let triage = analyzer.triage(TriageOptions {
+            group_by_track: false,
+            group_by_label: false,
+            max_recommendations: 100,
+        });
+        let score = triage
+            .result
+            .recommendations
+            .iter()
+            .find(|r| r.id == issue_id)
+            .map_or(0.0, |r| r.score);
+
+        let mut feedback = bvr::analysis::recipe::FeedbackData::load(&work_dir);
+        if action == "accept" {
+            feedback.record_accept(issue_id, score, "cli", "");
+        } else {
+            feedback.record_ignore(issue_id, score, "cli", "");
+        }
+        if let Err(error) = feedback.save(&work_dir) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        println!("Recorded {action} feedback for {issue_id} (score: {score:.3})");
+        let stats = feedback.stats();
+        println!(
+            "Feedback summary: {} accepted, {} ignored",
+            stats.total_accepted, stats.total_ignored
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    // --priority-brief: generate markdown priority brief
+    if let Some(ref brief_path) = cli.priority_brief {
+        let triage = analyzer.triage(TriageOptions {
+            group_by_track: false,
+            group_by_label: false,
+            max_recommendations: 20,
+        });
+        let env = envelope(&issues);
+        let brief = bvr::analysis::brief::generate_priority_brief(
+            &issues,
+            &triage.result,
+            &env.data_hash,
+            &env.generated_at,
+        );
+        if let Err(error) = std::fs::write(brief_path, &brief) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        eprintln!("Wrote priority brief to {}", brief_path.display());
+        return ExitCode::SUCCESS;
+    }
+
+    // --agent-brief: generate agent brief bundle directory
+    if let Some(ref brief_dir) = cli.agent_brief {
+        let triage = analyzer.triage(TriageOptions {
+            group_by_track: false,
+            group_by_label: false,
+            max_recommendations: 20,
+        });
+        let insights = analyzer.insights();
+        let insights_json = serde_json::to_value(&insights).unwrap_or_default();
+        let env = envelope(&issues);
+        match bvr::analysis::brief::generate_agent_brief(
+            &issues,
+            &triage.result,
+            &insights_json,
+            &env.data_hash,
+            &env.generated_at,
+            brief_dir,
+        ) {
+            Ok(files) => {
+                eprintln!(
+                    "Wrote agent brief ({} files) to {}",
+                    files.len(),
+                    brief_dir.display()
+                );
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    if let Some(export_path) = cli.export_pages.as_deref() {
+        let options = bvr::export_pages::ExportPagesOptions {
+            title: cli.pages_title.clone(),
+            include_closed: cli.pages_include_closed,
+            include_history: cli.pages_include_history,
+        };
+
+        match bvr::export_pages::export_pages_bundle(&issues, export_path, &options) {
+            Ok(summary) => {
+                eprintln!(
+                    "Exported pages bundle to {} (issues: {}, history: {})",
+                    summary.export_path, summary.issue_count, summary.include_history
+                );
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
+
+        if cli.watch_export {
+            let beads_dir = match loader::get_beads_dir(cli.repo_path.as_deref()) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let beads_path = match loader::find_jsonl_path(&beads_dir) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+            let mut last_mtime = match file_mtime_epoch_millis(&beads_path) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+            };
+
+            let mut max_loops = std::env::var("BVR_WATCH_MAX_LOOPS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .filter(|value| *value > 0);
+            let watch_interval_ms = std::env::var("BVR_WATCH_INTERVAL_MS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(2_000);
+
+            eprintln!(
+                "Watching {} for changes (Ctrl+C to stop)...",
+                beads_path.display()
+            );
+
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(watch_interval_ms));
+
+                let current_mtime = match file_mtime_epoch_millis(&beads_path) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("warning: failed to read beads mtime: {error}");
+                        continue;
+                    }
+                };
+
+                if current_mtime <= last_mtime {
+                    if let Some(remaining) = max_loops.as_mut() {
+                        *remaining = remaining.saturating_sub(1);
+                        if *remaining == 0 {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                last_mtime = current_mtime;
+                let refreshed_issues = match load_issues(&cli) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("warning: failed to reload issues: {error}");
+                        continue;
+                    }
+                };
+                let refreshed_issues = if let Some(repo_filter) = cli.repo.as_deref() {
+                    filter_by_repo(refreshed_issues, repo_filter)
+                } else {
+                    refreshed_issues
+                };
+
+                match bvr::export_pages::export_pages_bundle(
+                    &refreshed_issues,
+                    export_path,
+                    &options,
+                ) {
+                    Ok(summary) => {
+                        eprintln!(
+                            "Regenerated pages bundle at {} (path: {}, issues: {}, history: {})",
+                            summary.generated_at,
+                            summary.export_path,
+                            summary.issue_count,
+                            summary.include_history
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("warning: export regeneration failed: {error}");
+                    }
+                }
+
+                if let Some(remaining) = max_loops.as_mut() {
+                    *remaining = remaining.saturating_sub(1);
+                    if *remaining == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return ExitCode::SUCCESS;
+    }
+
     if let Some(export_path) = cli.export_md.as_deref() {
         if let Err(error) = bvr::export_md::export_markdown_with_hooks(
             &issues,
@@ -1233,12 +1605,175 @@ fn main() -> ExitCode {
         }
     }
 
+    let (background_mode_enabled, background_mode_source) = resolve_background_mode(&cli);
+    if background_mode_enabled {
+        eprintln!(
+            "info: background mode enabled via {background_mode_source} (compatibility mode: sync runtime currently active)."
+        );
+    }
+
     match bvr::tui::run_tui(issues) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::from(1)
         }
+    }
+}
+
+struct EarlyCommandOutcome {
+    message: String,
+    exit_code: ExitCode,
+    to_stderr: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundModeSource {
+    CliFlag,
+    EnvVar,
+    UserConfig,
+    DefaultDisabled,
+}
+
+impl std::fmt::Display for BackgroundModeSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CliFlag => f.write_str("CLI flag"),
+            Self::EnvVar => f.write_str("BV_BACKGROUND_MODE"),
+            Self::UserConfig => f.write_str("~/.config/bv/config.yaml"),
+            Self::DefaultDisabled => f.write_str("default"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UserBackgroundConfig {
+    experimental: Option<UserBackgroundExperimentalConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserBackgroundExperimentalConfig {
+    background_mode: Option<bool>,
+}
+
+fn resolve_background_mode(cli: &Cli) -> (bool, BackgroundModeSource) {
+    if cli.background_mode {
+        return (true, BackgroundModeSource::CliFlag);
+    }
+    if cli.no_background_mode {
+        return (false, BackgroundModeSource::CliFlag);
+    }
+    if let Some(value) = std::env::var("BV_BACKGROUND_MODE")
+        .ok()
+        .and_then(|raw| parse_background_mode_bool(&raw))
+    {
+        return (value, BackgroundModeSource::EnvVar);
+    }
+    if let Some(value) = load_background_mode_from_user_config() {
+        return (value, BackgroundModeSource::UserConfig);
+    }
+    (false, BackgroundModeSource::DefaultDisabled)
+}
+
+fn parse_background_mode_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn load_background_mode_from_user_config() -> Option<bool> {
+    let home = std::env::var_os("HOME")?;
+    let path = PathBuf::from(home).join(".config/bv/config.yaml");
+    let content = fs::read_to_string(path).ok()?;
+    let config = serde_yaml::from_str::<UserBackgroundConfig>(&content).ok()?;
+    config
+        .experimental
+        .and_then(|section| section.background_mode)
+}
+
+fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
+    let action_count =
+        usize::from(cli.check_update) + usize::from(cli.update) + usize::from(cli.rollback);
+
+    if action_count > 1 {
+        return EarlyCommandOutcome {
+            message:
+                "error: only one of --check-update/--update/--rollback may be used at a time.\n\
+                      Remediation: rerun with a single operational action flag."
+                    .to_string(),
+            exit_code: ExitCode::from(2),
+            to_stderr: true,
+        };
+    }
+
+    if cli.yes && !cli.update {
+        return EarlyCommandOutcome {
+            message: "error: --yes can only be used with --update.\n\
+                      Remediation: use --check-update for status, or combine --yes with --update."
+                .to_string(),
+            exit_code: ExitCode::from(2),
+            to_stderr: true,
+        };
+    }
+
+    if cli.check_update {
+        return EarlyCommandOutcome {
+            message: format!(
+                "Automatic self-update checks are not implemented in this Rust port.\n\
+                 Current version: bvr {}\n\
+                 Remediation:\n\
+                   1. git pull origin main\n\
+                   2. cargo install --path .\n\
+                   3. bvr --version",
+                env!("CARGO_PKG_VERSION")
+            ),
+            exit_code: ExitCode::SUCCESS,
+            to_stderr: false,
+        };
+    }
+
+    if cli.update {
+        let yes_note = if cli.yes {
+            " --yes was accepted for compatibility."
+        } else {
+            ""
+        };
+
+        return EarlyCommandOutcome {
+            message: format!(
+                "error: --update is not supported in this Rust port.{yes_note}\n\
+                 Remediation:\n\
+                   1. git pull origin main\n\
+                   2. cargo install --path .\n\
+                   3. bvr --version"
+            ),
+            exit_code: ExitCode::from(2),
+            to_stderr: true,
+        };
+    }
+
+    if cli.rollback {
+        return EarlyCommandOutcome {
+            message: "error: --rollback is not supported in this Rust port.\n\
+                      Remediation:\n\
+                        1. Identify a known-good commit or tag.\n\
+                        2. git checkout <commit-or-tag>\n\
+                        3. cargo install --path .\n\
+                        4. git checkout main (when done)"
+                .to_string(),
+            exit_code: ExitCode::from(2),
+            to_stderr: true,
+        };
+    }
+
+    EarlyCommandOutcome {
+        message: "error: unsupported operational flag combination.\n\
+                  Remediation: use one of --check-update, --update, or --rollback."
+            .to_string(),
+        exit_code: ExitCode::from(2),
+        to_stderr: true,
     }
 }
 
@@ -1256,6 +1791,18 @@ fn load_issues(cli: &Cli) -> bvr::Result<Vec<bvr::model::Issue>> {
     }
 
     loader::load_issues(cli.repo_path.as_deref())
+}
+
+fn file_mtime_epoch_millis(path: &Path) -> bvr::Result<u64> {
+    let metadata = fs::metadata(path)?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| {
+            duration.as_millis().min(u128::from(u64::MAX)) as u64
+        });
+    Ok(modified)
 }
 
 fn load_issues_at_revision(cli: &Cli, revision: &str) -> bvr::Result<Vec<bvr::model::Issue>> {
@@ -3681,6 +4228,20 @@ fn print_robot_help() {
     println!("  --robot-sprint-show <id>  Show specific sprint details");
     println!("  --robot-metrics           Performance metrics (timing, cache, memory)");
     println!("  --export-md <file>        Export issues to a Markdown report");
+    println!("  --export-pages <dir>      Export static pages bundle (index + data + assets)");
+    println!(
+        "  --preview-pages <dir>     Preview static pages bundle at localhost with optional live reload"
+    );
+    println!("  --watch-export            Regenerate pages export when beads data changes");
+    println!("  --pages                   Show pages wizard guidance");
+    println!("  --pages-title <title>     Custom title for exported pages");
+    println!("  --pages-include-closed=<bool>  Include closed issues in pages export");
+    println!("  --pages-include-history=<bool> Include history payload in pages export");
+    println!("  --no-live-reload          Disable live reload while previewing pages");
+    println!("  --background-mode         Enable experimental background snapshot mode (TUI only)");
+    println!(
+        "  --no-background-mode      Disable experimental background snapshot mode (TUI only)"
+    );
     println!("  --no-hooks                Skip hook execution for export workflows");
     println!("  --as-of <ref>             View state at point in time (commit, tag, date)");
     println!("  --force-full-analysis     Compute all metrics regardless of graph size");
@@ -4042,13 +4603,17 @@ struct RobotLabelAttentionOutput {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    use std::process::ExitCode;
 
     use bvr::analysis::git_history::extract_ids_from_message;
+    use clap::Parser;
     use tempfile::tempdir;
 
     use super::{
-        filter_by_repo, generate_daily_burndown_points, parse_scope_git_header_line,
-        resolve_git_toplevel, resolve_reference_file_path, resolve_workspace_config_path,
+        BackgroundModeSource, Cli, filter_by_repo, generate_daily_burndown_points,
+        handle_operational_commands, parse_background_mode_bool, parse_scope_git_header_line,
+        resolve_background_mode, resolve_git_toplevel, resolve_reference_file_path,
+        resolve_workspace_config_path,
     };
 
     #[test]
@@ -4182,5 +4747,59 @@ mod tests {
         let filtered_by_source_repo = filter_by_repo(issues, "front");
         assert_eq!(filtered_by_source_repo.len(), 1);
         assert_eq!(filtered_by_source_repo[0].id, "WEB-UI-1");
+    }
+
+    #[test]
+    fn operational_check_update_is_deterministic_and_successful() {
+        let cli = Cli::parse_from(["bvr", "--check-update"]);
+        let outcome = handle_operational_commands(&cli);
+
+        assert_eq!(outcome.exit_code, ExitCode::SUCCESS);
+        assert!(!outcome.to_stderr);
+        assert!(outcome.message.contains("Current version: bvr"));
+        assert!(outcome.message.contains("cargo install --path ."));
+    }
+
+    #[test]
+    fn operational_yes_without_update_returns_usage_error() {
+        let cli = Cli::parse_from(["bvr", "--yes"]);
+        let outcome = handle_operational_commands(&cli);
+
+        assert_eq!(outcome.exit_code, ExitCode::from(2));
+        assert!(outcome.to_stderr);
+        assert!(
+            outcome
+                .message
+                .contains("--yes can only be used with --update")
+        );
+    }
+
+    #[test]
+    fn parse_background_mode_bool_accepts_common_truthy_and_falsy_values() {
+        assert_eq!(parse_background_mode_bool("1"), Some(true));
+        assert_eq!(parse_background_mode_bool("true"), Some(true));
+        assert_eq!(parse_background_mode_bool("YES"), Some(true));
+        assert_eq!(parse_background_mode_bool("on"), Some(true));
+
+        assert_eq!(parse_background_mode_bool("0"), Some(false));
+        assert_eq!(parse_background_mode_bool("false"), Some(false));
+        assert_eq!(parse_background_mode_bool("No"), Some(false));
+        assert_eq!(parse_background_mode_bool("off"), Some(false));
+
+        assert_eq!(parse_background_mode_bool("maybe"), None);
+    }
+
+    #[test]
+    fn resolve_background_mode_prefers_cli_flags() {
+        let enabled_cli = Cli::parse_from(["bvr", "--background-mode"]);
+        let disabled_cli = Cli::parse_from(["bvr", "--no-background-mode"]);
+
+        let (enabled, enabled_source) = resolve_background_mode(&enabled_cli);
+        let (disabled, disabled_source) = resolve_background_mode(&disabled_cli);
+
+        assert!(enabled);
+        assert_eq!(enabled_source, BackgroundModeSource::CliFlag);
+        assert!(!disabled);
+        assert_eq!(disabled_source, BackgroundModeSource::CliFlag);
     }
 }

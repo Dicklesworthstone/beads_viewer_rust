@@ -219,8 +219,7 @@ pub fn apply_recipe(
             if recipe.filters.has_blockers == Some(true) && !actionable_ids.contains(&rec.id) {
                 // has_blockers = true means only show items WITH blockers
                 // (items NOT in actionable list)
-            } else if recipe.filters.has_blockers == Some(true)
-                && actionable_ids.contains(&rec.id)
+            } else if recipe.filters.has_blockers == Some(true) && actionable_ids.contains(&rec.id)
             {
                 return false;
             }
@@ -257,13 +256,9 @@ pub fn apply_recipe(
         "triage" | "score" => {
             filtered.sort_by(|a, b| {
                 if recipe.sort.direction == "asc" {
-                    a.score
-                        .total_cmp(&b.score)
-                        .then_with(|| a.id.cmp(&b.id))
+                    a.score.total_cmp(&b.score).then_with(|| a.id.cmp(&b.id))
                 } else {
-                    b.score
-                        .total_cmp(&a.score)
-                        .then_with(|| a.id.cmp(&b.id))
+                    b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id))
                 }
             });
         }
@@ -391,12 +386,9 @@ pub fn emit_script(
 
     for (i, rec) in items.iter().enumerate() {
         let rank = i + 1;
-        lines.push(format!(
-            "# {rank}. {} (score: {:.3})",
-            rec.title, rec.score
-        ));
-        if !rec.reason.is_empty() {
-            lines.push(format!("#    Reason: {}", rec.reason));
+        lines.push(format!("# {rank}. {} (score: {:.3})", rec.title, rec.score));
+        if !rec.reasons.is_empty() {
+            lines.push(format!("#    Reason: {}", rec.reasons.join("; ")));
         }
         lines.push(format!("br show {}", rec.id));
         lines.push(format!(
@@ -409,10 +401,7 @@ pub fn emit_script(
     if let Some(top) = items.first() {
         lines.push("# === Quick Actions ===".to_string());
         lines.push("# To claim the top pick:".to_string());
-        lines.push(format!(
-            "# br update {} --status=in_progress",
-            top.id
-        ));
+        lines.push(format!("# br update {} --status=in_progress", top.id));
     }
 
     lines.join("\n")
@@ -493,13 +482,7 @@ impl FeedbackData {
         Ok(())
     }
 
-    pub fn record_accept(
-        &mut self,
-        issue_id: &str,
-        score: f64,
-        by: &str,
-        reason: &str,
-    ) {
+    pub fn record_accept(&mut self, issue_id: &str, score: f64, by: &str, reason: &str) {
         self.events.push(FeedbackEvent {
             issue_id: issue_id.to_string(),
             action: "accept".to_string(),
@@ -511,13 +494,7 @@ impl FeedbackData {
         self.update_adjustments();
     }
 
-    pub fn record_ignore(
-        &mut self,
-        issue_id: &str,
-        score: f64,
-        by: &str,
-        reason: &str,
-    ) {
+    pub fn record_ignore(&mut self, issue_id: &str, score: f64, by: &str, reason: &str) {
         self.events.push(FeedbackEvent {
             issue_id: issue_id.to_string(),
             action: "ignore".to_string(),
@@ -535,10 +512,16 @@ impl FeedbackData {
     }
 
     pub fn stats(&self) -> FeedbackStats {
-        let accepted: Vec<&FeedbackEvent> =
-            self.events.iter().filter(|e| e.action == "accept").collect();
-        let ignored: Vec<&FeedbackEvent> =
-            self.events.iter().filter(|e| e.action == "ignore").collect();
+        let accepted: Vec<&FeedbackEvent> = self
+            .events
+            .iter()
+            .filter(|e| e.action == "accept")
+            .collect();
+        let ignored: Vec<&FeedbackEvent> = self
+            .events
+            .iter()
+            .filter(|e| e.action == "ignore")
+            .collect();
 
         let avg_accept = if accepted.is_empty() {
             0.0
@@ -573,16 +556,8 @@ impl FeedbackData {
             "Risk",
         ];
 
-        let accepted = self
-            .events
-            .iter()
-            .filter(|e| e.action == "accept")
-            .count();
-        let ignored = self
-            .events
-            .iter()
-            .filter(|e| e.action == "ignore")
-            .count();
+        let accepted = self.events.iter().filter(|e| e.action == "accept").count();
+        let ignored = self.events.iter().filter(|e| e.action == "ignore").count();
         let total = accepted + ignored;
 
         if total == 0 {
@@ -608,11 +583,7 @@ impl FeedbackData {
 }
 
 fn chrono_now() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    super::drift::format_epoch_secs(secs)
+    chrono::Utc::now().to_rfc3339()
 }
 
 // ---------------------------------------------------------------------------
@@ -630,9 +601,15 @@ mod tests {
             title: title.to_string(),
             score,
             confidence: 0.8,
-            reason: "test".to_string(),
+            reasons: vec!["test".to_string()],
+            unblocks: 0,
+            status: "open".to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
             labels: Vec::new(),
             assignee: String::new(),
+            claim_command: String::new(),
+            show_command: String::new(),
         }
     }
 

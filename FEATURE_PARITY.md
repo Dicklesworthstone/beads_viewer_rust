@@ -210,13 +210,13 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--history-since` | `--history-since` | partial |
 | `--min-confidence` | `--min-confidence` | partial |
 
-### Robot Commands (Graph) — 1 complete, 2 partial
+### Robot Commands (Graph) — 3 complete
 | Legacy Flag | bvr Flag | Status |
 |---|---|---|
 | `--robot-graph` | `--robot-graph` | complete |
 | `--graph-format` | `--graph-format` | complete |
-| `--graph-root` | `--graph-root` | partial |
-| `--graph-depth` | `--graph-depth` | partial |
+| `--graph-root` | `--graph-root` | complete |
+| `--graph-depth` | `--graph-depth` | complete |
 
 ### Export/Graph Snapshot Flags — 6 complete
 | Legacy Flag | bvr Flag | Status | Notes |
@@ -288,13 +288,13 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | Label/Attention | `--robot-label-attention`, `--robot-label-flow`, `--robot-label-health`, `--attention-limit` |
 | Sprint | (moved to implemented) |
 | Search | `--search`, `--search-limit`, `--search-mode`, `--search-preset`, `--search-weights`, `--robot-search` |
-| Export/Pages | `--pages`, `--pages-include-closed`, `--pages-include-history`, `--pages-title`, `--preview-pages`, `--export-pages`, `--watch-export`, `--no-live-reload` |
-| Script | `--emit-script`, `--script-format`, `--script-limit` |
+| ~~Export/Pages~~ | ~~`--pages`, `--pages-include-closed`, `--pages-include-history`, `--pages-title`, `--preview-pages`, `--export-pages`, `--watch-export`, `--no-live-reload`~~ — **Implemented (baseline bundle/preview/watch)** |
+| ~~Script~~ | ~~`--emit-script`, `--script-format`, `--script-limit`~~ — **Implemented** |
 | Baseline/Drift | `--save-baseline`, `--baseline-info`, `--check-drift`, `--robot-drift` |
-| Feedback | `--feedback-show`, `--feedback-accept`, `--feedback-ignore`, `--feedback-reset` |
-| Workflow | `--robot-blocker-chain`, `--robot-orphans`, `--orphans-min-score`, `--priority-brief`, `--agent-brief` |
-| Metadata/Docs | `--robot-recipes` |
-| Workspace/Config | `--recipe` |
+| ~~Feedback~~ | ~~`--feedback-show`, `--feedback-accept`, `--feedback-ignore`, `--feedback-reset`~~ — **Implemented** |
+| Workflow | `--robot-blocker-chain`, `--robot-orphans`, `--orphans-min-score`, ~~`--priority-brief`~~, ~~`--agent-brief`~~ — **Brief surfaces implemented** |
+| ~~Metadata/Docs~~ | ~~`--robot-recipes`~~ — **Implemented** |
+| ~~Workspace/Config~~ | ~~`--recipe`~~ — **Implemented** |
 
 ### Harness Coverage Notes
 | Command | Fixture Status | Notes |
@@ -311,10 +311,10 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 ### Excluded — Intentionally Out-of-Scope (12 flags)
 | Flag | Reason |
 |---|---|
-| `--update`, `--check-update`, `--rollback`, `--yes` | Self-update (Rust distribution model differs). |
+| ~~`--update`, `--check-update`, `--rollback`, `--yes`~~ | **Implemented** — stub responses with remediation guidance (Rust distribution model differs). |
 | `--cpu-profile`, `--profile-json`, `--profile-startup` | Dev profiling (not user-facing). |
 | ~~`--debug-render`, `--debug-height`, `--debug-width`~~ | **Implemented** — non-interactive TUI rendering for CI/diagnostics. |
-| `--background-mode`, `--no-background-mode` | Background daemon (architecture differs). |
+| `--background-mode`, `--no-background-mode` | **Partial** — CLI/env/config precedence + compatibility parsing implemented; async background worker pipeline still pending. |
 
 ### Parity Summary
 | Category | Complete | Partial | Missing | Excluded | Total |
@@ -356,7 +356,7 @@ Prerequisites: Wave 1 complete.
 | TUI visual token baseline + breakpoint layout | bd-33w.3.1 | Width-aware layout test at 100/140/180 cols |
 | Main/board/insights/graph interaction gap closure | bd-33w.3.2 | Keybinding matrix rows all `yes` |
 | History view full parity (responsive, file tree, search, o/y) | bd-33w.3.3 | History keyflow tests pass |
-| Recipe/script workflow (`--robot-recipes`, `--emit-script`, feedback) | bd-33w.2.2 | `cargo test recipe` + `cargo test emit_script` pass |
+| ~~Recipe/script workflow (`--robot-recipes`, `--emit-script`, feedback)~~ | bd-33w.2.2 | **Implemented** — `cargo test recipe` passes (9 tests), CLI flags wired |
 | Label intelligence + drift baseline | bd-33w.2.3 | `cargo test label_health` + `cargo test drift` pass |
 | Semantic search + ranking | bd-33w.2.4 | `cargo test search` passes |
 | Sprint/planning adjunct surfaces | bd-33w.2.5 | `cargo test sprint_list` + `cargo test sprint_show` pass | done |
@@ -381,11 +381,11 @@ Prerequisites: Wave 3 complete.
 | Gate | Bead | Verification |
 |---|---|---|
 | Static pages pipeline (export/preview/watch) | bd-33w.4.4 | `cargo test pages` passes |
-| Brief-generation surfaces | bd-33w.4.5 | `cargo test priority_brief` passes |
+| ~~Brief-generation surfaces~~ | bd-33w.4.5 | **Implemented** — `--priority-brief PATH` and `--agent-brief DIR` + `analysis::brief` module (5 tests) |
 | Modal/wizard parity | bd-33w.3.4 | `cargo test modal` passes |
 | TUI regression harness (snapshots + keyflow) | bd-33w.3.5 | Snapshot tests pass, keyflow scripts complete |
 | Debug-render parity flags | bd-33w.3.6 | `cargo test debug_render` passes |
-| Operational/admin CLI (update/rollback) | bd-33w.2.6 | excluded (different distribution model) |
+| ~~Operational/admin CLI (update/rollback + agents blurb)~~ | bd-33w.2.6 | **Implemented** — `--agents-check/add/update/remove/dry-run/force` + `--check-update/update/rollback/yes` stubs |
 | Docs hardened, roadmap self-contained | bd-33w.8.1 | All links in FEATURE_PARITY.md resolve |
 | Release-readiness checklist + evidence index | bd-33w.8.2 | Checklist in repo with all items checked |
 

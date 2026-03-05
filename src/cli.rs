@@ -42,6 +42,22 @@ pub struct Cli {
     #[arg(short = 'V', long = "version", action = ArgAction::SetTrue)]
     pub version: bool,
 
+    /// Check whether a newer bvr version is available.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub check_update: bool,
+
+    /// Update bvr to the latest version.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub update: bool,
+
+    /// Roll back the most recent update.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub rollback: bool,
+
+    /// Skip update confirmation prompts (legacy compatibility flag).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub yes: bool,
+
     #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
     pub format: OutputFormat,
 
@@ -306,6 +322,90 @@ pub struct Cli {
     #[arg(long)]
     pub search_weights: Option<String>,
 
+    /// List available triage recipes.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_recipes: bool,
+
+    /// Apply a named recipe to filter/sort recommendations.
+    #[arg(long)]
+    pub recipe: Option<String>,
+
+    /// Emit a shell script for the top recommendations.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub emit_script: bool,
+
+    /// Number of recommendations to include in emitted script (default 5).
+    #[arg(long, default_value_t = 5)]
+    pub script_limit: usize,
+
+    /// Shell format for emitted script: bash (default), fish, zsh.
+    #[arg(long, default_value = "bash")]
+    pub script_format: String,
+
+    /// Record positive feedback for a recommendation.
+    #[arg(long)]
+    pub feedback_accept: Option<String>,
+
+    /// Record negative feedback (ignore) for a recommendation.
+    #[arg(long)]
+    pub feedback_ignore: Option<String>,
+
+    /// Show feedback statistics.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub feedback_show: bool,
+
+    /// Reset all recorded feedback.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub feedback_reset: bool,
+
+    /// Generate a priority brief as markdown and write to the given path.
+    #[arg(long)]
+    pub priority_brief: Option<PathBuf>,
+
+    /// Generate an agent brief bundle in the given directory.
+    #[arg(long)]
+    pub agent_brief: Option<PathBuf>,
+
+    /// Export static pages bundle to directory.
+    #[arg(long)]
+    pub export_pages: Option<PathBuf>,
+
+    /// Preview an existing static pages bundle from directory.
+    #[arg(long)]
+    pub preview_pages: Option<PathBuf>,
+
+    /// Watch beads file changes and auto-regenerate pages export.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub watch_export: bool,
+
+    /// Launch pages deployment wizard.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub pages: bool,
+
+    /// Include closed issues in exported pages bundle (default: true).
+    #[arg(long, action = ArgAction::Set, default_value_t = true)]
+    pub pages_include_closed: bool,
+
+    /// Include history payload in exported pages bundle (default: true).
+    #[arg(long, action = ArgAction::Set, default_value_t = true)]
+    pub pages_include_history: bool,
+
+    /// Custom title for exported pages bundle.
+    #[arg(long)]
+    pub pages_title: Option<String>,
+
+    /// Disable live reload when previewing pages.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub no_live_reload: bool,
+
+    /// Enable experimental background snapshot loading (TUI only).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub background_mode: bool,
+
+    /// Disable experimental background snapshot loading (TUI only).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub no_background_mode: bool,
+
     #[arg(long)]
     pub export_md: Option<PathBuf>,
 
@@ -345,6 +445,10 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub agents_dry_run: bool,
 
+    /// Skip confirmation prompts for agents commands (legacy compatibility flag).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agents_force: bool,
+
     #[arg(long)]
     pub as_of: Option<String>,
 
@@ -359,6 +463,11 @@ pub struct Cli {
 }
 
 impl Cli {
+    #[must_use]
+    pub fn is_operational_command(&self) -> bool {
+        self.check_update || self.update || self.rollback || self.yes
+    }
+
     #[must_use]
     pub fn is_robot_command(&self) -> bool {
         self.robot_help
@@ -402,10 +511,85 @@ impl Cli {
             || self.save_baseline.is_some()
             || self.robot_drift
             || self.robot_search
+            || self.robot_recipes
+            || self.emit_script
+            || self.feedback_show
+            || self.feedback_accept.is_some()
+            || self.feedback_ignore.is_some()
+            || self.feedback_reset
+            || self.priority_brief.is_some()
+            || self.agent_brief.is_some()
     }
 
     #[must_use]
     pub fn is_agents_command(&self) -> bool {
-        self.agents_check || self.agents_add || self.agents_update || self.agents_remove
+        self.agents_check
+            || self.agents_add
+            || self.agents_update
+            || self.agents_remove
+            || self.agents_dry_run
+            || self.agents_force
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn parse_operational_flags() {
+        let cli = Cli::parse_from(["bvr", "--check-update"]);
+        assert!(cli.check_update);
+        assert!(cli.is_operational_command());
+
+        let cli = Cli::parse_from(["bvr", "--update", "--yes"]);
+        assert!(cli.update);
+        assert!(cli.yes);
+        assert!(cli.is_operational_command());
+
+        let cli = Cli::parse_from(["bvr", "--rollback"]);
+        assert!(cli.rollback);
+        assert!(cli.is_operational_command());
+    }
+
+    #[test]
+    fn parse_agents_force_as_agents_command() {
+        let cli = Cli::parse_from(["bvr", "--agents-force"]);
+        assert!(cli.agents_force);
+        assert!(cli.is_agents_command());
+    }
+
+    #[test]
+    fn parse_pages_flags() {
+        let cli = Cli::parse_from([
+            "bvr",
+            "--export-pages",
+            "bundle",
+            "--watch-export",
+            "--pages-title",
+            "Dashboard",
+            "--pages-include-closed=false",
+            "--pages-include-history=false",
+        ]);
+
+        assert_eq!(
+            cli.export_pages
+                .as_deref()
+                .and_then(std::path::Path::to_str),
+            Some("bundle")
+        );
+        assert!(cli.watch_export);
+        assert_eq!(cli.pages_title.as_deref(), Some("Dashboard"));
+        assert!(!cli.pages_include_closed);
+        assert!(!cli.pages_include_history);
+    }
+
+    #[test]
+    fn parse_background_mode_flags() {
+        let cli = Cli::parse_from(["bvr", "--background-mode", "--no-background-mode"]);
+        assert!(cli.background_mode);
+        assert!(cli.no_background_mode);
     }
 }
