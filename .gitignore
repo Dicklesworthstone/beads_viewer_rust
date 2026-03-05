@@ -11,3 +11,16 @@ storage.sqlite3-*
 
 # Go reference binary (built during conformance tests)
 tests/conformance/go_reference/bvr
+
+# Core dumps
+core.*
+
+# Corrupt/backup database files
+*.corrupt
+*.corrupt_bak
+*.corrupt-*
+*.pre_repair_*.bak
+*.db.new
+
+# Alternative build targets
+target-*/
