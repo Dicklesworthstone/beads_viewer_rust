@@ -57,6 +57,18 @@ fn default_sort_direction() -> String {
     "asc".to_string()
 }
 
+fn open_like_status_filters() -> Vec<String> {
+    vec![
+        "open".to_string(),
+        "in_progress".to_string(),
+        "blocked".to_string(),
+        "deferred".to_string(),
+        "pinned".to_string(),
+        "hooked".to_string(),
+        "review".to_string(),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Built-in Recipes
 // ---------------------------------------------------------------------------
@@ -67,7 +79,7 @@ pub fn builtin_recipes() -> Vec<Recipe> {
             name: "default".to_string(),
             description: "All open issues sorted by priority".to_string(),
             filters: FilterConfig {
-                status: vec!["open".into(), "in_progress".into(), "blocked".into()],
+                status: open_like_status_filters(),
                 ..Default::default()
             },
             sort: SortConfig {
@@ -106,7 +118,7 @@ pub fn builtin_recipes() -> Vec<Recipe> {
             name: "high-impact".to_string(),
             description: "Issues with highest graph centrality".to_string(),
             filters: FilterConfig {
-                status: vec!["open".into(), "in_progress".into()],
+                status: open_like_status_filters(),
                 ..Default::default()
             },
             sort: SortConfig {
@@ -143,7 +155,7 @@ pub fn builtin_recipes() -> Vec<Recipe> {
             name: "stale".to_string(),
             description: "Issues not updated in 30+ days".to_string(),
             filters: FilterConfig {
-                status: vec!["open".into(), "in_progress".into()],
+                status: open_like_status_filters(),
                 ..Default::default()
             },
             sort: SortConfig {
@@ -178,7 +190,12 @@ pub fn apply_recipe(
             if !recipe.filters.status.is_empty() {
                 let status = issue.map_or("unknown", |i| i.status.as_str());
                 let normalized = status.to_ascii_lowercase();
-                if !recipe.filters.status.iter().any(|s| s == &normalized) {
+                if !recipe
+                    .filters
+                    .status
+                    .iter()
+                    .any(|s| s.trim().eq_ignore_ascii_case(&normalized))
+                {
                     return false;
                 }
             }
@@ -593,6 +610,7 @@ fn chrono_now() -> String {
 mod tests {
     use super::*;
     use crate::analysis::triage::Recommendation;
+    use crate::model::Issue;
 
     fn make_rec(id: &str, title: &str, score: f64) -> Recommendation {
         Recommendation {
@@ -610,6 +628,16 @@ mod tests {
             assignee: String::new(),
             claim_command: String::new(),
             show_command: String::new(),
+        }
+    }
+
+    fn make_issue(id: &str, status: &str) -> Issue {
+        Issue {
+            id: id.to_string(),
+            title: id.to_string(),
+            status: status.to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
         }
     }
 
@@ -634,6 +662,39 @@ mod tests {
     fn find_recipe_works() {
         assert!(find_recipe("default").is_some());
         assert!(find_recipe("nonexistent").is_none());
+    }
+
+    #[test]
+    fn default_recipe_includes_all_open_like_statuses() {
+        let recipe = find_recipe("default").expect("default recipe");
+        for status in ["review", "deferred", "pinned", "hooked"] {
+            assert!(
+                recipe.filters.status.iter().any(|s| s == status),
+                "default recipe should include open-like status {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_recipe_status_filter_is_case_insensitive() {
+        let recs = vec![make_rec("A", "A", 0.9)];
+        let issues = vec![make_issue("A", "review")];
+        let actionable = Vec::new();
+        let pagerank = HashMap::new();
+
+        let recipe = Recipe {
+            name: "custom".to_string(),
+            description: "status filter".to_string(),
+            filters: FilterConfig {
+                status: vec!["ReViEw".to_string()],
+                ..Default::default()
+            },
+            sort: SortConfig::default(),
+            max_items: 0,
+        };
+
+        let result = apply_recipe(&recipe, &recs, &issues, &actionable, &pagerank);
+        assert_eq!(result.len(), 1);
     }
 
     #[test]

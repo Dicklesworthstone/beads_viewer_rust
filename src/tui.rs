@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 #[cfg(not(test))]
 use std::collections::VecDeque;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use crate::analysis::Analyzer;
@@ -2085,18 +2086,11 @@ impl BvrApp {
         };
 
         if let Some(text) = text {
-            // Use xclip/xsel/pbcopy via shell
-            let result = std::process::Command::new("sh")
-                .args(["-c", &format!("printf '%s' '{text}' | xclip -selection clipboard 2>/dev/null || printf '%s' '{text}' | xsel --clipboard 2>/dev/null || printf '%s' '{text}' | pbcopy 2>/dev/null")])
-                .output();
-            match result {
-                Ok(output) if output.status.success() => {
-                    let short = if text.len() > 7 { &text[..7] } else { &text };
-                    self.history_status_msg = format!("Copied {short} to clipboard");
-                }
-                _ => {
-                    self.history_status_msg = "Clipboard not available".into();
-                }
+            if copy_text_to_clipboard(&text) {
+                let short = if text.len() > 7 { &text[..7] } else { &text };
+                self.history_status_msg = format!("Copied {short} to clipboard");
+            } else {
+                self.history_status_msg = "Clipboard not available".into();
             }
         } else {
             self.history_status_msg = "No item selected".into();
@@ -2166,21 +2160,11 @@ impl BvrApp {
             return;
         };
 
-        let result = std::process::Command::new("sh")
-            .args([
-                "-c",
-                &format!("xdg-open '{url}' 2>/dev/null || open '{url}' 2>/dev/null"),
-            ])
-            .output();
-
-        match result {
-            Ok(output) if output.status.success() => {
-                let short = if sha.len() > 7 { &sha[..7] } else { &sha };
-                self.history_status_msg = format!("Opened {short} in browser");
-            }
-            _ => {
-                self.history_status_msg = "Could not open browser".into();
-            }
+        if open_url_in_browser(&url) {
+            let short = if sha.len() > 7 { &sha[..7] } else { &sha };
+            self.history_status_msg = format!("Opened {short} in browser");
+        } else {
+            self.history_status_msg = "Could not open browser".into();
         }
     }
 
@@ -2685,10 +2669,8 @@ impl BvrApp {
 
                 match self.list_sort {
                     ListSort::Default => {
-                        let l_open =
-                            left_issue.status != "closed" && left_issue.status != "rejected";
-                        let r_open =
-                            right_issue.status != "closed" && right_issue.status != "rejected";
+                        let l_open = left_issue.is_open_like();
+                        let r_open = right_issue.is_open_like();
                         r_open
                             .cmp(&l_open)
                             .then_with(|| left_issue.priority.cmp(&right_issue.priority))
@@ -4985,6 +4967,58 @@ fn max_metric_value(metrics: &std::collections::HashMap<String, f64>) -> f64 {
     metrics.values().copied().fold(0.0_f64, f64::max).max(1e-9)
 }
 
+fn run_command_with_stdin(program: &str, args: &[&str], input: &str) -> bool {
+    let Ok(mut child) = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+
+    if let Some(mut stdin) = child.stdin.take()
+        && stdin.write_all(input.as_bytes()).is_err()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return false;
+    }
+
+    child.wait().is_ok_and(|status| status.success())
+}
+
+fn run_command(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn copy_text_to_clipboard(text: &str) -> bool {
+    run_command_with_stdin("wl-copy", &[], text)
+        || run_command_with_stdin("xclip", &["-selection", "clipboard"], text)
+        || run_command_with_stdin("xsel", &["--clipboard", "--input"], text)
+        || run_command_with_stdin("pbcopy", &[], text)
+        || run_command_with_stdin("clip.exe", &[], text)
+}
+
+fn open_url_in_browser(url: &str) -> bool {
+    if cfg!(target_os = "windows") {
+        run_command("cmd", &["/C", "start", "", url])
+    } else if cfg!(target_os = "macos") {
+        run_command("open", &[url])
+    } else {
+        run_command("xdg-open", &[url])
+            || run_command("open", &[url])
+            || run_command("gio", &["open", url])
+    }
+}
+
 fn mini_bar(value: f64, max: f64) -> String {
     let width: usize = 6;
     let ratio = if max > 0.0 { value / max } else { 0.0 };
@@ -7075,6 +7109,35 @@ mod tests {
         app.update(key(KeyCode::Char('s')));
         assert_eq!(app.list_sort, ListSort::Default);
         assert_eq!(first_rendered_issue_id(&app), "M");
+    }
+
+    #[test]
+    fn default_sort_treats_tombstone_as_closed_like() {
+        let mut issues = sortable_issues();
+        issues.push(Issue {
+            id: "T".to_string(),
+            title: "Tombstone".to_string(),
+            status: "tombstone".to_string(),
+            issue_type: "task".to_string(),
+            priority: 0,
+            ..Issue::default()
+        });
+
+        let mut app = new_app(ViewMode::Main, 0);
+        app.analyzer = Analyzer::new(issues);
+        app.list_filter = ListFilter::All;
+        app.list_sort = ListSort::Default;
+
+        let visible = app.visible_issue_indices();
+        assert!(!visible.is_empty());
+
+        let first = &app.analyzer.issues[visible[0]].id;
+        let last = &app.analyzer.issues[*visible.last().unwrap_or(&0)].id;
+        assert_ne!(first, "T", "tombstone issue should not be sorted as open");
+        assert_eq!(
+            last, "T",
+            "tombstone issue should sort with closed-like items"
+        );
     }
 
     #[test]

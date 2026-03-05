@@ -298,7 +298,7 @@ fn velocity_minutes_per_day_for_label(
     let mut samples = 0usize;
 
     for issue in issues {
-        if !issue.status.eq_ignore_ascii_case("closed") {
+        if !issue.is_closed_like() {
             continue;
         }
 
@@ -431,7 +431,7 @@ mod tests {
     use crate::analysis::graph::IssueGraph;
     use crate::model::Issue;
 
-    use super::{estimate_eta_for_issue, estimate_forecast};
+    use super::{estimate_eta_for_issue, estimate_forecast, velocity_minutes_per_day_for_label};
 
     #[test]
     fn forecast_for_all_open_issues() {
@@ -489,5 +489,36 @@ mod tests {
         assert!(!eta.eta_date.is_empty());
         assert!(!eta.eta_date_low.is_empty());
         assert!(!eta.eta_date_high.is_empty());
+    }
+
+    #[test]
+    fn velocity_counts_tombstone_as_closed_like() {
+        let now = Utc::now();
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                title: "A".to_string(),
+                status: "closed".to_string(),
+                issue_type: "task".to_string(),
+                estimated_minutes: Some(120),
+                closed_at: Some((now - chrono::Duration::days(1)).to_rfc3339()),
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "B".to_string(),
+                status: "tombstone".to_string(),
+                issue_type: "task".to_string(),
+                estimated_minutes: Some(60),
+                closed_at: Some((now - chrono::Duration::days(2)).to_rfc3339()),
+                ..Issue::default()
+            },
+        ];
+
+        let (velocity, samples) =
+            velocity_minutes_per_day_for_label(&issues, None, now - chrono::Duration::days(30), 60);
+
+        assert_eq!(samples, 2);
+        assert!((velocity - 6.0).abs() < 0.001);
     }
 }

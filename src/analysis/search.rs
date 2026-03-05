@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chrono::Utc;
 use serde::Serialize;
 
 use super::graph::GraphMetrics;
@@ -262,7 +263,9 @@ fn normalize_recency(updated_at: Option<&str>) -> f64 {
         return 0.0;
     };
     // Parse date and compute days since update
-    let now_ms = super::causal::parse_timestamp_ms_pub("2026-03-04T00:00:00Z").unwrap_or(0);
+    let now_ms = u64::try_from(Utc::now().timestamp_millis())
+        .ok()
+        .unwrap_or(0);
     let ts_ms = super::causal::parse_timestamp_ms_pub(ts).unwrap_or(0);
     if ts_ms == 0 || now_ms == 0 || ts_ms > now_ms {
         return 0.5;
@@ -602,5 +605,15 @@ mod tests {
             assert_eq!(a.issue_id, b.issue_id);
             assert!((a.score - b.score).abs() < f64::EPSILON);
         }
+    }
+
+    #[test]
+    fn recency_for_current_timestamp_is_high() {
+        let now_iso = chrono::Utc::now().to_rfc3339();
+        let score = normalize_recency(Some(&now_iso));
+        assert!(
+            score > 0.9,
+            "expected recent timestamp score > 0.9, got {score}"
+        );
     }
 }

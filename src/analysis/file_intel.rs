@@ -457,9 +457,9 @@ pub fn lookup_file_beads(
 }
 
 fn is_open_status(status: &str) -> bool {
-    matches!(
-        status.to_ascii_lowercase().as_str(),
-        "open" | "in_progress" | "blocked" | "ready"
+    !matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "closed" | "tombstone"
     )
 }
 
@@ -611,7 +611,7 @@ pub fn analyze_impact(
 
         let status_weight = match history.status.to_ascii_lowercase().as_str() {
             "in_progress" => 0.4,
-            "open" | "ready" | "blocked" => 0.2,
+            "open" | "ready" | "blocked" | "deferred" | "pinned" | "hooked" | "review" => 0.2,
             "closed" | "tombstone" => 0.05,
             _ => 0.1,
         };
@@ -1065,6 +1065,25 @@ mod tests {
         assert_eq!(result.open_beads.len(), 1);
         assert_eq!(result.closed_beads.len(), 1);
         assert_eq!(result.total_beads, 2);
+    }
+
+    #[test]
+    fn file_beads_lookup_treats_review_as_open() {
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "bd-review".to_string(),
+            make_history("bd-review", "review", &["src/lib.rs"]),
+        );
+        histories.insert(
+            "bd-closed".to_string(),
+            make_history("bd-closed", "closed", &["src/lib.rs"]),
+        );
+
+        let result = lookup_file_beads("src/lib.rs", &histories, 10);
+
+        assert_eq!(result.open_beads.len(), 1);
+        assert_eq!(result.open_beads[0].bead_id, "bd-review");
+        assert_eq!(result.closed_beads.len(), 1);
     }
 
     #[test]
