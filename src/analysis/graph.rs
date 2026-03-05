@@ -1180,4 +1180,103 @@ mod tests {
         // bv-200 is blocked by bd-100
         assert_eq!(actionable, vec!["bd-100".to_string(), "gh-300".to_string()]);
     }
+
+    #[test]
+    fn empty_graph_produces_empty_metrics() {
+        let graph = IssueGraph::build(&[]);
+        let metrics = graph.compute_metrics();
+        assert!(metrics.pagerank.is_empty());
+        assert!(metrics.betweenness.is_empty());
+        assert!(metrics.cycles.is_empty());
+        assert!(metrics.articulation_points.is_empty());
+        assert_eq!(graph.actionable_ids().len(), 0);
+    }
+
+    #[test]
+    fn single_node_graph() {
+        let issues = vec![Issue {
+            id: "SOLO".to_string(),
+            title: "Alone".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        assert!(metrics.pagerank.contains_key("SOLO"));
+        assert!(metrics.cycles.is_empty());
+        assert_eq!(graph.actionable_ids(), vec!["SOLO".to_string()]);
+        assert!(graph.open_blockers("SOLO").is_empty());
+    }
+
+    #[test]
+    fn cycle_detected_in_mutual_dependency() {
+        let issues = vec![
+            Issue {
+                id: "X".to_string(),
+                title: "X".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "X".to_string(),
+                    depends_on_id: "Y".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "Y".to_string(),
+                title: "Y".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "Y".to_string(),
+                    depends_on_id: "X".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        assert!(
+            !metrics.cycles.is_empty(),
+            "mutual dependency should form a cycle"
+        );
+    }
+
+    #[test]
+    fn closed_issues_not_actionable() {
+        let issues = vec![Issue {
+            id: "DONE".to_string(),
+            title: "Done".to_string(),
+            status: "closed".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+        let graph = IssueGraph::build(&issues);
+        assert!(graph.actionable_ids().is_empty());
+    }
+
+    #[test]
+    fn pagerank_sums_near_one() {
+        let issues: Vec<Issue> = (0..5)
+            .map(|i| Issue {
+                id: format!("N-{i}"),
+                title: format!("Node {i}"),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            })
+            .collect();
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let total: f64 = metrics.pagerank.values().sum();
+        assert!(
+            (total - 1.0).abs() < 0.1,
+            "PageRank should sum near 1.0, got {total}"
+        );
+    }
 }

@@ -1,0 +1,34 @@
+---
+source: src/tui.rs
+expression: text
+---
+bvr | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc back/quit
+┌Insight Queue [focus]──────────────────────────────┐┌Insight Detail───────────────────────────────────────────────────────────────────────┐
+│                                                   ││                                                                                     │
+│ [Bottlenecks] s/S cycles panel | e explanations | ││ Insights Summary: bottlenecks=2 crit-path=3 cycles=0 cut-pts=0 k-core-max=1         │
+│                                                   ││                                                                                     │
+│  1. A            score=0.481 blocks=1             ││ Focus: A (Root)                                                                     │
+│  2. B            score=0.260 blocks=0             ││ Status: open | Priority: p0                                                         │
+│                                                   ││                                                                                     │
+│                                                   ││ All Metrics:                                                                        │
+│                                                   ││   PageRank:     0.4805                                                              │
+│                                                   ││   Betweenness:  0.0000                                                              │
+│                                                   ││   Eigenvector:  1.0000                                                              │
+│                                                   ││   Hub (HITS):   0.0000                                                              │
+│                                                   ││   Auth (HITS):  1.0000                                                              │
+│                                                   ││   K-core:       1                                                                   │
+│                                                   ││   Crit depth:   2                                                                   │
+│                                                   ││   Slack:        0.0000                                                              │
+│                                                   ││   Cut point:    no                                                                  │
+│                                                   ││                                                                                     │
+│                                                   ││ Critical Path Head:                                                                 │
+│                                                   ││   - A                                                                               │
+│                                                   ││   - B                                                                               │
+│                                                   ││   - C                                                                               │
+│                                                   ││                                                                                     │
+│                                                   ││ Cycle Hotspots:                                                                     │
+│                                                   ││   none                                                                              │
+│                                                   ││                                                                                     │
+│                                                   ││                                                                                     │
+└───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
+Insights [bottlenecks] | s/S panel | e explanations=on | x proof=off

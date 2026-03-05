@@ -1,0 +1,34 @@
+---
+source: src/tui.rs
+expression: text
+---
+bvr | mode=Main | focus=list | issues=2/3 | filter=open | sort=default | ? help | Tab focus | Esc ba
+┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ > A              open        p0 Root   ││ ID: A                                                  │
+│   B              open        p0 Depend ││ Title: Root                                            │
+│                                        ││ Status: open                                           │
+│                                        ││ Priority: 0                                            │
+│                                        ││ Type: task                                             │
+│                                        ││ Assignee:                                              │
+│                                        ││ Labels:                                                │
+│                                        ││ PageRank: 0.4805                                       │
+│                                        ││ Critical depth: 2                                      │
+│                                        ││ Depends on: none                                       │
+│                                        ││ Open blockers: none                                    │
+│                                        ││ Direct dependents: B                                   │
+│                                        ││                                                        │
+│                                        ││ Description:                                           │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Main view mirrors bv split workflow. Press b/i/g/h for focused modes | s cycles sort (default)

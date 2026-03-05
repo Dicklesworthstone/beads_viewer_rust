@@ -1,0 +1,34 @@
+---
+source: src/tui.rs
+expression: text
+---
+bvr | mode=Graph | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc ba
+┌Graph Nodes [focus]─────────────────────┐┌Graph Focus─────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ Nodes (3) by critical-path score | h/l ││ Graph: nodes=3 edges=1 cycles=0 actionable=1           │
+│                                        ││                                                        │
+│ > o A            in: 0 out: 1 pr:0.481 ││   +---[o T p0]---+                                     │
+│   o B            in: 1 out: 0 pr:0.260 ││   | A                 |                                │
+│   x C            in: 0 out: 0 pr:0.260 ││   | Root              |                                │
+│                                        ││   | up:0 down:1        |                               │
+│                                        ││   +-------------------+                                │
+│                                        ││         |                                              │
+│                                        ││         v                                              │
+│                                        ││   BLOCKS (waiting):                                    │
+│                                        ││     [o] B                                              │
+│                                        ││                                                        │
+│                                        ││ GRAPH METRICS                                          │
+│                                        ││ Importance:                                            │
+│                                        ││   Critical Path         2  ████░░  #1                  │
+│                                        ││   PageRank         0.4805  ██████  #1                  │
+│                                        ││   Eigenvector      1.0000  ██████  #1                  │
+│                                        ││ Flow & Connectivity:                                   │
+│                                        ││   Betweenness      0.0000  ░░░░░░  #1                  │
+│                                        ││   Hub Score        0.0000  ░░░░░░  #2                  │
+│                                        ││   Authority        1.0000  ██████  #1                  │
+│                                        ││ Connections:                                           │
+│                                        ││   In-Degree             0  ░░░░░░                      │
+│                                        ││   Out-Degree            1  ██░░░░                      │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Graph mode: centrality ranks, blockers/dependents, cycle membership.

@@ -1,0 +1,34 @@
+---
+source: src/tui.rs
+expression: text
+---
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc bac
+┌Confirm Quit──────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│ Quit bvr?                                                                                        │
+│                                                                                                  │
+│ Press Esc or Y to quit.                                                                          │
+│ Press any other key to cancel.                                                                   │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Esc/Y confirms quit. Any other key cancels.

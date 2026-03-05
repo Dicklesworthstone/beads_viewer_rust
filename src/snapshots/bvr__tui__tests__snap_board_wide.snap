@@ -1,0 +1,34 @@
+---
+source: src/tui.rs
+expression: text
+---
+bvr | mode=Board | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc back/quit
+┌Board Lanes [focus]────────────────────────────────┐┌Board Focus──────────────────────────────────────────────────────────────────────────┐
+│                                                   ││                                                                                     │
+│ Grouping: status (s cycles) | Empty: Auto (e)     ││ ┌────────────────────────────────────────┐                                          │
+│                                                   ││ │  o T A p0                              │                                          │
+│ Lanes (5) | 3 issues total                        ││ │ Root                                   │                                          │
+│                                                   ││ ├────────────────────────────────────────┤                                          │
+│ > open         [  2] ██                           ││ │ Lane: open                             │                                          │
+│     ▶ o A          p0 Root                        ││ │ Assignee:                              │                                          │
+│       o B          p0 Dependent                   ││ └────────────────────────────────────────┘                                          │
+│                                                   ││                                                                                     │
+│   in_progress  [  0]                              ││ Unblocks (1)                                                                        │
+│     (empty)                                       ││   o B                                                                               │
+│                                                   ││                                                                                     │
+│   blocked      [  0]                              ││ Ready to advance to next lane.                                                      │
+│     (empty)                                       ││                                                                                     │
+│                                                   ││                                                                                     │
+│   closed       [  1] █                            ││                                                                                     │
+│       x C          p0 Closed                      ││                                                                                     │
+│                                                   ││                                                                                     │
+│   other        [  0]                              ││                                                                                     │
+│     (empty)                                       ││                                                                                     │
+│                                                   ││                                                                                     │
+│                                                   ││                                                                                     │
+│                                                   ││                                                                                     │
+│                                                   ││                                                                                     │
+│                                                   ││                                                                                     │
+│                                                   ││                                                                                     │
+└───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
+Board mode: lane counts, queued IDs, and selected issue delivery context | grouping=status (s cycles) | empty-lanes=Auto (e toggles) | H/L l

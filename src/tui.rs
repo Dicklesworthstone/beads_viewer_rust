@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+#[cfg(not(test))]
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use crate::analysis::Analyzer;
@@ -8,16 +10,177 @@ use crate::analysis::git_history::{
 };
 use crate::loader;
 use crate::model::Issue;
+#[cfg(not(test))]
+use crate::robot::compute_data_hash;
 use crate::{BvrError, Result};
 use chrono::{DateTime, Utc};
 use ftui::core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use ftui::core::geometry::Rect;
 use ftui::layout::{Constraint, Flex};
 use ftui::render::frame::Frame;
+#[cfg(not(test))]
+use ftui::runtime::TaskSpec;
 use ftui::runtime::{App, Cmd, Model, ScreenMode};
 use ftui::widgets::Widget;
 use ftui::widgets::block::Block;
 use ftui::widgets::paragraph::Paragraph;
+
+#[cfg(not(test))]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+#[derive(Debug, Clone)]
+pub struct BackgroundModeConfig {
+    pub beads_file: Option<PathBuf>,
+    pub workspace_config: Option<PathBuf>,
+    pub repo_path: Option<PathBuf>,
+    pub repo_filter: Option<String>,
+    pub poll_interval_ms: u64,
+}
+
+impl BackgroundModeConfig {
+    pub const DEFAULT_POLL_INTERVAL_MS: u64 = 2_000;
+
+    #[cfg(not(test))]
+    fn normalized(mut self) -> Self {
+        if self.poll_interval_ms == 0 {
+            self.poll_interval_ms = Self::DEFAULT_POLL_INTERVAL_MS;
+        }
+        self
+    }
+
+    #[cfg(not(test))]
+    fn poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.poll_interval_ms.max(1))
+    }
+
+    #[cfg(not(test))]
+    fn load_issues(&self) -> Result<Vec<Issue>> {
+        let issues = if let Some(path) = self.beads_file.as_deref() {
+            loader::load_issues_from_file(path)?
+        } else if let Some(path) = self.workspace_config.as_deref() {
+            loader::load_workspace_issues(path)?
+        } else {
+            loader::load_issues(self.repo_path.as_deref())?
+        };
+
+        if let Some(repo_filter) = self.repo_filter.as_deref() {
+            Ok(filter_issues_by_repo(issues, repo_filter))
+        } else {
+            Ok(issues)
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn filter_issues_by_repo(issues: Vec<Issue>, repo_filter: &str) -> Vec<Issue> {
+    let filter = repo_filter.trim().to_ascii_lowercase();
+    if filter.is_empty() {
+        return issues;
+    }
+
+    let needs_flexible_match =
+        !filter.ends_with('-') && !filter.ends_with(':') && !filter.ends_with('_');
+    let with_dash = format!("{filter}-");
+    let with_colon = format!("{filter}:");
+    let with_underscore = format!("{filter}_");
+
+    issues
+        .into_iter()
+        .filter(|issue| {
+            let id = issue.id.to_ascii_lowercase();
+            if id.starts_with(&filter) {
+                return true;
+            }
+            if needs_flexible_match
+                && (id.starts_with(&with_dash)
+                    || id.starts_with(&with_colon)
+                    || id.starts_with(&with_underscore))
+            {
+                return true;
+            }
+
+            let source_repo = issue.source_repo.trim();
+            if source_repo.is_empty() || source_repo == "." {
+                return false;
+            }
+
+            let source_repo = source_repo.to_ascii_lowercase();
+            if source_repo.starts_with(&filter) {
+                return true;
+            }
+
+            needs_flexible_match
+                && (source_repo.starts_with(&with_dash)
+                    || source_repo.starts_with(&with_colon)
+                    || source_repo.starts_with(&with_underscore))
+        })
+        .collect()
+}
+
+#[cfg(not(test))]
+#[derive(Debug)]
+struct BackgroundRuntimeState {
+    config: BackgroundModeConfig,
+    in_flight: bool,
+    cancel_requested: Arc<AtomicBool>,
+    last_data_hash: String,
+    timeline: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackgroundTickDecision {
+    Stop,
+    TickOnly,
+    ReloadAndTick,
+}
+
+fn decide_background_tick(cancel_requested: bool, in_flight: bool) -> BackgroundTickDecision {
+    if cancel_requested {
+        BackgroundTickDecision::Stop
+    } else if in_flight {
+        BackgroundTickDecision::TickOnly
+    } else {
+        BackgroundTickDecision::ReloadAndTick
+    }
+}
+
+fn should_apply_background_reload(
+    cancel_requested: bool,
+    new_hash: &str,
+    previous_hash: &str,
+) -> bool {
+    !cancel_requested && new_hash != previous_hash
+}
+
+fn background_warning_message(cancel_requested: bool, error: &str) -> Option<String> {
+    if cancel_requested || error == "canceled" {
+        None
+    } else {
+        Some(format!("background reload warning: {error}"))
+    }
+}
+
+#[cfg(not(test))]
+const BACKGROUND_TIMELINE_MAX_EVENTS: usize = 32;
+
+#[cfg(not(test))]
+fn background_timeline_entry(event: &str) -> String {
+    let ts = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    format!("{ts} | {event}")
+}
+
+#[cfg(not(test))]
+fn push_background_timeline(runtime: &mut BackgroundRuntimeState, event: &str) -> String {
+    let entry = background_timeline_entry(event);
+    runtime.timeline.push_back(entry.clone());
+    while runtime.timeline.len() > BACKGROUND_TIMELINE_MAX_EVENTS {
+        runtime.timeline.pop_front();
+    }
+    entry
+}
 
 // ---------------------------------------------------------------------------
 // Visual Tokens — centralised style constants for the TUI
@@ -469,6 +632,57 @@ struct HistoryGitCache {
     commit_bead_confidence: BTreeMap<String, Vec<(String, f64)>>,
 }
 
+// ---------------------------------------------------------------------------
+// Modal overlays
+// ---------------------------------------------------------------------------
+
+/// Modal overlays that take over the full screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ModalOverlay {
+    /// Welcome / first-run tutorial.
+    Tutorial,
+    /// Reusable Y/N confirmation dialog.
+    Confirm { title: String, message: String },
+    /// Interactive pages export wizard.
+    PagesWizard(PagesWizardState),
+}
+
+/// State for the multi-step pages export wizard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PagesWizardState {
+    step: usize,
+    export_dir: String,
+    title: String,
+    include_closed: bool,
+    include_history: bool,
+}
+
+impl PagesWizardState {
+    fn new() -> Self {
+        Self {
+            step: 0,
+            export_dir: "./bv-pages".to_string(),
+            title: String::new(),
+            include_closed: true,
+            include_history: true,
+        }
+    }
+
+    fn step_count() -> usize {
+        4
+    }
+
+    fn step_label(&self) -> &'static str {
+        match self.step {
+            0 => "Export Directory",
+            1 => "Page Title",
+            2 => "Options",
+            3 => "Review & Export",
+            _ => "Done",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HistoryTimelineEvent {
     issue_id: String,
@@ -482,6 +696,10 @@ struct HistoryTimelineEvent {
 #[derive(Debug)]
 enum Msg {
     KeyPress(KeyCode, Modifiers),
+    #[cfg(not(test))]
+    Tick,
+    #[cfg(not(test))]
+    BackgroundReloaded(std::result::Result<Vec<Issue>, String>),
     Noop,
 }
 
@@ -494,6 +712,8 @@ impl From<Event> for Msg {
                 kind: KeyEventKind::Press,
                 ..
             }) => Self::KeyPress(code, modifiers),
+            #[cfg(not(test))]
+            Event::Tick => Self::Tick,
             _ => Self::Noop,
         }
     }
@@ -515,6 +735,8 @@ struct BvrApp {
     show_help: bool,
     help_scroll_offset: usize,
     show_quit_confirm: bool,
+    modal_overlay: Option<ModalOverlay>,
+    modal_confirm_result: Option<bool>,
     history_confidence_index: usize,
     history_view_mode: HistoryViewMode,
     history_event_cursor: usize,
@@ -542,6 +764,8 @@ struct BvrApp {
     insights_show_explanations: bool,
     insights_show_calc_proof: bool,
     detail_dep_cursor: usize,
+    #[cfg(not(test))]
+    background_runtime: Option<BackgroundRuntimeState>,
     /// Per-key event trace log for e2e debugging. Each entry records
     /// the key pressed and resulting state snapshot.
     #[cfg(test)]
@@ -563,6 +787,17 @@ struct KeyTraceEntry {
 impl Model for BvrApp {
     type Message = Msg;
 
+    fn init(&mut self) -> Cmd<Self::Message> {
+        #[cfg(not(test))]
+        {
+            return self.background_tick_command();
+        }
+        #[cfg(test)]
+        {
+            Cmd::None
+        }
+    }
+
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
         match msg {
             Msg::KeyPress(code, modifiers) => {
@@ -575,7 +810,21 @@ impl Model for BvrApp {
                     selected: self.selected,
                     filter: self.list_filter,
                 });
-                return cmd;
+                #[cfg(not(test))]
+                {
+                    return self.wrap_quit_with_background_cancel(cmd);
+                }
+                #[cfg(test)]
+                {
+                    return cmd;
+                }
+            }
+            #[cfg(not(test))]
+            Msg::Tick => return self.handle_background_tick(),
+            #[cfg(not(test))]
+            Msg::BackgroundReloaded(result) => {
+                self.handle_background_reload_result(result);
+                return Cmd::None;
             }
             Msg::Noop => {}
         }
@@ -669,6 +918,74 @@ impl Model for BvrApp {
                 .style(tokens::footer())
                 .render(rows[2], frame);
             return;
+        }
+
+        // -- Modal overlays --------------------------------------------------
+        if let Some(ref overlay) = self.modal_overlay {
+            match overlay {
+                ModalOverlay::Tutorial => {
+                    let text = concat!(
+                        "Welcome to bvr!\n\n",
+                        "Modes:  b=board  i=insights  g=graph  h=history\n",
+                        "Filter: o=open   c=closed    r=ready  a=all\n",
+                        "Nav:    j/k=up/down  Tab=focus  /=search  n/N=cycle\n",
+                        "Other:  ?=help   s=sort  Enter=select  Esc=back  q=quit\n\n",
+                        "Press any key to dismiss."
+                    );
+                    Paragraph::new(text)
+                        .block(
+                            Block::bordered()
+                                .title("Tutorial")
+                                .border_style(tokens::panel_border_focused())
+                                .style(tokens::panel_title_focused()),
+                        )
+                        .render(rows[1], frame);
+                    Paragraph::new("Press any key to continue.")
+                        .style(tokens::footer())
+                        .render(rows[2], frame);
+                    return;
+                }
+                ModalOverlay::Confirm { title, message } => {
+                    let text = format!("{message}\n\nPress Y to confirm, N or Esc to cancel.");
+                    Paragraph::new(text)
+                        .block(
+                            Block::bordered()
+                                .title(title.as_str())
+                                .border_style(tokens::panel_border()),
+                        )
+                        .render(rows[1], frame);
+                    Paragraph::new("Y=confirm | N/Esc=cancel")
+                        .style(tokens::footer())
+                        .render(rows[2], frame);
+                    return;
+                }
+                ModalOverlay::PagesWizard(wiz) => {
+                    let text = self.pages_wizard_text(wiz);
+                    let wiz_title = format!(
+                        "Pages Wizard ({}/{}): {}",
+                        wiz.step + 1,
+                        PagesWizardState::step_count(),
+                        wiz.step_label()
+                    );
+                    Paragraph::new(text)
+                        .block(
+                            Block::bordered()
+                                .title(wiz_title.as_str())
+                                .border_style(tokens::panel_border_focused())
+                                .style(tokens::panel_title_focused()),
+                        )
+                        .render(rows[1], frame);
+                    let footer = if wiz.step == PagesWizardState::step_count() - 1 {
+                        "Enter=export | Esc=cancel | Backspace=prev step"
+                    } else {
+                        "Enter=next step | Esc=cancel | Backspace=prev step"
+                    };
+                    Paragraph::new(footer)
+                        .style(tokens::footer())
+                        .render(rows[2], frame);
+                    return;
+                }
+            }
         }
 
         // -- Body: two-pane split with breakpoint-aware widths ---------------
@@ -798,6 +1115,143 @@ impl Model for BvrApp {
 }
 
 impl BvrApp {
+    #[cfg(not(test))]
+    fn wrap_quit_with_background_cancel(&self, cmd: Cmd<Msg>) -> Cmd<Msg> {
+        if matches!(cmd, Cmd::Quit)
+            && let Some(runtime) = self.background_runtime.as_ref()
+        {
+            runtime.cancel_requested.store(true, Ordering::Relaxed);
+        }
+        cmd
+    }
+
+    #[cfg(not(test))]
+    fn background_tick_command(&self) -> Cmd<Msg> {
+        self.background_runtime
+            .as_ref()
+            .map_or(Cmd::None, |runtime| {
+                Cmd::tick(runtime.config.poll_interval())
+            })
+    }
+
+    #[cfg(not(test))]
+    fn handle_background_tick(&mut self) -> Cmd<Msg> {
+        let next_tick = self.background_tick_command();
+        let Some(runtime) = self.background_runtime.as_mut() else {
+            return Cmd::None;
+        };
+
+        let decision = decide_background_tick(
+            runtime.cancel_requested.load(Ordering::Relaxed),
+            runtime.in_flight,
+        );
+
+        let (config, cancel_requested) = match decision {
+            BackgroundTickDecision::Stop => {
+                self.history_status_msg =
+                    push_background_timeline(runtime, "tick skipped: cancellation requested");
+                return Cmd::None;
+            }
+            BackgroundTickDecision::TickOnly => {
+                self.history_status_msg =
+                    push_background_timeline(runtime, "tick observed: reload already in flight");
+                return next_tick;
+            }
+            BackgroundTickDecision::ReloadAndTick => {
+                runtime.in_flight = true;
+                self.history_status_msg =
+                    push_background_timeline(runtime, "tick scheduled: starting background reload");
+                (runtime.config.clone(), runtime.cancel_requested.clone())
+            }
+        };
+
+        let task = Cmd::task_with_spec(
+            TaskSpec::new(1.0, 50.0).with_name("background-issue-reload"),
+            move || {
+                if cancel_requested.load(Ordering::Relaxed) {
+                    return Msg::BackgroundReloaded(Err("canceled".to_string()));
+                }
+
+                let result = config.load_issues().map_err(|error| error.to_string());
+                Msg::BackgroundReloaded(result)
+            },
+        );
+
+        Cmd::batch(vec![task, next_tick])
+    }
+
+    #[cfg(not(test))]
+    fn handle_background_reload_result(&mut self, result: std::result::Result<Vec<Issue>, String>) {
+        let mut issues_to_apply: Option<Vec<Issue>> = None;
+        let status_update: String;
+
+        {
+            let Some(runtime) = self.background_runtime.as_mut() else {
+                return;
+            };
+
+            runtime.in_flight = false;
+            let cancel_requested = runtime.cancel_requested.load(Ordering::Relaxed);
+
+            match result {
+                Ok(issues) => {
+                    let hash = compute_data_hash(&issues);
+                    if should_apply_background_reload(
+                        cancel_requested,
+                        &hash,
+                        &runtime.last_data_hash,
+                    ) {
+                        runtime.last_data_hash = hash;
+                        status_update = push_background_timeline(
+                            runtime,
+                            "reload applied: issue snapshot changed",
+                        );
+                        issues_to_apply = Some(issues);
+                    } else if cancel_requested {
+                        status_update = push_background_timeline(
+                            runtime,
+                            "reload ignored: cancellation requested",
+                        );
+                    } else {
+                        status_update =
+                            push_background_timeline(runtime, "reload ignored: no data change");
+                    }
+                }
+                Err(error) => {
+                    if let Some(warning) = background_warning_message(cancel_requested, &error) {
+                        status_update = push_background_timeline(runtime, &warning);
+                    } else {
+                        status_update = push_background_timeline(
+                            runtime,
+                            "reload ignored: cancellation acknowledged",
+                        );
+                    }
+                }
+            }
+        }
+
+        self.history_status_msg = status_update;
+        if let Some(issues) = issues_to_apply {
+            self.apply_background_reload(issues);
+        }
+    }
+
+    #[cfg(not(test))]
+    fn apply_background_reload(&mut self, issues: Vec<Issue>) {
+        let selected_id = self.selected_issue().map(|issue| issue.id.clone());
+
+        self.analyzer = Analyzer::new(issues);
+        self.history_git_cache = None;
+        self.detail_dep_cursor = 0;
+        self.selected = 0;
+
+        if let Some(id) = selected_id.as_deref() {
+            self.select_issue_by_id(id);
+        }
+
+        self.ensure_selected_visible();
+    }
+
     fn board_shortcut_focus(&self) -> bool {
         matches!(self.mode, ViewMode::Board)
             && matches!(self.focus, FocusPane::List | FocusPane::Detail)
@@ -843,6 +1297,34 @@ impl BvrApp {
                 _ => {}
             }
             return Cmd::None;
+        }
+
+        // -- Modal overlay handling ------------------------------------------
+        if let Some(ref overlay) = self.modal_overlay.clone() {
+            match overlay {
+                ModalOverlay::Tutorial => {
+                    // Any key dismisses tutorial
+                    self.modal_overlay = None;
+                    return Cmd::None;
+                }
+                ModalOverlay::Confirm { .. } => {
+                    match code {
+                        KeyCode::Char('y' | 'Y') => {
+                            self.modal_confirm_result = Some(true);
+                            self.modal_overlay = None;
+                        }
+                        KeyCode::Char('n' | 'N') | KeyCode::Escape => {
+                            self.modal_confirm_result = Some(false);
+                            self.modal_overlay = None;
+                        }
+                        _ => {}
+                    }
+                    return Cmd::None;
+                }
+                ModalOverlay::PagesWizard(wiz) => {
+                    return self.handle_pages_wizard_key(code, wiz.clone());
+                }
+            }
         }
 
         self.ensure_selected_visible();
@@ -941,7 +1423,9 @@ impl BvrApp {
                 self.show_help = true;
                 self.focus_before_help = self.focus;
             }
-            KeyCode::Enter => {
+            KeyCode::Enter
+                if !(matches!(self.mode, ViewMode::History) && self.history_file_tree_focus) =>
+            {
                 if matches!(self.mode, ViewMode::History)
                     && matches!(self.history_view_mode, HistoryViewMode::Git)
                     && let Some(bead_id) = self
@@ -1465,6 +1949,22 @@ impl BvrApp {
         self.history_bead_commit_cursor = 0;
     }
 
+    fn open_tutorial(&mut self) {
+        self.modal_overlay = Some(ModalOverlay::Tutorial);
+    }
+
+    fn open_confirm(&mut self, title: impl Into<String>, message: impl Into<String>) {
+        self.modal_confirm_result = None;
+        self.modal_overlay = Some(ModalOverlay::Confirm {
+            title: title.into(),
+            message: message.into(),
+        });
+    }
+
+    fn open_pages_wizard(&mut self) {
+        self.modal_overlay = Some(ModalOverlay::PagesWizard(PagesWizardState::new()));
+    }
+
     fn toggle_history_file_tree(&mut self) {
         self.history_show_file_tree = !self.history_show_file_tree;
         if self.history_show_file_tree {
@@ -1494,12 +1994,18 @@ impl BvrApp {
 
     fn file_tree_toggle_or_filter(&mut self) {
         let flat = self.history_flat_file_list();
-        let cursor = self.history_file_tree_cursor.min(flat.len().saturating_sub(1));
+        let cursor = self
+            .history_file_tree_cursor
+            .min(flat.len().saturating_sub(1));
         if let Some(entry) = flat.get(cursor) {
             if entry.is_dir {
                 // Toggle expand/collapse on directory nodes
                 let path = entry.path.clone();
-                if let Some(nodes) = self.history_git_cache.as_ref().map(|_| self.history_file_tree_nodes()) {
+                if let Some(nodes) = self
+                    .history_git_cache
+                    .as_ref()
+                    .map(|_| self.history_file_tree_nodes())
+                {
                     // Rebuild with toggle — we toggle the filter instead
                     if self.history_file_tree_filter.as_deref() == Some(&path) {
                         self.history_file_tree_filter = None;
@@ -2844,6 +3350,96 @@ impl BvrApp {
             "No issues match the active filter ({}) in {context}.",
             self.list_filter.label()
         )
+    }
+
+    fn handle_pages_wizard_key(&mut self, code: KeyCode, mut wiz: PagesWizardState) -> Cmd<Msg> {
+        match code {
+            KeyCode::Escape => {
+                self.modal_overlay = None;
+                return Cmd::None;
+            }
+            KeyCode::Backspace if wiz.step == 0 && !wiz.export_dir.is_empty() => {
+                wiz.export_dir.pop();
+            }
+            KeyCode::Backspace if wiz.step == 1 && !wiz.title.is_empty() => {
+                wiz.title.pop();
+            }
+            KeyCode::Backspace if wiz.step > 0 => {
+                wiz.step -= 1;
+            }
+            KeyCode::Char('c') if wiz.step == 2 => {
+                wiz.include_closed = !wiz.include_closed;
+            }
+            KeyCode::Char('h') if wiz.step == 2 => {
+                wiz.include_history = !wiz.include_history;
+            }
+            KeyCode::Char(ch) if wiz.step == 0 => {
+                wiz.export_dir.push(ch);
+            }
+            KeyCode::Char(ch) if wiz.step == 1 => {
+                wiz.title.push(ch);
+            }
+            KeyCode::Enter => {
+                if wiz.step >= PagesWizardState::step_count() - 1 {
+                    // Final step - dismiss and store result
+                    self.modal_overlay = None;
+                    self.modal_confirm_result = Some(true);
+                    return Cmd::None;
+                }
+                wiz.step += 1;
+            }
+            _ => {}
+        }
+        self.modal_overlay = Some(ModalOverlay::PagesWizard(wiz));
+        Cmd::None
+    }
+
+    fn pages_wizard_text(&self, wiz: &PagesWizardState) -> String {
+        match wiz.step {
+            0 => format!(
+                "Export directory: {}\n\n\
+                 Type a path and press Enter to continue.\n\
+                 (Default: ./bv-pages)",
+                wiz.export_dir
+            ),
+            1 => format!(
+                "Page title: {}\n\n\
+                 Type a custom title and press Enter to continue.\n\
+                 (Leave blank for default: \"Project Issues\")",
+                if wiz.title.is_empty() {
+                    "(default)"
+                } else {
+                    &wiz.title
+                }
+            ),
+            2 => format!(
+                "Options:\n\n\
+                 [{}] Include closed issues     (toggle: c)\n\
+                 [{}] Include history payload    (toggle: h)\n\n\
+                 Press Enter to continue.",
+                if wiz.include_closed { "x" } else { " " },
+                if wiz.include_history { "x" } else { " " },
+            ),
+            3 => {
+                let title_display = if wiz.title.is_empty() {
+                    "Project Issues"
+                } else {
+                    &wiz.title
+                };
+                format!(
+                    "Review:\n\n\
+                     Directory:       {}\n\
+                     Title:           {title_display}\n\
+                     Include closed:  {}\n\
+                     Include history: {}\n\n\
+                     Press Enter to export, Esc to cancel.",
+                    wiz.export_dir,
+                    if wiz.include_closed { "yes" } else { "no" },
+                    if wiz.include_history { "yes" } else { "no" },
+                )
+            }
+            _ => String::new(),
+        }
     }
 
     fn help_overlay_text(&self) -> String {
@@ -4564,6 +5160,32 @@ fn remote_to_commit_url(remote: &str, sha: &str) -> Option<String> {
 }
 
 fn new_app(issues: Vec<Issue>, mode: ViewMode) -> BvrApp {
+    new_app_with_background(issues, mode, None)
+}
+
+fn new_app_with_background(
+    issues: Vec<Issue>,
+    mode: ViewMode,
+    background_config: Option<BackgroundModeConfig>,
+) -> BvrApp {
+    #[cfg(not(test))]
+    let initial_data_hash = compute_data_hash(&issues);
+    #[cfg(not(test))]
+    let background_runtime = background_config.map(|config| {
+        let mut timeline = VecDeque::new();
+        timeline.push_back(background_timeline_entry("background mode initialized"));
+
+        BackgroundRuntimeState {
+            config: config.normalized(),
+            in_flight: false,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            last_data_hash: initial_data_hash,
+            timeline,
+        }
+    });
+    #[cfg(test)]
+    let _ = background_config;
+
     let repo_root = loader::get_beads_dir(None)
         .ok()
         .and_then(|beads_dir| beads_dir.parent().map(std::path::Path::to_path_buf));
@@ -4583,6 +5205,8 @@ fn new_app(issues: Vec<Issue>, mode: ViewMode) -> BvrApp {
         show_help: false,
         help_scroll_offset: 0,
         show_quit_confirm: false,
+        modal_overlay: None,
+        modal_confirm_result: None,
         history_confidence_index: 0,
         history_view_mode: HistoryViewMode::Bead,
         history_event_cursor: 0,
@@ -4610,13 +5234,22 @@ fn new_app(issues: Vec<Issue>, mode: ViewMode) -> BvrApp {
         insights_show_explanations: true,
         insights_show_calc_proof: false,
         detail_dep_cursor: 0,
+        #[cfg(not(test))]
+        background_runtime,
         #[cfg(test)]
         key_trace: Vec::new(),
     }
 }
 
 pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
-    let model = new_app(issues, ViewMode::Main);
+    run_tui_with_background(issues, None)
+}
+
+pub fn run_tui_with_background(
+    issues: Vec<Issue>,
+    background_config: Option<BackgroundModeConfig>,
+) -> Result<()> {
+    let model = new_app_with_background(issues, ViewMode::Main, background_config);
     App::new(model)
         .screen_mode(ScreenMode::AltScreen)
         .run()
@@ -4692,8 +5325,10 @@ fn buffer_to_text(buf: &ftui::Buffer, pool: &ftui::GraphemePool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BoardGrouping, BvrApp, EmptyLaneVisibility, FocusPane, HistoryViewMode, InsightsPanel,
-        ListFilter, ListSort, Msg, ViewMode, render_debug_view,
+        BackgroundTickDecision, BoardGrouping, BvrApp, EmptyLaneVisibility, FocusPane,
+        HistoryViewMode, InsightsPanel, ListFilter, ListSort, ModalOverlay, Msg, ViewMode,
+        background_warning_message, decide_background_tick, render_debug_view,
+        should_apply_background_reload,
     };
     use crate::analysis::Analyzer;
     use crate::model::{Dependency, Issue};
@@ -4885,6 +5520,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -4947,6 +5584,51 @@ mod tests {
                 }
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn background_tick_decision_prioritizes_cancel_then_in_flight() {
+        assert_eq!(
+            decide_background_tick(true, false),
+            BackgroundTickDecision::Stop
+        );
+        assert_eq!(
+            decide_background_tick(true, true),
+            BackgroundTickDecision::Stop
+        );
+        assert_eq!(
+            decide_background_tick(false, true),
+            BackgroundTickDecision::TickOnly
+        );
+        assert_eq!(
+            decide_background_tick(false, false),
+            BackgroundTickDecision::ReloadAndTick
+        );
+    }
+
+    #[test]
+    fn background_reload_apply_requires_no_cancel_and_hash_change() {
+        assert!(should_apply_background_reload(
+            false, "new-hash", "old-hash"
+        ));
+        assert!(!should_apply_background_reload(
+            false,
+            "same-hash",
+            "same-hash"
+        ));
+        assert!(!should_apply_background_reload(
+            true, "new-hash", "old-hash"
+        ));
+    }
+
+    #[test]
+    fn background_warning_message_suppresses_canceled_paths() {
+        assert_eq!(background_warning_message(true, "boom"), None);
+        assert_eq!(background_warning_message(false, "canceled"), None);
+        assert_eq!(
+            background_warning_message(false, "permission denied").as_deref(),
+            Some("background reload warning: permission denied")
+        );
     }
 
     #[test]
@@ -5600,6 +6282,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -5665,6 +6349,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -5724,6 +6410,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -5801,6 +6489,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -5862,6 +6552,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -5924,6 +6616,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -5987,6 +6681,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -6045,6 +6741,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -6118,6 +6816,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -6177,6 +6877,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -6266,6 +6968,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -6331,6 +7035,8 @@ mod tests {
             show_help: false,
             help_scroll_offset: 0,
             show_quit_confirm: false,
+            modal_overlay: None,
+            modal_confirm_result: None,
             history_confidence_index: 0,
             history_view_mode: HistoryViewMode::Bead,
             history_event_cursor: 0,
@@ -6922,5 +7628,674 @@ mod tests {
         assert!(flat[0].is_dir);
         assert_eq!(flat[1].name, "main.rs");
         assert_eq!(flat[2].name, "lib.rs");
+    }
+
+    // ── Modal overlay tests ─────────────────────────────────────────
+
+    #[test]
+    fn modal_tutorial_dismisses_on_any_key() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.open_tutorial();
+        assert!(app.modal_overlay.is_some());
+        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial)));
+
+        app.update(key(KeyCode::Char('x')));
+        assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn modal_confirm_accepts_on_y_rejects_on_n() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.open_confirm("Test", "Do you confirm?");
+        assert!(app.modal_overlay.is_some());
+        assert!(app.modal_confirm_result.is_none());
+
+        app.update(key(KeyCode::Char('y')));
+        assert!(app.modal_overlay.is_none());
+        assert_eq!(app.modal_confirm_result, Some(true));
+
+        app.open_confirm("Test", "Another question?");
+        app.update(key(KeyCode::Char('n')));
+        assert!(app.modal_overlay.is_none());
+        assert_eq!(app.modal_confirm_result, Some(false));
+
+        app.open_confirm("Test", "Third question?");
+        app.update(key(KeyCode::Escape));
+        assert!(app.modal_overlay.is_none());
+        assert_eq!(app.modal_confirm_result, Some(false));
+    }
+
+    #[test]
+    fn modal_confirm_ignores_unrelated_keys() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.open_confirm("Test", "Do you confirm?");
+
+        app.update(key(KeyCode::Char('x')));
+        assert!(app.modal_overlay.is_some());
+        assert!(app.modal_confirm_result.is_none());
+    }
+
+    #[test]
+    fn modal_pages_wizard_step_navigation() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.open_pages_wizard();
+
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.step, 0);
+                assert_eq!(wiz.export_dir, "./bv-pages");
+            }
+            other => panic!("Expected PagesWizard, got {other:?}"),
+        }
+
+        app.update(key(KeyCode::Char('x')));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.export_dir, "./bv-pagesx");
+            }
+            _ => panic!("lost wizard"),
+        }
+
+        app.update(key(KeyCode::Backspace));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.export_dir, "./bv-pages");
+            }
+            _ => panic!("lost wizard"),
+        }
+
+        app.update(key(KeyCode::Enter));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.step, 1);
+                assert_eq!(wiz.step_label(), "Page Title");
+            }
+            _ => panic!("lost wizard"),
+        }
+
+        app.update(key(KeyCode::Enter));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.step, 2);
+                assert!(wiz.include_closed);
+                assert!(wiz.include_history);
+            }
+            _ => panic!("lost wizard"),
+        }
+
+        app.update(key(KeyCode::Char('c')));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => assert!(!wiz.include_closed),
+            _ => panic!("lost wizard"),
+        }
+        app.update(key(KeyCode::Char('h')));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => assert!(!wiz.include_history),
+            _ => panic!("lost wizard"),
+        }
+
+        app.update(key(KeyCode::Enter));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.step, 3);
+            }
+            _ => panic!("lost wizard"),
+        }
+
+        app.update(key(KeyCode::Enter));
+        assert!(app.modal_overlay.is_none());
+        assert_eq!(app.modal_confirm_result, Some(true));
+    }
+
+    #[test]
+    fn modal_pages_wizard_escape_cancels() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.open_pages_wizard();
+        app.update(key(KeyCode::Enter));
+        app.update(key(KeyCode::Escape));
+        assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn modal_pages_wizard_backspace_goes_back() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.open_pages_wizard();
+        app.update(key(KeyCode::Enter));
+        app.update(key(KeyCode::Enter));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => assert_eq!(wiz.step, 2),
+            _ => panic!("lost wizard"),
+        }
+        app.update(key(KeyCode::Backspace));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => assert_eq!(wiz.step, 1),
+            _ => panic!("lost wizard"),
+        }
+    }
+
+    #[test]
+    fn modal_state_transitions_help_to_quit_cycle() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        app.update(key(KeyCode::Char('?')));
+        assert!(app.show_help);
+        assert!(app.modal_overlay.is_none());
+
+        app.update(key(KeyCode::Escape));
+        assert!(!app.show_help);
+
+        app.update(key(KeyCode::Escape));
+        assert!(app.show_quit_confirm);
+
+        app.update(key(KeyCode::Char('x')));
+        assert!(!app.show_quit_confirm);
+
+        app.open_tutorial();
+        assert!(app.modal_overlay.is_some());
+        assert!(!app.show_help);
+
+        app.update(key(KeyCode::Enter));
+        assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn modal_overlay_blocks_normal_key_handling() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let initial_mode = app.mode;
+
+        app.open_confirm("Test", "Question");
+        app.update(key(KeyCode::Char('b')));
+        assert_eq!(app.mode, initial_mode);
+        assert!(app.modal_overlay.is_some());
+
+        app.update(key(KeyCode::Char('y')));
+        assert!(app.modal_overlay.is_none());
+    }
+
+    // =====================================================================
+    // Regression Harness: File-based Snapshots
+    // =====================================================================
+    //
+    // These tests capture full rendered frames (via buffer_to_text) and
+    // compare against stored baselines using `insta`.  Any rendering
+    // change produces a diff that `cargo insta review` can approve.
+
+    /// Render a full frame for the given mode/width/height and return text.
+    fn render_frame(mode: ViewMode, width: u16, height: u16) -> String {
+        let app = new_app(mode, 0);
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(width, height, &mut pool);
+        app.view(&mut frame);
+        super::buffer_to_text(&frame.buffer, &pool)
+    }
+
+    macro_rules! snapshot_test {
+        ($name:ident, $mode:expr, $width:literal, $height:literal) => {
+            #[test]
+            fn $name() {
+                let text = render_frame($mode, $width, $height);
+                insta::assert_snapshot!(text);
+            }
+        };
+    }
+
+    // Main mode at 3 breakpoints
+    snapshot_test!(snap_main_narrow, ViewMode::Main, 60, 30);
+    snapshot_test!(snap_main_medium, ViewMode::Main, 100, 30);
+    snapshot_test!(snap_main_wide, ViewMode::Main, 140, 30);
+
+    // Board mode at 3 breakpoints
+    snapshot_test!(snap_board_narrow, ViewMode::Board, 60, 30);
+    snapshot_test!(snap_board_medium, ViewMode::Board, 100, 30);
+    snapshot_test!(snap_board_wide, ViewMode::Board, 140, 30);
+
+    // Insights mode at 3 breakpoints
+    snapshot_test!(snap_insights_narrow, ViewMode::Insights, 60, 30);
+    snapshot_test!(snap_insights_medium, ViewMode::Insights, 100, 30);
+    snapshot_test!(snap_insights_wide, ViewMode::Insights, 140, 30);
+
+    // Graph mode at 3 breakpoints
+    snapshot_test!(snap_graph_narrow, ViewMode::Graph, 60, 30);
+    snapshot_test!(snap_graph_medium, ViewMode::Graph, 100, 30);
+    snapshot_test!(snap_graph_wide, ViewMode::Graph, 140, 30);
+
+    // History mode at 3 breakpoints
+    snapshot_test!(snap_history_narrow, ViewMode::History, 60, 30);
+    snapshot_test!(snap_history_medium, ViewMode::History, 100, 30);
+    snapshot_test!(snap_history_wide, ViewMode::History, 140, 30);
+
+    // =====================================================================
+    // Regression Harness: Keyflow Journey Tests
+    // =====================================================================
+    //
+    // Each test replays a complete keyboard journey that a user would
+    // perform, asserting state at each step.  The key_trace vector
+    // provides a full audit log for triage.
+
+    /// Helper: replay a sequence of key codes and return the app.
+    fn replay_keys(start_mode: ViewMode, keys: &[KeyCode]) -> BvrApp {
+        let mut app = new_app(start_mode, 0);
+        for &k in keys {
+            app.update(key(k));
+        }
+        app
+    }
+
+    #[test]
+    fn keyflow_main_to_board_navigate_return() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Enter board
+        app.update(key(KeyCode::Char('b')));
+        assert_eq!(app.mode, ViewMode::Board);
+
+        // Navigate lanes
+        app.update(key(KeyCode::Char('l')));
+        // Move down within lane
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('j')));
+
+        // Toggle grouping
+        app.update(key(KeyCode::Char('s')));
+        assert_eq!(app.board_grouping, BoardGrouping::Priority);
+
+        // Return to main
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Verify trace has all steps
+        assert_eq!(app.key_trace.len(), 6);
+    }
+
+    #[test]
+    fn keyflow_board_search_with_cycling() {
+        let mut app = new_app(ViewMode::Board, 0);
+
+        // Start search
+        app.update(key(KeyCode::Char('/')));
+        assert!(app.board_search_active);
+
+        // Type query
+        app.update(key(KeyCode::Char('R')));
+        app.update(key(KeyCode::Char('o')));
+        assert_eq!(app.board_search_query, "Ro");
+
+        // Accept search
+        app.update(key(KeyCode::Enter));
+        assert!(!app.board_search_active);
+
+        // Cycle matches
+        app.update(key(KeyCode::Char('n')));
+        app.update(key(KeyCode::Char('N')));
+
+        // Clear with Esc
+        app.update(key(KeyCode::Escape));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn keyflow_main_to_insights_explore_return() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Enter insights
+        app.update(key(KeyCode::Char('i')));
+        assert_eq!(app.mode, ViewMode::Insights);
+
+        // Cycle panels
+        app.update(key(KeyCode::Char('s')));
+        assert_ne!(app.insights_panel, InsightsPanel::Bottlenecks);
+
+        // Toggle explanations
+        app.update(key(KeyCode::Char('e')));
+        assert!(!app.insights_show_explanations);
+
+        // Toggle calc proof
+        app.update(key(KeyCode::Char('x')));
+        assert!(app.insights_show_calc_proof);
+
+        // Switch focus
+        app.update(key(KeyCode::Char('l')));
+        assert_eq!(app.focus, FocusPane::Detail);
+
+        // Return
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn keyflow_main_to_graph_search_return() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Enter graph
+        app.update(key(KeyCode::Char('g')));
+        assert_eq!(app.mode, ViewMode::Graph);
+
+        // Navigate
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('j')));
+        assert!(app.selected >= 2);
+
+        // Search
+        app.update(key(KeyCode::Char('/')));
+        assert!(app.graph_search_active);
+        app.update(key(KeyCode::Char('B')));
+        app.update(key(KeyCode::Enter));
+        assert!(!app.graph_search_active);
+
+        // n/N cycling
+        app.update(key(KeyCode::Char('n')));
+
+        // Escape returns to main
+        app.update(key(KeyCode::Escape));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn keyflow_history_bead_to_git_search_graph_jump() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Enter history
+        app.update(key(KeyCode::Char('h')));
+        assert_eq!(app.mode, ViewMode::History);
+
+        // Toggle to git mode
+        app.update(key(KeyCode::Char('v')));
+        assert_eq!(app.history_view_mode, HistoryViewMode::Git);
+
+        // Back to bead mode
+        app.update(key(KeyCode::Char('v')));
+        assert_eq!(app.history_view_mode, HistoryViewMode::Bead);
+
+        // Search in bead mode
+        app.update(key(KeyCode::Char('/')));
+        assert!(app.history_search_active);
+        app.update(key(KeyCode::Char('C')));
+        app.update(key(KeyCode::Enter));
+        assert!(!app.history_search_active);
+
+        // n/N cycling
+        app.update(key(KeyCode::Char('n')));
+
+        // Confidence cycling
+        app.update(key(KeyCode::Char('c')));
+        assert_ne!(app.history_confidence_index, 0);
+
+        // Jump to graph
+        app.update(key(KeyCode::Char('g')));
+        assert_eq!(app.mode, ViewMode::Graph);
+
+        // Return to main
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn keyflow_filter_navigation_preserves_selection() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Apply open filter
+        app.update(key(KeyCode::Char('o')));
+        assert_eq!(app.list_filter, ListFilter::Open);
+        let open_count = app.visible_issue_indices().len();
+
+        // Navigate within filtered list
+        for _ in 0..3 {
+            app.update(key(KeyCode::Char('j')));
+        }
+
+        // Switch to closed filter
+        app.update(key(KeyCode::Char('c')));
+        assert_eq!(app.list_filter, ListFilter::Closed);
+        let closed_count = app.visible_issue_indices().len();
+        assert_ne!(open_count, closed_count);
+
+        // Clear to all
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.list_filter, ListFilter::All);
+    }
+
+    #[test]
+    fn keyflow_help_then_modal_then_quit() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Open help
+        app.update(key(KeyCode::Char('?')));
+        assert!(app.show_help);
+
+        // Scroll help
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('j')));
+
+        // Close help
+        app.update(key(KeyCode::Escape));
+        assert!(!app.show_help);
+
+        // Open tutorial
+        app.open_tutorial();
+        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial)));
+
+        // Dismiss
+        app.update(key(KeyCode::Enter));
+        assert!(app.modal_overlay.is_none());
+
+        // Open confirm
+        app.open_confirm("Delete?", "Are you sure?");
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::Confirm { .. })
+        ));
+
+        // Reject
+        app.update(key(KeyCode::Char('n')));
+        assert!(app.modal_overlay.is_none());
+        assert_eq!(app.modal_confirm_result, Some(false));
+
+        // Quit confirm flow
+        app.update(key(KeyCode::Escape));
+        assert!(app.show_quit_confirm);
+        let cmd = app.update(key(KeyCode::Char('y')));
+        assert!(matches!(cmd, Cmd::Quit));
+    }
+
+    #[test]
+    fn keyflow_sort_cycle_persists_across_modes() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Cycle sort
+        app.update(key(KeyCode::Char('s')));
+        let sort_after = app.list_sort;
+        assert_ne!(sort_after, ListSort::Default);
+
+        // Enter board and return
+        app.update(key(KeyCode::Char('b')));
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+        assert_eq!(app.list_sort, sort_after, "sort should persist");
+    }
+
+    #[test]
+    fn keyflow_pages_wizard_full_flow() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        app.open_pages_wizard();
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::PagesWizard(_))
+        ));
+
+        // Step 0 → 1 (export dir)
+        app.update(key(KeyCode::Enter));
+        // Step 1 → 2 (title)
+        app.update(key(KeyCode::Enter));
+        // Step 2: toggle include_closed (true→false)
+        app.update(key(KeyCode::Char('c')));
+        // Step 2: toggle include_history (true→false)
+        app.update(key(KeyCode::Char('h')));
+        // Step 2 → 3 (review)
+        app.update(key(KeyCode::Enter));
+
+        // Verify we're at step 3 with toggled options
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => {
+                assert_eq!(wiz.step, 3);
+                assert!(!wiz.include_closed, "should have toggled off");
+                assert!(!wiz.include_history, "should have toggled off");
+            }
+            _ => panic!("expected PagesWizard at step 3"),
+        }
+
+        // Go back
+        app.update(key(KeyCode::Backspace));
+        match &app.modal_overlay {
+            Some(ModalOverlay::PagesWizard(wiz)) => assert_eq!(wiz.step, 2),
+            _ => panic!("expected step 2"),
+        }
+
+        // Forward again and finish
+        app.update(key(KeyCode::Enter));
+        app.update(key(KeyCode::Enter));
+        assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn keyflow_full_mode_tour() {
+        // Journey: Main → Board → Main → Insights → Main → Graph → Main → History → Main
+        let mut app = new_app(ViewMode::Main, 0);
+
+        for (toggle_key, expected_mode) in [
+            ('b', ViewMode::Board),
+            ('b', ViewMode::Main), // toggle back
+            ('i', ViewMode::Insights),
+            ('i', ViewMode::Main), // toggle back
+            ('g', ViewMode::Graph),
+            ('g', ViewMode::Main), // toggle back
+            ('h', ViewMode::History),
+        ] {
+            app.update(key(KeyCode::Char(toggle_key)));
+            assert_eq!(
+                app.mode, expected_mode,
+                "after pressing '{toggle_key}' expected {expected_mode:?}"
+            );
+        }
+
+        // History returns via Escape
+        app.update(key(KeyCode::Escape));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Verify complete trace
+        assert_eq!(app.key_trace.len(), 8);
+    }
+
+    #[test]
+    fn keyflow_detail_dep_navigation_journey() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Select issue B (index 1 in sample_issues) which has a dependency on A
+        app.update(key(KeyCode::Char('j'))); // move to B
+        assert_eq!(selected_issue_id(&app), "B");
+
+        // Enter graph mode (deps visible)
+        app.update(key(KeyCode::Char('g')));
+        assert_eq!(app.mode, ViewMode::Graph);
+
+        // Focus on detail
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+
+        // J/K dep navigation
+        app.update(key(KeyCode::Char('J')));
+        app.update(key(KeyCode::Char('K')));
+
+        // Return to list focus
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::List);
+
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    // =====================================================================
+    // Regression Harness: Snapshot + Keyflow Combined
+    // =====================================================================
+    //
+    // These tests replay a keyflow and then snapshot the rendered output,
+    // catching both behavioral and visual regressions.
+
+    #[test]
+    fn snap_after_board_search() {
+        let mut app = new_app(ViewMode::Board, 0);
+        app.update(key(KeyCode::Char('/')));
+        app.update(key(KeyCode::Char('B')));
+        app.update(key(KeyCode::Enter));
+
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
+        app.view(&mut frame);
+        let text = super::buffer_to_text(&frame.buffer, &pool);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_after_insights_panel_cycle() {
+        let mut app = new_app(ViewMode::Insights, 0);
+        // Cycle through 3 panels
+        app.update(key(KeyCode::Char('s')));
+        app.update(key(KeyCode::Char('s')));
+        app.update(key(KeyCode::Char('s')));
+
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
+        app.view(&mut frame);
+        let text = super::buffer_to_text(&frame.buffer, &pool);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_help_overlay() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('?')));
+
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
+        app.view(&mut frame);
+        let text = super::buffer_to_text(&frame.buffer, &pool);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_history_git_mode() {
+        let mut app = new_app(ViewMode::History, 0);
+        app.update(key(KeyCode::Char('v')));
+
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
+        app.view(&mut frame);
+        let text = super::buffer_to_text(&frame.buffer, &pool);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_quit_confirm_modal() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Escape));
+        assert!(app.show_quit_confirm);
+
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
+        app.view(&mut frame);
+        let text = super::buffer_to_text(&frame.buffer, &pool);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_filter_applied() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('o'))); // open filter
+
+        let mut pool = ftui::GraphemePool::default();
+        let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
+        app.view(&mut frame);
+        let text = super::buffer_to_text(&frame.buffer, &pool);
+        insta::assert_snapshot!(text);
     }
 }

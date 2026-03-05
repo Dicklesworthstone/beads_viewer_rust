@@ -732,4 +732,162 @@ mod tests {
         assert_eq!(diff.summary.issues_added, 1);
         assert_eq!(diff.summary.issues_removed, 0);
     }
+
+    #[test]
+    fn empty_before_and_after_produces_empty_diff() {
+        let diff = compare_snapshots(&[], &[]);
+        assert_eq!(diff.summary.issues_added, 0);
+        assert_eq!(diff.summary.issues_removed, 0);
+        assert_eq!(diff.summary.issues_modified, 0);
+        assert!(diff.new_issues.as_ref().map_or(true, Vec::is_empty));
+        assert!(diff.closed_issues.as_ref().map_or(true, Vec::is_empty));
+    }
+
+    #[test]
+    fn all_new_issues_detected() {
+        let after = vec![
+            Issue {
+                id: "N-1".to_string(),
+                title: "New one".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "N-2".to_string(),
+                title: "New two".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+        ];
+        let diff = compare_snapshots(&[], &after);
+        assert_eq!(diff.new_issues.as_ref().map_or(0, Vec::len), 2);
+        assert_eq!(diff.summary.issues_added, 2);
+    }
+
+    #[test]
+    fn removed_issues_tracked() {
+        let before = vec![Issue {
+            id: "G-1".to_string(),
+            title: "Gone".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+        let diff = compare_snapshots(&before, &[]);
+        assert_eq!(diff.summary.issues_removed, 1);
+    }
+
+    #[test]
+    fn identical_snapshots_produce_no_changes() {
+        let issues = vec![Issue {
+            id: "S-1".to_string(),
+            title: "Stable".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            priority: 1,
+            ..Issue::default()
+        }];
+        let diff = compare_snapshots(&issues, &issues);
+        assert!(diff.new_issues.as_ref().map_or(true, Vec::is_empty));
+        assert!(diff.closed_issues.as_ref().map_or(true, Vec::is_empty));
+        assert!(diff.reopened_issues.as_ref().map_or(true, Vec::is_empty));
+        assert!(diff.modified_issues.as_ref().map_or(true, Vec::is_empty));
+        assert_eq!(diff.summary.issues_added, 0);
+        assert_eq!(diff.summary.issues_removed, 0);
+    }
+
+    #[test]
+    fn priority_change_detected_as_modification() {
+        let before = vec![Issue {
+            id: "P-1".to_string(),
+            title: "Same".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            priority: 1,
+            ..Issue::default()
+        }];
+        let after = vec![Issue {
+            id: "P-1".to_string(),
+            title: "Same".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            priority: 3,
+            ..Issue::default()
+        }];
+        let diff = compare_snapshots(&before, &after);
+        assert_eq!(diff.modified_issues.as_ref().map_or(0, Vec::len), 1);
+        let mods = diff.modified_issues.unwrap();
+        assert!(mods[0].changes.iter().any(|c| c.field == "priority"));
+    }
+
+    #[test]
+    fn dependency_change_detected() {
+        let before = vec![Issue {
+            id: "D-1".to_string(),
+            title: "Dep change".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+        let after = vec![Issue {
+            id: "D-1".to_string(),
+            title: "Dep change".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            dependencies: vec![Dependency {
+                depends_on_id: "D-2".to_string(),
+                dep_type: "blocks".to_string(),
+                ..Dependency::default()
+            }],
+            ..Issue::default()
+        }];
+        let diff = compare_snapshots(&before, &after);
+        assert_eq!(diff.modified_issues.as_ref().map_or(0, Vec::len), 1);
+    }
+
+    #[test]
+    fn metric_deltas_computed() {
+        let before = vec![
+            Issue {
+                id: "M-1".to_string(),
+                title: "Open".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "M-2".to_string(),
+                title: "Blocked".to_string(),
+                status: "blocked".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    depends_on_id: "M-1".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+        let after = vec![
+            Issue {
+                id: "M-1".to_string(),
+                title: "Open".to_string(),
+                status: "closed".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "M-2".to_string(),
+                title: "Blocked".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+        ];
+        let diff = compare_snapshots(&before, &after);
+        // Closing M-1 should change open_issues delta
+        assert_ne!(diff.metric_deltas.open_issues, 0);
+    }
 }

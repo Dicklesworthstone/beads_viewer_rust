@@ -978,4 +978,108 @@ mod tests {
         let expected = s.len().div_ceil(4);
         assert_eq!(estimate_tokens(s), expected);
     }
+
+    // -- compute_data_hash tests --
+
+    #[test]
+    fn compute_data_hash_is_deterministic() {
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                status: "open".to_string(),
+                priority: 1,
+                ..Default::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                status: "closed".to_string(),
+                priority: 2,
+                ..Default::default()
+            },
+        ];
+        let h1 = compute_data_hash(&issues);
+        let h2 = compute_data_hash(&issues);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16, "hash should be 16 hex chars");
+    }
+
+    #[test]
+    fn compute_data_hash_is_order_independent() {
+        let issues_ab = vec![
+            Issue {
+                id: "A".to_string(),
+                status: "open".to_string(),
+                ..Default::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                status: "closed".to_string(),
+                ..Default::default()
+            },
+        ];
+        let issues_ba = vec![issues_ab[1].clone(), issues_ab[0].clone()];
+        assert_eq!(
+            compute_data_hash(&issues_ab),
+            compute_data_hash(&issues_ba),
+            "hash should be independent of issue order"
+        );
+    }
+
+    #[test]
+    fn compute_data_hash_empty_issues() {
+        let h = compute_data_hash(&[]);
+        assert_eq!(h.len(), 16);
+    }
+
+    #[test]
+    fn compute_data_hash_changes_with_data() {
+        let v1 = vec![Issue {
+            id: "A".to_string(),
+            status: "open".to_string(),
+            ..Default::default()
+        }];
+        let v2 = vec![Issue {
+            id: "A".to_string(),
+            status: "closed".to_string(),
+            ..Default::default()
+        }];
+        assert_ne!(
+            compute_data_hash(&v1),
+            compute_data_hash(&v2),
+            "different status should produce different hash"
+        );
+    }
+
+    // -- envelope tests --
+
+    #[test]
+    fn envelope_produces_valid_fields() {
+        let issues = vec![Issue {
+            id: "X".to_string(),
+            status: "open".to_string(),
+            ..Default::default()
+        }];
+        let env = envelope(&issues);
+        assert!(!env.generated_at.is_empty());
+        assert_eq!(env.data_hash.len(), 16);
+        // generated_at should be a parseable RFC3339 timestamp
+        assert!(env.generated_at.contains('T'));
+    }
+
+    // -- default_field_descriptions tests --
+
+    #[test]
+    fn default_field_descriptions_has_core_fields() {
+        let desc = default_field_descriptions();
+        assert!(desc.contains_key("score"));
+        assert!(desc.contains_key("confidence"));
+        assert!(desc.contains_key("unblocks"));
+        // All values should be non-empty
+        for (key, value) in &desc {
+            assert!(
+                !value.is_empty(),
+                "description for {key} should not be empty"
+            );
+        }
+    }
 }

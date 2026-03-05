@@ -455,6 +455,14 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub force_full_analysis: bool,
 
+    /// Output detailed startup timing profile for diagnostics.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub profile_startup: bool,
+
+    /// Output profile in JSON format (use with --profile-startup).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub profile_json: bool,
+
     #[arg(long, hide = true)]
     pub beads_file: Option<PathBuf>,
 
@@ -519,6 +527,7 @@ impl Cli {
             || self.feedback_reset
             || self.priority_brief.is_some()
             || self.agent_brief.is_some()
+            || self.profile_startup
     }
 
     #[must_use]

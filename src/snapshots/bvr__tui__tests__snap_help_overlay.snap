@@ -1,0 +1,34 @@
+---
+source: src/tui.rs
+expression: text
+---
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc bac
+┌Help──────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                  │
+│ Core keys:                                                                                       │
+│   j/k or arrows  Move selection                                                                  │
+│   h/l             Mode-aware lateral nav (board lanes, graph peers, insights pane focus)         │
+│   Ctrl+d/Ctrl+u   Jump down/up by 10 rows                                                        │
+│   PgUp/PgDn       Jump by 10 rows                                                                │
+│   Home/End         Jump to top/bottom                                                            │
+│   /               Board/History/Graph/Insights: search (n/N match cycling)                       │
+│   Tab              Toggle list/detail focus                                                      │
+│   J/K              Detail: navigate blockers/dependents (board/graph/insights)                   │
+│   b/i/g/h          Toggle board/insights/graph/history                                           │
+│   Enter            Return to main detail pane                                                    │
+│   o/c/r/a          Filter open/closed/ready/all                                                  │
+│   s                Main: cycle sort | Board: cycle grouping | Insights: cycle panel              │
+│   ?                Toggle help overlay                                                           │
+│   Esc              Back from mode (or clear filter, then quit confirm in main)                   │
+│   q                Main: quit | Non-main: return to main                                         │
+│   Ctrl+C           Quit immediately                                                              │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+? or Esc to close help

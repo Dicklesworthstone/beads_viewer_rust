@@ -403,4 +403,242 @@ mod tests {
         assert_eq!(triage.result.recommendations.len(), 1);
         assert_eq!(triage.result.recommendations[0].id, "A");
     }
+
+    #[test]
+    fn triage_empty_issues_produces_zero_recommendations() {
+        let issues: Vec<Issue> = vec![];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: false,
+                group_by_label: false,
+                max_recommendations: 10,
+            },
+        );
+        assert_eq!(triage.result.quick_ref.total_open, 0);
+        assert_eq!(triage.result.quick_ref.total_actionable, 0);
+        assert!(triage.result.recommendations.is_empty());
+        assert!(triage.result.blockers_to_clear.is_empty());
+    }
+
+    #[test]
+    fn triage_all_closed_produces_no_actionable() {
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                title: "Done".to_string(),
+                status: "closed".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "Also done".to_string(),
+                status: "tombstone".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: false,
+                group_by_label: false,
+                max_recommendations: 10,
+            },
+        );
+        assert_eq!(triage.result.quick_ref.total_open, 0);
+        assert!(triage.result.recommendations.is_empty());
+    }
+
+    #[test]
+    fn triage_max_recommendations_limits_output() {
+        let issues: Vec<Issue> = (0..20)
+            .map(|i| Issue {
+                id: format!("X-{i}"),
+                title: format!("Issue {i}"),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                ..Issue::default()
+            })
+            .collect();
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: false,
+                group_by_label: false,
+                max_recommendations: 5,
+            },
+        );
+        assert!(triage.result.recommendations.len() <= 5);
+    }
+
+    #[test]
+    fn triage_scores_are_sorted_descending() {
+        let issues: Vec<Issue> = (0..5)
+            .map(|i| Issue {
+                id: format!("P-{i}"),
+                title: format!("Task {i}"),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: i + 1,
+                ..Issue::default()
+            })
+            .collect();
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: false,
+                group_by_label: false,
+                max_recommendations: 10,
+            },
+        );
+        let scores: Vec<f64> = triage
+            .result
+            .recommendations
+            .iter()
+            .map(|r| r.score)
+            .collect();
+        for w in scores.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "scores should be descending: {} >= {}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    #[test]
+    fn triage_blockers_to_clear_identifies_chained_blockers() {
+        // Chain: A (open, actionable) blocks B (open, blocked by A, blocks C+D)
+        // B is not actionable (blocked by A) but blocks C+D => should be in blockers_to_clear
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                title: "Root".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "Middle".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![crate::model::Dependency {
+                    depends_on_id: "A".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..crate::model::Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "Leaf 1".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 3,
+                dependencies: vec![crate::model::Dependency {
+                    depends_on_id: "B".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..crate::model::Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "D".to_string(),
+                title: "Leaf 2".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 3,
+                dependencies: vec![crate::model::Dependency {
+                    depends_on_id: "B".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..crate::model::Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: false,
+                group_by_label: false,
+                max_recommendations: 10,
+            },
+        );
+        // B should be in blockers_to_clear (blocked by A, blocks C+D)
+        let b_blocker = triage.result.blockers_to_clear.iter().find(|b| b.id == "B");
+        assert!(
+            b_blocker.is_some(),
+            "B should be in blockers_to_clear (got {:?})",
+            triage.result.blockers_to_clear
+        );
+        assert!(
+            b_blocker.unwrap().unblocks >= 2,
+            "B should unblock 2+ issues"
+        );
+    }
+
+    #[test]
+    fn triage_group_by_label_produces_label_groups() {
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                title: "UI fix".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                labels: vec!["ui".to_string()],
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "API fix".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                labels: vec!["api".to_string()],
+                ..Issue::default()
+            },
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: false,
+                group_by_label: true,
+                max_recommendations: 10,
+            },
+        );
+        assert!(
+            !triage.result.recommendations_by_label.is_empty(),
+            "should group by label"
+        );
+    }
 }

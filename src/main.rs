@@ -218,6 +218,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let load_start = std::time::Instant::now();
     let mut issues = match load_issues(&cli) {
         Ok(issues) => issues,
         Err(error) => {
@@ -225,12 +226,15 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let load_duration = load_start.elapsed();
 
     if let Some(repo_filter) = cli.repo.as_deref() {
         issues = filter_by_repo(issues, repo_filter);
     }
 
+    let build_start = std::time::Instant::now();
     let analyzer = Analyzer::new(issues.clone());
+    let build_duration = build_start.elapsed();
 
     if cli.robot_help {
         print_robot_help();
@@ -745,6 +749,64 @@ fn main() -> ExitCode {
         if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
             eprintln!("error: {error}");
             return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if cli.profile_startup {
+        let triage_start = std::time::Instant::now();
+        let triage = analyzer.triage(TriageOptions {
+            group_by_track: true,
+            group_by_label: true,
+            max_recommendations: 50,
+        });
+        let triage_duration = triage_start.elapsed();
+
+        let insights_start = std::time::Instant::now();
+        let insights = analyzer.insights();
+        let insights_duration = insights_start.elapsed();
+
+        let total = load_duration + build_duration + triage_duration + insights_duration;
+        let issue_count = issues.len();
+        let edge_count: usize = issues.iter().map(|i| i.dependencies.len()).sum();
+        let density = if issue_count > 1 {
+            edge_count as f64 / (issue_count as f64 * (issue_count as f64 - 1.0))
+        } else {
+            0.0
+        };
+
+        let profile = StartupProfile {
+            node_count: issue_count,
+            edge_count,
+            density,
+            load_jsonl: format_duration_ms(load_duration),
+            build_graph: format_duration_ms(build_duration),
+            triage: format_duration_ms(triage_duration),
+            insights: format_duration_ms(insights_duration),
+            total: format_duration_ms(total),
+            cycle_count: insights.cycles.len(),
+            bottleneck_count: insights.bottlenecks.len(),
+            recommendation_count: triage.result.recommendations.len(),
+        };
+
+        let recommendations = generate_profile_recommendations(&profile, total);
+
+        if cli.profile_json {
+            let output = ProfileJsonOutput {
+                generated_at: envelope(&issues).generated_at,
+                data_hash: compute_data_hash(&issues),
+                output_format: "json".to_owned(),
+                version: format!("v{}", env!("CARGO_PKG_VERSION")),
+                profile,
+                total_with_load: format_duration_ms(total),
+                recommendations,
+            };
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        } else {
+            print_profile_report(&profile, &recommendations);
         }
         return ExitCode::SUCCESS;
     }
@@ -1606,13 +1668,14 @@ fn main() -> ExitCode {
     }
 
     let (background_mode_enabled, background_mode_source) = resolve_background_mode(&cli);
-    if background_mode_enabled {
+    let background_runtime = build_background_mode_config(&cli, background_mode_enabled);
+    if let Some(config) = background_runtime.as_ref() {
         eprintln!(
-            "info: background mode enabled via {background_mode_source} (compatibility mode: sync runtime currently active)."
+            "info: background mode enabled via {background_mode_source}; reload poll={}ms.",
+            config.poll_interval_ms
         );
     }
-
-    match bvr::tui::run_tui(issues) {
+    match bvr::tui::run_tui_with_background(issues, background_runtime) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -1673,6 +1736,34 @@ fn resolve_background_mode(cli: &Cli) -> (bool, BackgroundModeSource) {
         return (value, BackgroundModeSource::UserConfig);
     }
     (false, BackgroundModeSource::DefaultDisabled)
+}
+
+fn build_background_mode_config(
+    cli: &Cli,
+    background_mode_enabled: bool,
+) -> Option<bvr::tui::BackgroundModeConfig> {
+    if !background_mode_enabled {
+        return None;
+    }
+
+    if cli.as_of.is_some() {
+        eprintln!("warning: background mode is ignored when --as-of is set.");
+        return None;
+    }
+
+    let poll_interval_ms = std::env::var("BVR_BACKGROUND_POLL_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(bvr::tui::BackgroundModeConfig::DEFAULT_POLL_INTERVAL_MS);
+
+    Some(bvr::tui::BackgroundModeConfig {
+        beads_file: cli.beads_file.clone(),
+        workspace_config: cli.workspace.as_deref().map(resolve_workspace_config_path),
+        repo_path: cli.repo_path.clone(),
+        repo_filter: cli.repo.clone(),
+        poll_interval_ms,
+    })
 }
 
 fn parse_background_mode_bool(raw: &str) -> Option<bool> {
@@ -4227,6 +4318,10 @@ fn print_robot_help() {
     println!("  --robot-sprint-list       List all sprints as JSON");
     println!("  --robot-sprint-show <id>  Show specific sprint details");
     println!("  --robot-metrics           Performance metrics (timing, cache, memory)");
+    println!("  --profile-startup         Output detailed startup timing profile");
+    println!(
+        "  --profile-json            Output profile in JSON format (use with --profile-startup)"
+    );
     println!("  --export-md <file>        Export issues to a Markdown report");
     println!("  --export-pages <dir>      Export static pages bundle (index + data + assets)");
     println!(
@@ -4599,6 +4694,111 @@ struct RobotLabelAttentionOutput {
     result: bvr::analysis::label_intel::LabelAttentionResult,
 }
 
+// =========================================================================
+// Startup Profile
+// =========================================================================
+
+#[derive(Debug, Clone, Serialize)]
+struct StartupProfile {
+    node_count: usize,
+    edge_count: usize,
+    density: f64,
+    load_jsonl: String,
+    build_graph: String,
+    triage: String,
+    insights: String,
+    total: String,
+    cycle_count: usize,
+    bottleneck_count: usize,
+    recommendation_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileJsonOutput {
+    generated_at: String,
+    data_hash: String,
+    output_format: String,
+    version: String,
+    profile: StartupProfile,
+    total_with_load: String,
+    recommendations: Vec<String>,
+}
+
+fn format_duration_ms(d: std::time::Duration) -> String {
+    let ms = d.as_secs_f64() * 1000.0;
+    if ms < 1.0 {
+        format!("{:.3}ms", ms)
+    } else if ms < 1000.0 {
+        format!("{:.1}ms", ms)
+    } else {
+        format!("{:.2}s", ms / 1000.0)
+    }
+}
+
+fn generate_profile_recommendations(
+    profile: &StartupProfile,
+    total: std::time::Duration,
+) -> Vec<String> {
+    let mut recs = Vec::new();
+    let total_ms = total.as_secs_f64() * 1000.0;
+
+    if total_ms > 200.0 {
+        recs.push("Total startup exceeds 200ms; consider async loading".to_string());
+    }
+    if profile.node_count > 500 {
+        recs.push(format!(
+            "Large dataset ({} issues); graph algorithms may benefit from parallelism",
+            profile.node_count
+        ));
+    }
+    if profile.cycle_count > 0 {
+        recs.push(format!(
+            "{} cycle(s) detected; resolving cycles improves graph analysis accuracy",
+            profile.cycle_count
+        ));
+    }
+    if profile.density > 0.1 {
+        recs.push(format!(
+            "High dependency density ({:.4}); consider pruning transitive edges",
+            profile.density
+        ));
+    }
+    if recs.is_empty() {
+        recs.push("No performance concerns detected".to_string());
+    }
+    recs
+}
+
+fn print_profile_report(profile: &StartupProfile, recommendations: &[String]) {
+    println!("Startup Profile");
+    println!("===============");
+    println!(
+        "Data: {} issues, {} dependencies, density={:.4}\n",
+        profile.node_count, profile.edge_count, profile.density
+    );
+    println!("Phase 1 (blocking):");
+    println!("  Load JSONL:      {}", profile.load_jsonl);
+    println!("  Build graph:     {}", profile.build_graph);
+    println!();
+    println!("Phase 2 (analysis):");
+    println!("  Triage:          {}", profile.triage);
+    println!("  Insights:        {}", profile.insights);
+    println!();
+    println!("Total startup:     {}", profile.total);
+    println!();
+    println!("Results:");
+    println!("  Recommendations: {}", profile.recommendation_count);
+    println!("  Bottlenecks:     {}", profile.bottleneck_count);
+    println!("  Cycles:          {}", profile.cycle_count);
+    println!();
+    if !recommendations.is_empty() {
+        println!("Recommendations:");
+        for rec in recommendations {
+            println!("  - {rec}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -4610,10 +4810,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BackgroundModeSource, Cli, filter_by_repo, generate_daily_burndown_points,
-        handle_operational_commands, parse_background_mode_bool, parse_scope_git_header_line,
-        resolve_background_mode, resolve_git_toplevel, resolve_reference_file_path,
-        resolve_workspace_config_path,
+        BackgroundModeSource, Cli, build_background_mode_config, filter_by_repo,
+        generate_daily_burndown_points, handle_operational_commands, parse_background_mode_bool,
+        parse_scope_git_header_line, resolve_background_mode, resolve_git_toplevel,
+        resolve_reference_file_path, resolve_workspace_config_path,
     };
 
     #[test]
@@ -4801,5 +5001,37 @@ mod tests {
         assert_eq!(enabled_source, BackgroundModeSource::CliFlag);
         assert!(!disabled);
         assert_eq!(disabled_source, BackgroundModeSource::CliFlag);
+    }
+
+    #[test]
+    fn build_background_mode_config_resolves_workspace_and_repo_filter() {
+        let temp = tempdir().expect("tempdir");
+        let workspace_root = temp.path().to_string_lossy().to_string();
+        let cli = Cli::parse_from([
+            "bvr",
+            "--background-mode",
+            "--workspace",
+            &workspace_root,
+            "--repo",
+            "api",
+        ]);
+
+        let config = build_background_mode_config(&cli, true).expect("background config");
+        assert_eq!(config.repo_filter.as_deref(), Some("api"));
+        assert_eq!(config.beads_file, None);
+        assert!(
+            config
+                .workspace_config
+                .as_deref()
+                .expect("workspace config path")
+                .ends_with(".bv/workspace.yaml")
+        );
+        assert!(config.poll_interval_ms > 0);
+    }
+
+    #[test]
+    fn build_background_mode_config_disables_as_of_snapshots() {
+        let cli = Cli::parse_from(["bvr", "--as-of", "HEAD~1"]);
+        assert!(build_background_mode_config(&cli, true).is_none());
     }
 }

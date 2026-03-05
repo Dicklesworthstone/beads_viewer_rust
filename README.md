@@ -32,24 +32,39 @@ cargo run -- --robot-graph
 cargo run -- --robot-graph --graph-format dot
 cargo run -- --robot-graph --graph-format mermaid --graph-root B --graph-depth 2
 cargo run -- --robot-graph --label api
+cargo run -- --robot-metrics
+cargo run -- --robot-docs guide
+cargo run -- --robot-schema
+cargo run -- --robot-sprint-list
+cargo run -- --robot-sprint-show sprint-1
 cargo run -- --robot-label-health
 cargo run -- --robot-label-flow
 cargo run -- --robot-label-attention
 cargo run -- --robot-label-attention --attention-limit 5
+cargo run -- --robot-search --search "auth" --search-limit 20
+cargo run -- --robot-recipes
+cargo run -- --robot-triage --recipe critical-blockers
+
+# Profiling
+cargo run -- --profile-startup --beads-file tests/testdata/synthetic_complex.jsonl
+cargo run -- --profile-startup --profile-json --beads-file tests/testdata/synthetic_complex.jsonl
+
+# Export
+cargo run -- --export-md /tmp/report.md
+cargo run -- --priority-brief /tmp/brief.md
+cargo run -- --agent-brief /tmp/agent-output
 cargo run -- --export-graph /tmp/deps.json
 cargo run -- --export-graph /tmp/deps.dot --graph-preset roomy --graph-title "Dependency Snapshot"
-cargo run -- --export-graph /tmp/deps.mmd --graph-title "Docs Diagram"
-cargo run -- --export-graph /tmp/deps.svg --graph-style grid --graph-preset roomy --graph-title "Team Dependency Map"
-cargo run -- --export-graph /tmp/deps.png --graph-style force --graph-title "Snapshot"
+cargo run -- --export-graph /tmp/deps.svg --graph-style grid --graph-preset roomy
 cargo run -- --export-pages ./bv-pages --pages-title "Sprint Dashboard"
 cargo run -- --preview-pages ./bv-pages
-cargo run -- --preview-pages ./bv-pages --no-live-reload
-cargo run -- --export-pages ./bv-pages --watch-export
 cargo run -- --pages
+
+# Background mode
 cargo run -- --background-mode --robot-triage
 cargo run -- --no-background-mode --robot-triage
 
-# run against an explicit fixture file
+# Run against an explicit fixture file
 cargo run -- --robot-triage --beads-file tests/testdata/minimal.jsonl
 ```
 
@@ -62,13 +77,39 @@ Background mode compatibility controls (TUI only) are accepted with legacy prece
     background_mode: true
   ```
 
+When enabled, TUI mode runs a bounded background reload loop that periodically refreshes issues and applies updates without blocking key handling.
+
 Bare command launches the interactive TUI:
 
 ```bash
 cargo run
 ```
 
-Current parity key slice in TUI includes `?` help overlay toggle/dismiss, `Tab` list/detail focus toggle, non-main `Enter` return-to-main-detail behavior, `Esc` back-or-clear-filter-or-quit-confirm behavior, view-key toggles for `b/i/g` (press again to return to main), `h` history view toggle, history-mode `c` confidence cycling, history-mode `v` bead/git timeline toggle (with enter jump from git timeline to issue detail), `o/c/r/a` filter hotkeys with filter-aware list navigation, board-mode `1/2/3/4` lane-jump selection keys, board-mode `H/L` first/last lane jumps, board-mode `0/$` first/last-in-lane selection, board-mode `e` empty-lane visibility toggle, board-mode `s` grouping cycling (`status`, `priority`, `type`), insights-mode `e` explanation toggle, insights-mode `x` calculation-proof toggle, and main-mode `s` sort cycling (`created asc/desc`, `priority`, `updated`, `default`).
+## TUI Key Map
+
+| Key | Context | Action |
+|---|---|---|
+| `?` | All | Toggle help overlay |
+| `Tab` | All | Toggle list/detail focus |
+| `Esc` | All | Back / clear filter / quit confirm |
+| `b` | All | Toggle board view |
+| `i` | All | Toggle insights view |
+| `g` | All | Toggle graph view |
+| `h` | All | Toggle history view |
+| `s` | Main | Cycle sort (created asc/desc, priority, updated, default) |
+| `o/c/r/a` | All | Filter by open/closed/review/all |
+| `/` | Graph, Insights | Search with n/N cycling |
+| `J/K` | Board, Graph, Insights | Navigate dependency detail pane |
+| `1/2/3/4` | Board | Jump to lane |
+| `H/L` | Board | First/last lane |
+| `0/$` | Board | First/last in lane |
+| `e` | Board | Toggle empty lanes |
+| `s` | Board | Cycle grouping (status/priority/type) |
+| `e` | Insights | Toggle explanation |
+| `x` | Insights | Toggle calculation proof |
+| `c` | History | Cycle confidence |
+| `v` | History | Toggle bead/git timeline |
+| `Enter` | History (git) | Jump to issue detail |
 
 ## Porting Docs
 
@@ -108,20 +149,46 @@ Run Rust conformance tests:
 cargo test --test conformance
 ```
 
-## Verification Commands
+## Test Suite
+
+| Suite | Command | Count |
+|---|---|---|
+| Unit tests | `cargo test --lib` | 349 |
+| Snapshots | `cargo test --lib snap_` | 21 |
+| Conformance | `cargo test --test conformance` | 73 |
+| Schema validation | `cargo test --test schema_validation` | 31 |
+| E2E robot matrix | `cargo test --test e2e_robot_matrix` | 44 |
+| Integration tests | `cargo test --test robot_alerts --test robot_burndown_scope --test robot_history_since --test export_md --test export_pages --test admin_cli --test background_mode` | 29 |
+
+Full suite:
 
 ```bash
-cargo fmt --check
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+Optional e2e artifact bundles (stdout/stderr, replay command, metadata) for robot/debug-render triage:
+
+```bash
+BVR_E2E_ARTIFACT_DIR=target/bvr-e2e-artifacts cargo test --test e2e_robot_matrix
+```
+
+## CI
+
+GitHub Actions workflow at `.github/workflows/ci.yml` runs on push/PR to main:
+- **Check**: `cargo fmt --check` + `cargo clippy`
+- **Unit**: lib tests + snapshot verification
+- **Conformance**: conformance + schema validation
+- **E2E**: robot command matrix + all integration tests
+- **Bench**: Criterion smoke run
+- **Build**: release binary with artifact upload
 
 ## Benchmark
 
 ```bash
 cargo bench --bench triage
 ```
+
+11 benchmark groups covering analyzer construction, triage, insights, plan, diff, forecast, suggest, alerts, history, cycle detection, and real fixture. Synthetic generators create sparse/dense/cyclic graphs at 100/500/1000 issues.
 
 ## License
 
