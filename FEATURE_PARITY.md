@@ -286,16 +286,16 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 ### Missing — Not Yet Ported
 | Category | Flags |
 |---|---|
-| Correlation/Impact | `--robot-causality`, `--robot-confirm-correlation`, `--robot-reject-correlation`, `--robot-explain-correlation`, `--robot-correlation-stats`, `--correlation-by`, `--correlation-reason`, `--robot-impact`, `--robot-impact-network`, `--robot-related`, `--related-include-closed`, `--related-max-results`, `--related-min-relevance`, `--relations-limit`, `--relations-threshold`, `--network-depth` |
-| File Analysis | `--robot-file-beads`, `--robot-file-hotspots`, `--robot-file-relations`, `--file-beads-limit`, `--hotspots-limit` |
-| Label/Attention | `--robot-label-attention`, `--robot-label-flow`, `--robot-label-health`, `--attention-limit` |
+| ~~Correlation/Impact~~ | ~~`--robot-causality`, `--robot-confirm-correlation`, `--robot-reject-correlation`, `--robot-explain-correlation`, `--robot-correlation-stats`, `--correlation-by`, `--correlation-reason`, `--robot-impact`, `--robot-impact-network`, `--robot-related`, `--related-include-closed`, `--related-max-results`, `--related-min-relevance`, `--relations-limit`, `--relations-threshold`, `--network-depth`~~ — **Implemented** |
+| ~~File Analysis~~ | ~~`--robot-file-beads`, `--robot-file-hotspots`, `--robot-file-relations`, `--file-beads-limit`, `--hotspots-limit`~~ — **Implemented** |
+| ~~Label/Attention~~ | ~~`--robot-label-attention`, `--robot-label-flow`, `--robot-label-health`, `--attention-limit`~~ — **Implemented** |
 | Sprint | (moved to implemented) |
-| Search | `--search`, `--search-limit`, `--search-mode`, `--search-preset`, `--search-weights`, `--robot-search` |
+| ~~Search~~ | ~~`--search`, `--search-limit`, `--search-mode`, `--search-preset`, `--search-weights`, `--robot-search`~~ — **Implemented** |
 | ~~Export/Pages~~ | ~~`--pages`, `--pages-include-closed`, `--pages-include-history`, `--pages-title`, `--preview-pages`, `--export-pages`, `--watch-export`, `--no-live-reload`~~ — **Implemented (baseline bundle/preview/watch)** |
 | ~~Script~~ | ~~`--emit-script`, `--script-format`, `--script-limit`~~ — **Implemented** |
-| Baseline/Drift | `--save-baseline`, `--baseline-info`, `--check-drift`, `--robot-drift` |
+| ~~Baseline/Drift~~ | ~~`--save-baseline`, `--baseline-info`, `--check-drift`, `--robot-drift`~~ — **Implemented** |
 | ~~Feedback~~ | ~~`--feedback-show`, `--feedback-accept`, `--feedback-ignore`, `--feedback-reset`~~ — **Implemented** |
-| Workflow | `--robot-blocker-chain`, `--robot-orphans`, `--orphans-min-score`, ~~`--priority-brief`~~, ~~`--agent-brief`~~ — **Brief surfaces implemented** |
+| ~~Workflow~~ | ~~`--robot-blocker-chain`, `--robot-orphans`, `--orphans-min-score`, `--priority-brief`, `--agent-brief`~~ — **Implemented** |
 | ~~Metadata/Docs~~ | ~~`--robot-recipes`~~ — **Implemented** |
 | ~~Workspace/Config~~ | ~~`--recipe`~~ — **Implemented** |
 
@@ -326,10 +326,10 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | Robot Options | 2 | 5 | 0 | 0 | 7 |
 | Format/Meta | 4 | 0 | 0 | 0 | 4 |
 | Advanced Analysis | 2 | 0 | 0 | 0 | 2 |
-| Missing Surfaces | 0 | 0 | 51 | 0 | 51 |
+| Previously Missing Surfaces | 51 | 0 | 0 | 0 | 51 |
 | Excluded | 0 | 0 | 0 | 11 | 11 |
 | Rust-Only | 2 | 0 | 0 | 0 | 2 |
-| **Totals** | **32** | **27** | **51** | **11** | **121+2** |
+| **Totals** | **83** | **27** | **0** | **11** | **121+2** |
 
 ## Phased Implementation Plan
 
@@ -471,4 +471,4 @@ All core robot commands, export surfaces, TUI interactions, and quality gates ar
 
 ## Open Gaps to 100%
 1. ~~Remaining TUI interaction parity (responsive history layout, file tree panel, `o`/`y` keys, search modes)~~ — **Done**.
-2. 54 missing CLI flags across correlation/impact, file analysis, label analytics, search, export, script, baseline, feedback, workflow, and metadata categories.
+2. ~~54 missing CLI flags across correlation/impact, file analysis, label analytics, search, export, script, baseline, feedback, workflow, and metadata categories.~~ — **Done** (all surfaces implemented).
