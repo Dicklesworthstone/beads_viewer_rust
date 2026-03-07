@@ -690,31 +690,37 @@ mod tests {
     #[test]
     fn agents_add_creates_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = agents_add(tmp.path(), false).unwrap();
+        let nested = tmp.path().join("a/b/c/d");
+        std::fs::create_dir_all(&nested).unwrap();
+        let result = agents_add(&nested, false).unwrap();
         assert!(result.changed);
         assert!(result.message.contains("Created"));
 
-        let content = std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap();
+        let content = std::fs::read_to_string(nested.join("AGENTS.md")).unwrap();
         assert!(content.contains(BLURB_START_MARKER));
     }
 
     #[test]
     fn agents_add_dry_run_no_write() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = agents_add(tmp.path(), true).unwrap();
+        let nested = tmp.path().join("a/b/c/d");
+        std::fs::create_dir_all(&nested).unwrap();
+        let result = agents_add(&nested, true).unwrap();
         assert!(!result.changed);
         assert!(result.message.contains("[dry-run]"));
-        assert!(!tmp.path().join("AGENTS.md").exists());
+        assert!(!nested.join("AGENTS.md").exists());
     }
 
     #[test]
     fn agents_remove_strips_blurb() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("AGENTS.md");
+        let nested = tmp.path().join("a/b/c/d");
+        std::fs::create_dir_all(&nested).unwrap();
+        let path = nested.join("AGENTS.md");
         let content = format!("# Header\n\n{AGENT_BLURB}\n\n## Other\n");
         std::fs::write(&path, &content).unwrap();
 
-        let result = agents_remove(tmp.path(), false).unwrap();
+        let result = agents_remove(&nested, false).unwrap();
         assert!(result.changed);
 
         let updated = std::fs::read_to_string(&path).unwrap();
@@ -726,11 +732,13 @@ mod tests {
     #[test]
     fn agents_update_upgrades_old_version() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("AGENTS.md");
+        let nested = tmp.path().join("a/b/c/d");
+        std::fs::create_dir_all(&nested).unwrap();
+        let path = nested.join("AGENTS.md");
         let content = "# Header\n\n<!-- bv-agent-instructions-v0 -->\nold\n<!-- end-bv-agent-instructions -->\n";
         std::fs::write(&path, content).unwrap();
 
-        let result = agents_update(tmp.path(), false).unwrap();
+        let result = agents_update(&nested, false).unwrap();
         assert!(result.changed);
 
         let updated = std::fs::read_to_string(&path).unwrap();
@@ -741,21 +749,23 @@ mod tests {
     #[test]
     fn roundtrip_add_check_remove() {
         let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("a/b/c/d");
+        std::fs::create_dir_all(&nested).unwrap();
 
         // Add
-        let r = agents_add(tmp.path(), false).unwrap();
+        let r = agents_add(&nested, false).unwrap();
         assert!(r.changed);
 
         // Check
-        let r = agents_check(tmp.path());
+        let r = agents_check(&nested);
         assert!(r.message.contains("up to date"));
 
         // Remove
-        let r = agents_remove(tmp.path(), false).unwrap();
+        let r = agents_remove(&nested, false).unwrap();
         assert!(r.changed);
 
         // Check again
-        let r = agents_check(tmp.path());
+        let r = agents_check(&nested);
         assert!(r.message.contains("no blurb"));
     }
 }

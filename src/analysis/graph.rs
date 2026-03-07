@@ -718,12 +718,53 @@ impl IssueGraph {
 
         for component in kosaraju_scc(&self.graph) {
             if component.len() > 1 {
-                let mut ids: Vec<String> = component
-                    .iter()
-                    .map(|node| self.node_to_id[node.index()].clone())
-                    .collect();
-                ids.sort();
-                cycles.push(ids);
+                fn dfs(
+                    node: petgraph::graph::NodeIndex,
+                    graph: &petgraph::graph::DiGraph<(), ()>,
+                    scc_set: &std::collections::HashSet<petgraph::graph::NodeIndex>,
+                    path: &mut Vec<petgraph::graph::NodeIndex>,
+                    cycle: &mut Vec<petgraph::graph::NodeIndex>,
+                    visited_failed: &mut std::collections::HashSet<petgraph::graph::NodeIndex>,
+                ) -> bool {
+                    if let Some(pos) = path.iter().position(|&n| n == node) {
+                        *cycle = path[pos..].to_vec();
+                        return true;
+                    }
+                    if visited_failed.contains(&node) {
+                        return false;
+                    }
+                    path.push(node);
+                    for edge in graph.edges(node) {
+                        if scc_set.contains(&edge.target())
+                            && dfs(edge.target(), graph, scc_set, path, cycle, visited_failed)
+                        {
+                            return true;
+                        }
+                    }
+                    path.pop();
+                    visited_failed.insert(node);
+                    false
+                }
+
+                let mut path = Vec::new();
+                let mut cycle = Vec::new();
+                let scc_set: std::collections::HashSet<_> = component.iter().copied().collect();
+                let mut visited_failed = std::collections::HashSet::new();
+
+                if dfs(component[0], &self.graph, &scc_set, &mut path, &mut cycle, &mut visited_failed) {
+                    let ids: Vec<String> = cycle
+                        .into_iter()
+                        .map(|n| self.node_to_id[n.index()].clone())
+                        .collect();
+                    cycles.push(ids);
+                } else {
+                    let mut ids: Vec<String> = component
+                        .iter()
+                        .map(|node| self.node_to_id[node.index()].clone())
+                        .collect();
+                    ids.sort();
+                    cycles.push(ids);
+                }
                 continue;
             }
 

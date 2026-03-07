@@ -38,7 +38,16 @@ fn main() -> ExitCode {
         eprintln!("warning: tracing init failed: {error}");
     }
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    cli.format = match cli.resolve_output_format() {
+        Ok(format) => format,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    cli.stats = cli.resolve_stats_flag();
 
     if cli.version {
         print_version();
@@ -4340,7 +4349,7 @@ fn print_robot_help() {
         "  --robot-schema            JSON Schema definitions for all commands (--schema-command <cmd>)"
     );
     println!(
-        "  --format json|toon        Structured output format (toon compatibility mode for now)"
+        "  --format json|toon        Structured output format (env: BV_OUTPUT_FORMAT, TOON_DEFAULT_FORMAT)"
     );
     println!("  --robot-sprint-list       List all sprints as JSON");
     println!("  --robot-sprint-show <id>  Show specific sprint details");

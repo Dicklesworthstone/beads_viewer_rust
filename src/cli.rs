@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, ValueEnum};
@@ -471,6 +472,21 @@ pub struct Cli {
 }
 
 impl Cli {
+    pub fn resolve_output_format(&self) -> std::result::Result<OutputFormat, String> {
+        let cli_explicit = format_flag_was_explicit_in_args(std::env::args_os().skip(1));
+        resolve_output_format_choice(
+            self.format,
+            cli_explicit,
+            std::env::var("BV_OUTPUT_FORMAT").ok().as_deref(),
+            std::env::var("TOON_DEFAULT_FORMAT").ok().as_deref(),
+        )
+    }
+
+    #[must_use]
+    pub fn resolve_stats_flag(&self) -> bool {
+        self.stats || std::env::var("TOON_STATS").is_ok_and(|value| value.trim() == "1")
+    }
+
     #[must_use]
     pub fn is_operational_command(&self) -> bool {
         self.check_update || self.update || self.rollback || self.yes
@@ -541,11 +557,49 @@ impl Cli {
     }
 }
 
+fn resolve_output_format_choice(
+    cli_format: OutputFormat,
+    cli_explicit: bool,
+    bv_output_format: Option<&str>,
+    toon_default_format: Option<&str>,
+) -> std::result::Result<OutputFormat, String> {
+    if cli_explicit {
+        return Ok(cli_format);
+    }
+
+    for (source, raw) in [
+        ("BV_OUTPUT_FORMAT", bv_output_format),
+        ("TOON_DEFAULT_FORMAT", toon_default_format),
+    ] {
+        let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+
+        return OutputFormat::from_str(raw, true)
+            .map_err(|_| format!("invalid {source} value {raw:?} (expected json|toon)"));
+    }
+
+    Ok(cli_format)
+}
+
+fn format_flag_was_explicit_in_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    args.into_iter().any(|arg| {
+        let text = arg.as_ref().to_string_lossy();
+        text == "--format" || text.starts_with("--format=")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::Cli;
+    use super::{
+        Cli, OutputFormat, format_flag_was_explicit_in_args, resolve_output_format_choice,
+    };
 
     #[test]
     fn parse_operational_flags() {
@@ -600,5 +654,51 @@ mod tests {
         let cli = Cli::parse_from(["bvr", "--background-mode", "--no-background-mode"]);
         assert!(cli.background_mode);
         assert!(cli.no_background_mode);
+    }
+
+    #[test]
+    fn explicit_format_flag_detected_with_split_syntax() {
+        assert!(format_flag_was_explicit_in_args([
+            "--robot-next",
+            "--format",
+            "toon"
+        ]));
+    }
+
+    #[test]
+    fn explicit_format_flag_detected_with_equals_syntax() {
+        assert!(format_flag_was_explicit_in_args([
+            "--robot-next",
+            "--format=toon"
+        ]));
+    }
+
+    #[test]
+    fn resolve_output_format_uses_env_when_cli_flag_absent() {
+        let resolved = resolve_output_format_choice(OutputFormat::Json, false, Some("toon"), None)
+            .expect("format");
+        assert!(matches!(resolved, OutputFormat::Toon));
+    }
+
+    #[test]
+    fn resolve_output_format_prefers_cli_when_flag_explicit() {
+        let resolved = resolve_output_format_choice(OutputFormat::Json, true, Some("toon"), None)
+            .expect("format");
+        assert!(matches!(resolved, OutputFormat::Json));
+    }
+
+    #[test]
+    fn resolve_output_format_falls_back_to_secondary_env() {
+        let resolved = resolve_output_format_choice(OutputFormat::Json, false, None, Some("toon"))
+            .expect("format");
+        assert!(matches!(resolved, OutputFormat::Toon));
+    }
+
+    #[test]
+    fn resolve_output_format_rejects_invalid_env_values() {
+        let error = resolve_output_format_choice(OutputFormat::Json, false, Some("yaml"), None)
+            .expect_err("invalid env should fail");
+        assert!(error.contains("BV_OUTPUT_FORMAT"));
+        assert!(error.contains("json|toon"));
     }
 }

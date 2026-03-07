@@ -150,7 +150,7 @@ fn resolve_workspace_root(config_path: &Path) -> PathBuf {
 }
 
 fn qualify_id(local_id: &str, prefix: &str) -> String {
-    if local_id.starts_with(prefix) {
+    if local_id.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
         local_id.to_string()
     } else {
         format!("{prefix}{local_id}")
