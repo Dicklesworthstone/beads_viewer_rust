@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -48,6 +49,15 @@ fn main() -> ExitCode {
         }
     };
     cli.stats = cli.resolve_stats_flag();
+
+    // Auto-enable --robot-diff when --diff-since is used in non-interactive context
+    // (piped output or BV_ROBOT=1), matching Go behavior
+    if cli.diff_since.is_some()
+        && !cli.robot_diff
+        && (bvr::loader::is_robot_mode() || !std::io::stdout().is_terminal())
+    {
+        cli.robot_diff = true;
+    }
 
     if cli.version {
         print_version();
@@ -1545,8 +1555,16 @@ fn main() -> ExitCode {
             include_closed: cli.pages_include_closed,
             include_history: cli.pages_include_history,
         };
+        let export_issue_count = count_pages_export_issues(&issues, &options);
 
-        match bvr::export_pages::export_pages_bundle(&issues, export_path, &options) {
+        match bvr::export_md::run_export_with_hooks(
+            export_path,
+            "html",
+            export_issue_count,
+            cli.no_hooks,
+            cli.repo_path.as_deref(),
+            || bvr::export_pages::export_pages_bundle(&issues, export_path, &options),
+        ) {
             Ok(summary) => {
                 eprintln!(
                     "Exported pages bundle to {} (issues: {}, history: {})",
@@ -1560,22 +1578,28 @@ fn main() -> ExitCode {
         }
 
         if cli.watch_export {
-            let beads_dir = match loader::get_beads_dir(cli.repo_path.as_deref()) {
-                Ok(path) => path,
+            let watched_paths = match resolve_watch_export_paths(&cli) {
+                Ok(paths) => paths,
                 Err(error) => {
                     eprintln!("error: {error}");
                     return ExitCode::from(1);
                 }
             };
-            let beads_path = match loader::find_jsonl_path(&beads_dir) {
-                Ok(path) => path,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    return ExitCode::from(1);
-                }
-            };
-            let mut last_mtime = match file_mtime_epoch_millis(&beads_path) {
-                Ok(value) => value,
+            let watched_mtimes = watched_paths
+                .iter()
+                .map(|path| {
+                    file_mtime_epoch_millis(path)
+                        .map(|mtime| (path.clone(), mtime))
+                        .map_err(|error| {
+                            bvr::BvrError::InvalidArgument(format!(
+                                "failed to read watch source {}: {error}",
+                                path.display()
+                            ))
+                        })
+                })
+                .collect::<bvr::Result<Vec<_>>>();
+            let mut watched_mtimes = match watched_mtimes {
+                Ok(entries) => entries,
                 Err(error) => {
                     eprintln!("error: {error}");
                     return ExitCode::from(1);
@@ -1593,22 +1617,36 @@ fn main() -> ExitCode {
                 .unwrap_or(2_000);
 
             eprintln!(
-                "Watching {} for changes (Ctrl+C to stop)...",
-                beads_path.display()
+                "Watching {} source file(s) for changes (Ctrl+C to stop)...",
+                watched_mtimes.len()
             );
+            for (path, _) in &watched_mtimes {
+                eprintln!("  - {}", path.display());
+            }
 
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(watch_interval_ms));
 
-                let current_mtime = match file_mtime_epoch_millis(&beads_path) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        eprintln!("warning: failed to read beads mtime: {error}");
-                        continue;
-                    }
-                };
+                let mut changed = false;
+                for (path, last_mtime) in &mut watched_mtimes {
+                    let current_mtime = match file_mtime_epoch_millis(path) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            eprintln!(
+                                "warning: failed to read watch source {}: {error}",
+                                path.display()
+                            );
+                            continue;
+                        }
+                    };
 
-                if current_mtime <= last_mtime {
+                    if current_mtime > *last_mtime {
+                        *last_mtime = current_mtime;
+                        changed = true;
+                    }
+                }
+
+                if !changed {
                     if let Some(remaining) = max_loops.as_mut() {
                         *remaining = remaining.saturating_sub(1);
                         if *remaining == 0 {
@@ -1618,7 +1656,6 @@ fn main() -> ExitCode {
                     continue;
                 }
 
-                last_mtime = current_mtime;
                 let refreshed_issues = match load_issues(&cli) {
                     Ok(value) => value,
                     Err(error) => {
@@ -1631,11 +1668,21 @@ fn main() -> ExitCode {
                 } else {
                     refreshed_issues
                 };
+                let refreshed_issue_count = count_pages_export_issues(&refreshed_issues, &options);
 
-                match bvr::export_pages::export_pages_bundle(
-                    &refreshed_issues,
+                match bvr::export_md::run_export_with_hooks(
                     export_path,
-                    &options,
+                    "html",
+                    refreshed_issue_count,
+                    cli.no_hooks,
+                    cli.repo_path.as_deref(),
+                    || {
+                        bvr::export_pages::export_pages_bundle(
+                            &refreshed_issues,
+                            export_path,
+                            &options,
+                        )
+                    },
                 ) {
                     Ok(summary) => {
                         eprintln!(
@@ -1904,6 +1951,31 @@ fn load_issues(cli: &Cli) -> bvr::Result<Vec<bvr::model::Issue>> {
     }
 
     loader::load_issues(cli.repo_path.as_deref())
+}
+
+fn count_pages_export_issues(
+    issues: &[bvr::model::Issue],
+    options: &bvr::export_pages::ExportPagesOptions,
+) -> usize {
+    if options.include_closed {
+        issues.len()
+    } else {
+        issues.iter().filter(|issue| issue.is_open_like()).count()
+    }
+}
+
+fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
+    if let Some(path) = &cli.beads_file {
+        return Ok(vec![path.clone()]);
+    }
+
+    if let Some(path) = &cli.workspace {
+        return loader::find_workspace_issue_paths(&resolve_workspace_config_path(path));
+    }
+
+    let beads_dir = loader::get_beads_dir(cli.repo_path.as_deref())?;
+    let beads_path = loader::find_jsonl_path(&beads_dir)?;
+    Ok(vec![beads_path])
 }
 
 fn file_mtime_epoch_millis(path: &Path) -> bvr::Result<u64> {
