@@ -619,22 +619,28 @@ fn dependency_direction<'a>(left: &'a Issue, right: &'a Issue) -> (&'a Issue, &'
     let left_created = parse_timestamp(left.created_at.as_deref());
     let right_created = parse_timestamp(right.created_at.as_deref());
 
-    match (left_created, right_created) {
-        (Some(left_dt), Some(right_dt)) => {
-            if left_dt < right_dt || left.priority < right.priority {
-                (right, left)
-            } else {
-                (left, right)
-            }
-        }
-        (None, Some(_)) => (right, left),
-        (Some(_) | None, None) => {
-            if left.priority < right.priority {
-                (right, left)
-            } else {
-                (left, right)
-            }
-        }
+    let priority_cmp = left.priority.cmp(&right.priority);
+    let time_cmp = match (left_created, right_created) {
+        (Some(l), Some(r)) => l.cmp(&r),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    };
+
+    let left_is_blocker = match priority_cmp {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => match time_cmp {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => left.id < right.id,
+        },
+    };
+
+    if left_is_blocker {
+        (right, left)
+    } else {
+        (left, right)
     }
 }
 
