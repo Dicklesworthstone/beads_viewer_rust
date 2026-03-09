@@ -1296,7 +1296,12 @@ impl Model for BvrApp {
                 format!("Labels: {label_count} | j/k navigate | Tab focus | [/Esc back")
             }
             ViewMode::FlowMatrix => {
-                "Flow matrix: data wiring in progress | Tab focus | Esc back".to_string()
+                let label_count = self.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
+                let dep_count =
+                    self.flow_matrix.as_ref().map_or(0, |f| f.total_cross_label_deps);
+                format!(
+                    "Flow: {label_count} labels, {dep_count} cross-deps | j/k rows | h/l cols | Tab focus | ]/Esc back"
+                )
             }
         };
         Paragraph::new(footer_text)
@@ -2116,6 +2121,25 @@ impl BvrApp {
             KeyCode::Char('k') | KeyCode::Up if self.label_dashboard_shortcut_focus() => {
                 self.label_dashboard_cursor = self.label_dashboard_cursor.saturating_sub(1);
             }
+            // -- FlowMatrix mode navigation
+            KeyCode::Char('j') | KeyCode::Down if self.flow_matrix_shortcut_focus() => {
+                let count = self.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
+                if count > 0 && self.flow_matrix_row_cursor + 1 < count {
+                    self.flow_matrix_row_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.flow_matrix_shortcut_focus() => {
+                self.flow_matrix_row_cursor = self.flow_matrix_row_cursor.saturating_sub(1);
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.flow_matrix_shortcut_focus() => {
+                let count = self.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
+                if count > 0 && self.flow_matrix_col_cursor + 1 < count {
+                    self.flow_matrix_col_cursor += 1;
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left if self.flow_matrix_shortcut_focus() => {
+                self.flow_matrix_col_cursor = self.flow_matrix_col_cursor.saturating_sub(1);
+            }
             KeyCode::Char('d')
                 if modifiers.contains(Modifiers::CTRL)
                     && matches!(self.mode, ViewMode::Board)
@@ -2480,6 +2504,10 @@ impl BvrApp {
             }
             KeyCode::Char('[') => {
                 self.toggle_label_dashboard();
+                self.focus = FocusPane::List;
+            }
+            KeyCode::Char(']') => {
+                self.toggle_flow_matrix();
                 self.focus = FocusPane::List;
             }
             KeyCode::Char('p') if matches!(self.mode, ViewMode::Main) => {
@@ -4159,6 +4187,7 @@ impl BvrApp {
                     ("!", "Toggle attention mode"),
                     ("T", "Toggle tree view"),
                     ("[", "Toggle label dashboard"),
+                    ("]", "Toggle flow matrix"),
                     ("v", "History: bead/git toggle"),
                 ],
             },
@@ -5747,13 +5776,184 @@ impl BvrApp {
 
     // -- end LabelDashboard view ------------------------------------------
 
+    // -- FlowMatrix view ---------------------------------------------------
+
+    fn toggle_flow_matrix(&mut self) {
+        if matches!(self.mode, ViewMode::FlowMatrix) {
+            self.mode = ViewMode::Main;
+        } else {
+            self.mode = ViewMode::FlowMatrix;
+            self.flow_matrix_row_cursor = 0;
+            self.flow_matrix_col_cursor = 0;
+            self.compute_flow_matrix();
+        }
+    }
+
+    fn compute_flow_matrix(&mut self) {
+        use crate::analysis::label_intel::compute_cross_label_flow;
+        let result = compute_cross_label_flow(&self.analyzer.issues);
+        self.flow_matrix = Some(result);
+    }
+
     fn flow_matrix_list_text(&self) -> String {
-        "(flow matrix view not yet wired)".to_string()
+        let Some(flow) = &self.flow_matrix else {
+            return "(computing flow matrix...)".to_string();
+        };
+
+        if flow.labels.is_empty() {
+            return "(no labels found — flow matrix empty)".to_string();
+        }
+
+        let labels = &flow.labels;
+        let matrix = &flow.flow_matrix;
+        let mut lines = Vec::new();
+
+        // Header: summary
+        lines.push(format!(
+            "Cross-label flow ({} labels, {} deps) | bottlenecks: {}",
+            labels.len(),
+            flow.total_cross_label_deps,
+            if flow.bottleneck_labels.is_empty() {
+                "none".to_string()
+            } else {
+                flow.bottleneck_labels.join(", ")
+            }
+        ));
+        lines.push(String::new());
+
+        // Compute column width (label name + padding)
+        let max_label_len = labels.iter().map(|l| l.len()).max().unwrap_or(4);
+        let col_w = max_label_len.max(4);
+
+        // Column headers
+        let row_label_w = col_w + 2;
+        let mut header = format!("{:row_label_w$}", "");
+        for (ci, label) in labels.iter().enumerate() {
+            let marker = if ci == self.flow_matrix_col_cursor {
+                "v"
+            } else {
+                " "
+            };
+            header.push_str(&format!(" {marker}{:<width$}", label, width = col_w));
+        }
+        lines.push(header);
+
+        // Separator
+        let sep_len = row_label_w + labels.len() * (col_w + 2);
+        lines.push("-".repeat(sep_len));
+
+        // Rows
+        for (ri, label) in labels.iter().enumerate() {
+            let cursor = if ri == self.flow_matrix_row_cursor {
+                ">"
+            } else {
+                " "
+            };
+            let mut row = format!("{cursor} {:<width$}", label, width = col_w);
+            for (ci, val) in matrix[ri].iter().enumerate() {
+                let cell = if ri == ci {
+                    " .".to_string()
+                } else if *val == 0 {
+                    " -".to_string()
+                } else {
+                    format!(" {val}")
+                };
+                let highlight = ri == self.flow_matrix_row_cursor
+                    && ci == self.flow_matrix_col_cursor
+                    && ri != ci;
+                if highlight {
+                    row.push_str(&format!("[{:>width$}]", cell.trim(), width = col_w - 1));
+                } else {
+                    row.push_str(&format!(" {:>width$}", cell.trim(), width = col_w));
+                }
+            }
+            lines.push(row);
+        }
+
+        lines.push(String::new());
+        lines.push("j/k rows | h/l cols | Tab focus | ] or Esc back".to_string());
+
+        lines.join("\n")
     }
 
     fn flow_matrix_detail_text(&self) -> String {
-        "Cross-label flow data is not available in this build.".to_string()
+        let Some(flow) = &self.flow_matrix else {
+            return "(no flow data)".to_string();
+        };
+
+        if flow.labels.is_empty() {
+            return "(no labels)".to_string();
+        }
+
+        let labels = &flow.labels;
+        let row = self.flow_matrix_row_cursor.min(labels.len().saturating_sub(1));
+        let col = self.flow_matrix_col_cursor.min(labels.len().saturating_sub(1));
+        let from_label = &labels[row];
+        let to_label = &labels[col];
+
+        let mut lines = Vec::new();
+
+        if row == col {
+            lines.push(format!("Label: {from_label}"));
+            lines.push(String::new());
+            // Show issues with this label
+            let issue_ids: Vec<_> = self
+                .analyzer
+                .issues
+                .iter()
+                .filter(|i| i.labels.iter().any(|l| l == from_label))
+                .collect();
+            lines.push(format!("Issues with this label: {}", issue_ids.len()));
+            for issue in &issue_ids {
+                lines.push(format!("  {} - {}", issue.id, issue.title));
+            }
+        } else {
+            let flow_val = flow.flow_matrix[row][col];
+            lines.push(format!("{from_label} -> {to_label}: {flow_val} deps"));
+            lines.push(String::new());
+
+            // Find matching dependency entries
+            let matching: Vec<_> = flow
+                .dependencies
+                .iter()
+                .filter(|d| d.from_label == *from_label && d.to_label == *to_label)
+                .collect();
+
+            if matching.is_empty() && flow_val == 0 {
+                lines.push("No cross-label dependencies in this direction.".to_string());
+            } else {
+                for dep in &matching {
+                    lines.push(format!(
+                        "{} -> {} ({} issues)",
+                        dep.from_label, dep.to_label, dep.issue_count
+                    ));
+                    for id in &dep.issue_ids {
+                        let title = self
+                            .analyzer
+                            .issues
+                            .iter()
+                            .find(|i| i.id == *id)
+                            .map(|i| i.title.as_str())
+                            .unwrap_or("?");
+                        lines.push(format!("  {id} - {title}"));
+                    }
+                }
+            }
+        }
+
+        // Bottleneck info
+        if !flow.bottleneck_labels.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Bottleneck labels: {}",
+                flow.bottleneck_labels.join(", ")
+            ));
+        }
+
+        lines.join("\n")
     }
+
+    // -- end FlowMatrix view -----------------------------------------------
 
     fn detail_panel_text(&self) -> String {
         match self.mode {
@@ -10526,6 +10726,63 @@ mod tests {
                 "expanding should restore node count"
             );
         }
+    }
+
+    #[test]
+    fn flow_matrix_toggle() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert!(matches!(app.mode, ViewMode::Main));
+
+        // ] toggles to FlowMatrix
+        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::FlowMatrix));
+        assert!(app.flow_matrix.is_some());
+
+        // ] toggles back
+        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::Main));
+    }
+
+    #[test]
+    fn flow_matrix_navigation() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        assert_eq!(app.flow_matrix_row_cursor, 0);
+        assert_eq!(app.flow_matrix_col_cursor, 0);
+
+        let count = app.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
+        if count > 1 {
+            // j/k for rows
+            app.handle_key(KeyCode::Char('j'), Modifiers::NONE);
+            assert_eq!(app.flow_matrix_row_cursor, 1);
+            app.handle_key(KeyCode::Char('k'), Modifiers::NONE);
+            assert_eq!(app.flow_matrix_row_cursor, 0);
+
+            // h/l for columns
+            app.handle_key(KeyCode::Char('l'), Modifiers::NONE);
+            assert_eq!(app.flow_matrix_col_cursor, 1);
+            app.handle_key(KeyCode::Char('h'), Modifiers::NONE);
+            assert_eq!(app.flow_matrix_col_cursor, 0);
+        }
+    }
+
+    #[test]
+    fn flow_matrix_renders_list_and_detail() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+
+        let list = app.flow_matrix_list_text();
+        assert!(
+            list.contains("Cross-label flow") || list.contains("no labels"),
+            "list should show header or empty, got: {list}"
+        );
+
+        let detail = app.flow_matrix_detail_text();
+        // Detail should have some content
+        assert!(
+            !detail.is_empty(),
+            "detail should not be empty"
+        );
     }
 
     #[test]
