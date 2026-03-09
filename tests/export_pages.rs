@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use rusqlite::Connection;
 use serde_json::Value;
 
 // `bd-7oo.1.1` freezes the legacy export contract in one place. The point is not
@@ -306,9 +307,9 @@ static LEGACY_EXPORT_CONTRACT: &[LegacyExportContractItem] = &[
     },
     LegacyExportContractItem {
         id: "sqlite-database",
-        class: LegacyExportParityClass::ExplicitlyDeferredParity,
-        description: "Full parity still requires a SQLite export database at beads.sqlite3.",
-        rationale: "Legacy detail panes, search, and richer viewer state are backed by SQLite rather than reduced JSON sidecars.",
+        class: LegacyExportParityClass::MustHaveParityNow,
+        description: "The export bundle now emits beads.sqlite3 for the static viewer workflow.",
+        rationale: "Static export parity requires shipping the SQLite artifact itself rather than only reduced JSON sidecars.",
         provenance: &[
             "legacy_beads_viewer_code/beads_viewer/tests/e2e/export_pages_test.go::TestExportPages_SQLiteDatabase",
             "legacy_beads_viewer_code/beads_viewer/pkg/export/integration_test.go::TestExportCreatesExpectedFiles",
@@ -317,9 +318,9 @@ static LEGACY_EXPORT_CONTRACT: &[LegacyExportContractItem] = &[
     },
     LegacyExportContractItem {
         id: "sqlite-bootstrap-config",
-        class: LegacyExportParityClass::ExplicitlyDeferredParity,
-        description: "Full parity still requires beads.sqlite3.config.json with chunking/bootstrap metadata.",
-        rationale: "Legacy large-bundle handling depends on a config payload that reports total size and chunking state.",
+        class: LegacyExportParityClass::MustHaveParityNow,
+        description: "The export bundle now emits beads.sqlite3.config.json with deterministic bootstrap metadata.",
+        rationale: "The viewer handoff contract needs an explicit config payload for file size, hash, and chunk metadata before later export work can build on it safely.",
         provenance: &[
             "legacy_beads_viewer_code/beads_viewer/tests/e2e/export_pages_test.go::TestExportPages_SQLiteDatabase",
             "legacy_beads_viewer_code/beads_viewer/tests/e2e/export_cloudflare_test.go::TestCloudflare_SQLiteChunking",
@@ -515,6 +516,82 @@ fn export_pages_writes_bundle_files() {
 
     let meta = fs::read_to_string(out.join("data/meta.json")).expect("read meta.json");
     assert!(meta.contains("\"Sprint Dashboard\""));
+}
+
+#[test]
+fn export_pages_populates_sqlite_database_with_core_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path();
+    fs::create_dir_all(repo_dir.join(".beads")).expect("create .beads");
+    fs::write(
+        repo_dir.join(".beads/beads.jsonl"),
+        concat!(
+            "{\"id\":\"BD-ROOT\",\"title\":\"Root Issue\",\"description\":\"Export root\",\"design\":\"Keep SQLite rows deterministic\",\"acceptance_criteria\":\"Viewer can query the DB\",\"notes\":\"Needs a comment\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[\"export\",\"sqlite\"],\"comments\":[{\"id\":1,\"issue_id\":\"BD-ROOT\",\"author\":\"alice\",\"text\":\"Populate the database rows\",\"created_at\":\"2026-03-08T00:00:00Z\"}],\"source_repo\":\"alpha\"}\n",
+            "{\"id\":\"BD-CHILD\",\"title\":\"Child Issue\",\"status\":\"blocked\",\"priority\":2,\"issue_type\":\"task\",\"dependencies\":[{\"issue_id\":\"BD-CHILD\",\"depends_on_id\":\"BD-ROOT\",\"type\":\"blocks\",\"created_by\":\"tester\",\"created_at\":\"2026-03-08T01:00:00Z\"}],\"source_repo\":\"beta\"}\n"
+        ),
+    )
+    .expect("write beads file");
+
+    bvr_cmd(repo_dir)
+        .args([
+            "--export-pages",
+            "pages-out",
+            "--pages-title",
+            "SQLite Fixture",
+        ])
+        .assert()
+        .success();
+
+    let db =
+        Connection::open(repo_dir.join("pages-out/beads.sqlite3")).expect("open export sqlite");
+
+    let issue_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))
+        .expect("query issues count");
+    let dependency_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM dependencies", [], |row| row.get(0))
+        .expect("query dependency count");
+    let comment_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM comments", [], |row| row.get(0))
+        .expect("query comment count");
+    let metrics_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM issue_metrics", [], |row| row.get(0))
+        .expect("query metrics count");
+    let overview_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM issue_overview_mv", [], |row| {
+            row.get(0)
+        })
+        .expect("query overview count");
+
+    assert_eq!(issue_count, 2);
+    assert_eq!(dependency_count, 1);
+    assert_eq!(comment_count, 1);
+    assert_eq!(metrics_count, 2);
+    assert_eq!(overview_count, 2);
+
+    let root = db
+        .query_row(
+            "
+            SELECT source_repo, labels, dependent_count, comment_count
+            FROM issue_overview_mv
+            WHERE id = ?
+            ",
+            ["BD-ROOT"],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .expect("query root overview");
+
+    assert_eq!(root.0, "alpha");
+    assert_eq!(root.1, "[\"export\",\"sqlite\"]");
+    assert_eq!(root.2, 1);
+    assert_eq!(root.3, 1);
 }
 
 #[test]

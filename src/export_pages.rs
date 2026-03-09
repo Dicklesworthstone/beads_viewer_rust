@@ -14,6 +14,11 @@ use serde::Serialize;
 
 use crate::analysis::Analyzer;
 use crate::analysis::triage::TriageOptions;
+use crate::export_sqlite::{
+    SQLITE_EXPORT_CONFIG_FILENAME, SQLITE_EXPORT_FILENAME, SqliteBootstrapOptions,
+    SqliteBundleOptions, bootstrap_export_database, emit_bootstrap_config,
+    populate_export_database,
+};
 use crate::model::Issue;
 use crate::{BvrError, Result};
 
@@ -226,6 +231,16 @@ pub fn export_pages_bundle(
 
     write_json(output_dir.join("data/insights.json"), &insights)?;
     files.push("data/insights.json".to_string());
+
+    bootstrap_export_database(output_dir, &SqliteBootstrapOptions::default())?;
+    populate_export_database(output_dir, Some(&title), &filtered, &analyzer, &triage)?;
+    files.push(SQLITE_EXPORT_FILENAME.to_string());
+
+    let sqlite_config = emit_bootstrap_config(output_dir, &SqliteBundleOptions::default())?;
+    files.push(SQLITE_EXPORT_CONFIG_FILENAME.to_string());
+    for chunk in &sqlite_config.chunks {
+        files.push(chunk.path.clone());
+    }
 
     if options.include_history {
         let history_limit = filtered.len().max(500);
@@ -793,6 +808,8 @@ mod tests {
             comments: Vec::new(),
             dependencies: Vec::new(),
             source_repo: ".".to_string(),
+            content_hash: None,
+            external_ref: None,
         }
     }
 
@@ -823,6 +840,14 @@ mod tests {
         assert!(out.join("data/insights.json").is_file());
         assert!(out.join("data/history.json").is_file());
         assert!(out.join("data/export_summary.json").is_file());
+        assert!(out.join("beads.sqlite3").is_file());
+        assert!(out.join("beads.sqlite3.config.json").is_file());
+        assert!(summary.files.contains(&"beads.sqlite3".to_string()));
+        assert!(
+            summary
+                .files
+                .contains(&"beads.sqlite3.config.json".to_string())
+        );
     }
 
     #[test]
@@ -848,6 +873,33 @@ mod tests {
         let exported = fs::read_to_string(out.join("data/issues.json")).expect("read issues.json");
         assert!(exported.contains("\"A\""));
         assert!(!exported.contains("\"B\""));
+    }
+
+    #[test]
+    fn export_pages_bundle_writes_sqlite_bootstrap_config_with_hash() {
+        let temp = tempdir().expect("tempdir");
+        let out = temp.path().join("pages");
+        let issues = vec![make_issue("A", "open")];
+
+        export_pages_bundle(
+            &issues,
+            &out,
+            &ExportPagesOptions {
+                title: None,
+                include_closed: false,
+                include_history: false,
+            },
+        )
+        .expect("export pages bundle");
+
+        let config: crate::export_sqlite::SqliteBootstrapConfig = serde_json::from_str(
+            &fs::read_to_string(out.join("beads.sqlite3.config.json")).expect("read config"),
+        )
+        .expect("parse config");
+
+        assert!(!config.chunked);
+        assert!(config.total_size > 0);
+        assert_eq!(config.hash.len(), 64);
     }
 
     #[test]
