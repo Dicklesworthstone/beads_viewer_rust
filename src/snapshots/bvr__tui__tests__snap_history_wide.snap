@@ -1,5 +1,6 @@
 ---
 source: src/tui.rs
+assertion_line: 9898
 expression: text
 ---
 bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc back/quit
@@ -31,4 +32,4 @@ bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? hel
 │                                                   ││                                                                                     │
 │                                                   ││                                                                                     │
 └───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
-History (bead): c confidence (>= 0%) | v bead/git | y copy | o open | f file-tree | / search | h/Esc back
+History (bead): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back

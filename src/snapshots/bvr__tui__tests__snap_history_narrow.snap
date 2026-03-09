@@ -1,5 +1,6 @@
 ---
 source: src/tui.rs
+assertion_line: 9896
 expression: text
 ---
 bvr History | 3/3 | all
@@ -31,4 +32,4 @@ bvr History | 3/3 | all
 │                   ││                                     │
 │                   ││                                     │
 └───────────────────┘└─────────────────────────────────────┘
-History (bead): c confidence (>= 0%) | v bead/git | y copy |
+History (bead): c confidence (>= 0%) | v bead/git | / search

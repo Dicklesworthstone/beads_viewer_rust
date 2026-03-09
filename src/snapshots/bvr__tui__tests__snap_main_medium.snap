@@ -31,4 +31,4 @@ bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help |
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Main view mirrors bv split workflow. Press b/i/g/h for focused modes | s cycles sort (default)
+b/i/g/h modes | s sort (default) | p hints | C copy | x export | O edit

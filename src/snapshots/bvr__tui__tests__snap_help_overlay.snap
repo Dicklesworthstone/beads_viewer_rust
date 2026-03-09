@@ -1,34 +1,35 @@
 ---
 source: src/tui.rs
+assertion_line: 10439
 expression: text
 ---
 bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc bac
 ┌Help──────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
-│ Core keys:                                                                                       │
-│   j/k or arrows  Move selection                                                                  │
-│   h/l             Mode-aware lateral nav (board lanes, graph peers, insights pane focus)         │
-│   Ctrl+d/Ctrl+u   Jump down/up by 10 rows                                                        │
-│   PgUp/PgDn       Jump by 10 rows                                                                │
-│   Home/End         Jump to top/bottom                                                            │
-│   /               Board/History/Graph/Insights: search (n/N match cycling)                       │
-│   Tab              Toggle list/detail focus                                                      │
-│   J/K              Detail: navigate blockers/dependents (board/graph/insights)                   │
-│   b/i/g/h          Toggle board/insights/graph/history                                           │
-│   Enter            Return to main detail pane                                                    │
-│   o/c/r/a          Filter open/closed/ready/all                                                  │
-│   s                Main: cycle sort | Board: cycle grouping | Insights: cycle panel              │
-│   ?                Toggle help overlay                                                           │
-│   Esc              Back from mode (or clear filter, then quit confirm in main)                   │
-│   q                Main: quit | Non-main: return to main                                         │
-│   Ctrl+C           Quit immediately                                                              │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
+│ [Navigation]                                     | [Search]                                      │
+│   j/k          Move selection up/down            |   /            Start search                   │
+│   arrows       Move selection up/down            |   n/N          Next/prev search match         │
+│   h/l          Lateral nav (lanes, peers)        |   Tab          Cycle search mode (in /)       │
+│   Ctrl+d/u     Jump down/up by 10                |   Esc          Cancel search                  │
+│   PgUp/PgDn    Jump by 10                        |   Enter        Confirm search                 │
+│   Home/End     Jump to top/bottom                |                                               │
+│   G            Jump to bottom                    | [Actions]                                     │
+│   Tab          Toggle list/detail focus          |   p            Toggle priority hints          │
+│   J/K          Navigate deps in detail           |   C            Copy issue ID                  │
+│   Enter        Return to main / drill            |   x            Export issue markdown          │
+│   scroll       Mouse wheel scrolls list          |   O            Open in editor                 │
+│                                                  |   Ctrl+R/F5    Refresh from disk              │
+│ [Views]                                          |                                               │
+│   b            Toggle board mode                 | [History]                                     │
+│   i            Toggle insights mode              |   c            Cycle confidence filter        │
+│   g            Toggle graph mode                 |   y            Copy SHA/ID                    │
+│   h            Toggle history mode               |   o            Open commit in browser         │
+│   !            Toggle attention mode             |   f            Toggle file tree               │
+│   v            History: bead/git toggle          |                                               │
+│                                                  | [Board]                                       │
+│ [Filters]                                        |   1-4          Jump to lane                   │
+│   o            Filter: open only                 |   H/L          First/last lane                │
+│   c            Filter: closed only               |   0/$          First/last in lane             │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-? or Esc to close help
+? or Esc close | j/k scroll | Ctrl+d/u page | line 1/37

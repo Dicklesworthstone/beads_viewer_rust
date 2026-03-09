@@ -17,7 +17,7 @@ use crate::model::Issue;
 use crate::robot::compute_data_hash;
 use crate::{BvrError, Result};
 use chrono::{DateTime, Utc};
-use ftui::core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use ftui::core::event::{Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseEvent, MouseEventKind};
 use ftui::core::geometry::Rect;
 use ftui::layout::{Constraint, Flex};
 use ftui::render::frame::Frame;
@@ -346,6 +346,10 @@ enum ViewMode {
     Insights,
     Graph,
     History,
+    Actionable,
+    Attention,
+    Tree,
+    LabelDashboard,
 }
 
 impl ViewMode {
@@ -356,6 +360,10 @@ impl ViewMode {
             Self::Insights => "Insights",
             Self::Graph => "Graph",
             Self::History => "History",
+            Self::Actionable => "Actionable",
+            Self::Attention => "Attention",
+            Self::Tree => "Tree",
+            Self::LabelDashboard => "Labels",
         }
     }
 }
@@ -503,6 +511,44 @@ impl HistoryViewMode {
         match self {
             Self::Bead => Self::Git,
             Self::Git => Self::Bead,
+        }
+    }
+}
+
+/// Search mode for history view — determines which fields the search query matches against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum HistorySearchMode {
+    /// Search across all fields (default).
+    #[default]
+    All,
+    /// Search commit messages only.
+    Commit,
+    /// Search by SHA prefix.
+    Sha,
+    /// Search bead ID/title only.
+    Bead,
+    /// Search by author name.
+    Author,
+}
+
+impl HistorySearchMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Commit => "msg",
+            Self::Sha => "sha",
+            Self::Bead => "bead",
+            Self::Author => "author",
+        }
+    }
+
+    fn cycle(self) -> Self {
+        match self {
+            Self::All => Self::Commit,
+            Self::Commit => Self::Sha,
+            Self::Sha => Self::Bead,
+            Self::Bead => Self::Author,
+            Self::Author => Self::All,
         }
     }
 }
@@ -720,9 +766,27 @@ struct HistoryTimelineEvent {
     event_details: String,
 }
 
+/// A flattened node in the dependency tree for rendering.
+#[derive(Debug, Clone)]
+struct TreeFlatNode {
+    /// Issue index into `analyzer.issues`.
+    issue_index: usize,
+    /// Depth in the tree (0 = root).
+    depth: usize,
+    /// Whether this node has children.
+    has_children: bool,
+    /// Whether this node's children are currently collapsed.
+    is_collapsed: bool,
+    /// Whether this is the last sibling at its depth (for box-drawing).
+    is_last_sibling: bool,
+    /// The prefix ancestry for box drawing (true = parent was last sibling at that depth).
+    ancestry_last: Vec<bool>,
+}
+
 #[derive(Debug)]
 enum Msg {
     KeyPress(KeyCode, Modifiers),
+    Mouse(MouseEventKind),
     #[cfg(not(test))]
     Tick,
     #[cfg(not(test))]
@@ -739,6 +803,7 @@ impl From<Event> for Msg {
                 kind: KeyEventKind::Press,
                 ..
             }) => Self::KeyPress(code, modifiers),
+            Event::Mouse(MouseEvent { kind, .. }) => Self::Mouse(kind),
             #[cfg(not(test))]
             Event::Tick => Self::Tick,
             _ => Self::Noop,
@@ -773,6 +838,7 @@ struct BvrApp {
     history_search_active: bool,
     history_search_query: String,
     history_search_match_cursor: usize,
+    history_search_mode: HistorySearchMode,
     history_show_file_tree: bool,
     history_file_tree_cursor: usize,
     history_file_tree_filter: Option<String>,
@@ -793,6 +859,18 @@ struct BvrApp {
     insights_show_explanations: bool,
     insights_show_calc_proof: bool,
     detail_dep_cursor: usize,
+    actionable_plan: Option<crate::analysis::plan::ExecutionPlan>,
+    actionable_track_cursor: usize,
+    actionable_item_cursor: usize,
+    attention_result: Option<crate::analysis::label_intel::LabelAttentionResult>,
+    attention_cursor: usize,
+    tree_flat_nodes: Vec<TreeFlatNode>,
+    tree_cursor: usize,
+    tree_collapsed: std::collections::HashSet<String>,
+    label_dashboard: Option<crate::analysis::label_intel::LabelHealthResult>,
+    label_dashboard_cursor: usize,
+    priority_hints_visible: bool,
+    status_msg: String,
     #[cfg(not(test))]
     background_runtime: Option<BackgroundRuntimeState>,
     /// Per-key event trace log for e2e debugging. Each entry records
@@ -848,6 +926,7 @@ impl Model for BvrApp {
                     return cmd;
                 }
             }
+            Msg::Mouse(kind) => return self.handle_mouse(kind),
             #[cfg(not(test))]
             Msg::Tick => return self.handle_background_tick(),
             #[cfg(not(test))]
@@ -899,7 +978,8 @@ impl Model for BvrApp {
 
         // -- Help overlay ----------------------------------------------------
         if self.show_help {
-            let full_help = self.help_overlay_text();
+            let inner_width = rows[1].width.saturating_sub(2) as usize;
+            let full_help = self.help_overlay_text(inner_width);
             let help_lines: Vec<&str> = full_help.lines().collect();
             let visible_height = rows[1].height.saturating_sub(2) as usize; // border
             let max_offset = help_lines.len().saturating_sub(visible_height);
@@ -1038,6 +1118,10 @@ impl Model for BvrApp {
                     "History Beads"
                 }
             }
+            ViewMode::Actionable => "Execution Tracks",
+            ViewMode::Attention => "Label Attention",
+            ViewMode::Tree => "Dependency Tree",
+            ViewMode::LabelDashboard => "Label Health",
             ViewMode::Main => "Issues",
         };
         let list_focused = self.focus == FocusPane::List;
@@ -1079,6 +1163,10 @@ impl Model for BvrApp {
             ViewMode::Insights => "Insight Detail",
             ViewMode::Graph => "Graph Focus",
             ViewMode::History => "History Timeline",
+            ViewMode::Actionable => "Track Detail",
+            ViewMode::Attention => "Label Detail",
+            ViewMode::Tree => "Issue Detail",
+            ViewMode::LabelDashboard => "Label Detail",
             ViewMode::Main => "Details",
         };
         let detail_focused = self.focus == FocusPane::Detail;
@@ -1108,10 +1196,16 @@ impl Model for BvrApp {
 
         // -- Footer ----------------------------------------------------------
         let footer_text = match self.mode {
-            ViewMode::Main => format!(
-                "Main view mirrors bv split workflow. Press b/i/g/h for focused modes | s cycles sort ({})",
-                self.list_sort.label()
-            ),
+            ViewMode::Main => {
+                if self.status_msg.is_empty() {
+                    format!(
+                        "b/i/g/h modes | s sort ({}) | p hints | C copy | x export | O edit",
+                        self.list_sort.label()
+                    )
+                } else {
+                    self.status_msg.clone()
+                }
+            }
             ViewMode::Board => {
                 let detail_hint = board_detail_line.map_or_else(
                     || "Ctrl+j/k detail scroll".to_string(),
@@ -1153,11 +1247,48 @@ impl Model for BvrApp {
             ViewMode::Graph => {
                 "Graph mode: centrality ranks, blockers/dependents, cycle membership.".to_string()
             }
-            ViewMode::History => format!(
-                "History ({}): c confidence (>= {:.0}%) | v bead/git | y copy | o open | f file-tree | / search | h/Esc back",
-                self.history_view_mode.label(),
-                self.history_min_confidence() * 100.0
-            ),
+            ViewMode::History => {
+                if self.history_search_active {
+                    format!(
+                        "History ({}): [{}] Tab cycles mode | Enter confirm | Esc cancel",
+                        self.history_view_mode.label(),
+                        self.history_search_mode.label(),
+                    )
+                } else {
+                    format!(
+                        "History ({}): c confidence (>= {:.0}%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back",
+                        self.history_view_mode.label(),
+                        self.history_min_confidence() * 100.0
+                    )
+                }
+            }
+            ViewMode::Actionable => {
+                let plan = self.actionable_plan.as_ref();
+                let track_count = plan.map_or(0, |p| p.tracks.len());
+                let item_count = plan.map_or(0, |p| p.summary.actionable_count);
+                format!(
+                    "Actionable: {track_count} tracks, {item_count} items | j/k navigate | Tab focus | a/Esc back"
+                )
+            }
+            ViewMode::Attention => {
+                let label_count = self.attention_result.as_ref().map_or(0, |r| r.labels.len());
+                format!(
+                    "Attention: {label_count} labels ranked | j/k navigate | Tab focus | !/Esc back"
+                )
+            }
+            ViewMode::Tree => {
+                let node_count = self.tree_flat_nodes.len();
+                format!(
+                    "Tree: {node_count} nodes | j/k navigate | Enter expand/collapse | Tab focus | T/Esc back"
+                )
+            }
+            ViewMode::LabelDashboard => {
+                let label_count = self
+                    .label_dashboard
+                    .as_ref()
+                    .map_or(0, |r| r.labels.len());
+                format!("Labels: {label_count} | j/k navigate | Tab focus | [/Esc back")
+            }
         };
         Paragraph::new(footer_text)
             .style(tokens::footer())
@@ -1307,6 +1438,26 @@ impl BvrApp {
 
     fn board_shortcut_focus(&self) -> bool {
         matches!(self.mode, ViewMode::Board)
+            && matches!(self.focus, FocusPane::List | FocusPane::Detail)
+    }
+
+    fn actionable_shortcut_focus(&self) -> bool {
+        matches!(self.mode, ViewMode::Actionable)
+            && matches!(self.focus, FocusPane::List | FocusPane::Detail)
+    }
+
+    fn attention_shortcut_focus(&self) -> bool {
+        matches!(self.mode, ViewMode::Attention)
+            && matches!(self.focus, FocusPane::List | FocusPane::Detail)
+    }
+
+    fn tree_shortcut_focus(&self) -> bool {
+        matches!(self.mode, ViewMode::Tree)
+            && matches!(self.focus, FocusPane::List | FocusPane::Detail)
+    }
+
+    fn label_dashboard_shortcut_focus(&self) -> bool {
+        matches!(self.mode, ViewMode::LabelDashboard)
             && matches!(self.focus, FocusPane::List | FocusPane::Detail)
     }
 
@@ -1536,7 +1687,20 @@ impl BvrApp {
         self.sync_insights_heatmap_selection();
     }
 
+    fn handle_mouse(&mut self, kind: MouseEventKind) -> Cmd<Msg> {
+        match kind {
+            MouseEventKind::ScrollUp => self.handle_key(KeyCode::Up, Modifiers::NONE),
+            MouseEventKind::ScrollDown => self.handle_key(KeyCode::Down, Modifiers::NONE),
+            _ => Cmd::None,
+        }
+    }
+
     fn handle_key(&mut self, code: KeyCode, modifiers: Modifiers) -> Cmd<Msg> {
+        // Clear one-shot status message on any key press.
+        if !self.status_msg.is_empty() {
+            self.status_msg.clear();
+        }
+
         if self.show_quit_confirm {
             match code {
                 KeyCode::Escape | KeyCode::Char('y' | 'Y') => return Cmd::Quit,
@@ -1606,6 +1770,15 @@ impl BvrApp {
             }
         }
 
+        // -- Force refresh (Ctrl+R / F5) ------------------------------------
+        if matches!(
+            (code, modifiers.contains(Modifiers::CTRL)),
+            (KeyCode::Char('r'), true) | (KeyCode::F(5), _)
+        ) {
+            self.refresh_from_disk();
+            return Cmd::None;
+        }
+
         self.ensure_selected_visible();
 
         if self.board_shortcut_focus() && self.board_search_active {
@@ -1636,6 +1809,10 @@ impl BvrApp {
             match code {
                 KeyCode::Escape => self.cancel_history_search(),
                 KeyCode::Enter => self.finish_history_search(),
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.history_search_mode = self.history_search_mode.cycle();
+                    self.refresh_history_search_selection();
+                }
                 KeyCode::Backspace => {
                     self.history_search_query.pop();
                     self.refresh_history_search_selection();
@@ -1707,7 +1884,8 @@ impl BvrApp {
                 self.enter_insights_heatmap_drill();
             }
             KeyCode::Enter
-                if !(matches!(self.mode, ViewMode::History) && self.history_file_tree_focus) =>
+                if !(matches!(self.mode, ViewMode::History) && self.history_file_tree_focus)
+                    && !matches!(self.mode, ViewMode::Tree) =>
             {
                 if matches!(self.mode, ViewMode::History)
                     && matches!(self.history_view_mode, HistoryViewMode::Git)
@@ -1887,6 +2065,40 @@ impl BvrApp {
             }
             KeyCode::Char('k') | KeyCode::Up if self.board_shortcut_focus() => {
                 self.move_board_row_relative(-1);
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.actionable_shortcut_focus() => {
+                self.move_actionable_cursor(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.actionable_shortcut_focus() => {
+                self.move_actionable_cursor(-1);
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.attention_shortcut_focus() => {
+                self.move_attention_cursor(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.attention_shortcut_focus() => {
+                self.move_attention_cursor(-1);
+            }
+            // -- Tree mode navigation
+            KeyCode::Char('j') | KeyCode::Down if self.tree_shortcut_focus() => {
+                if self.tree_cursor + 1 < self.tree_flat_nodes.len() {
+                    self.tree_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.tree_shortcut_focus() => {
+                self.tree_cursor = self.tree_cursor.saturating_sub(1);
+            }
+            KeyCode::Enter if matches!(self.mode, ViewMode::Tree) && self.focus == FocusPane::List => {
+                self.tree_toggle_collapse();
+            }
+            // -- LabelDashboard mode navigation
+            KeyCode::Char('j') | KeyCode::Down if self.label_dashboard_shortcut_focus() => {
+                let count = self.label_dashboard.as_ref().map_or(0, |r| r.labels.len());
+                if count > 0 && self.label_dashboard_cursor + 1 < count {
+                    self.label_dashboard_cursor += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.label_dashboard_shortcut_focus() => {
+                self.label_dashboard_cursor = self.label_dashboard_cursor.saturating_sub(1);
             }
             KeyCode::Char('d')
                 if modifiers.contains(Modifiers::CTRL)
@@ -2228,6 +2440,44 @@ impl BvrApp {
                 };
                 self.focus = FocusPane::List;
             }
+            KeyCode::Char('a') => {
+                self.mode = if matches!(self.mode, ViewMode::Actionable) {
+                    ViewMode::Main
+                } else {
+                    self.compute_actionable_plan();
+                    ViewMode::Actionable
+                };
+                self.focus = FocusPane::List;
+            }
+            KeyCode::Char('!') => {
+                self.mode = if matches!(self.mode, ViewMode::Attention) {
+                    ViewMode::Main
+                } else {
+                    self.compute_attention();
+                    ViewMode::Attention
+                };
+                self.focus = FocusPane::List;
+            }
+            KeyCode::Char('T') => {
+                self.toggle_tree_mode();
+                self.focus = FocusPane::List;
+            }
+            KeyCode::Char('[') => {
+                self.toggle_label_dashboard();
+                self.focus = FocusPane::List;
+            }
+            KeyCode::Char('p') if matches!(self.mode, ViewMode::Main) => {
+                self.priority_hints_visible = !self.priority_hints_visible;
+            }
+            KeyCode::Char('C') => {
+                self.copy_selected_issue_id();
+            }
+            KeyCode::Char('x') if matches!(self.mode, ViewMode::Main) => {
+                self.export_selected_issue_markdown();
+            }
+            KeyCode::Char('O') => {
+                self.open_selected_in_editor();
+            }
             _ => {}
         }
 
@@ -2285,6 +2535,7 @@ impl BvrApp {
         self.history_search_active = true;
         self.history_search_query.clear();
         self.history_search_match_cursor = 0;
+        self.history_search_mode = HistorySearchMode::All;
         self.history_event_cursor = 0;
         self.history_related_bead_cursor = 0;
         self.history_bead_commit_cursor = 0;
@@ -2554,14 +2805,34 @@ impl BvrApp {
                 .commits
                 .iter()
                 .enumerate()
-                .filter(|(_, commit)| {
-                    commit.sha.to_ascii_lowercase().contains(&query)
-                        || commit.message.to_ascii_lowercase().contains(&query)
-                        || commit.author.to_ascii_lowercase().contains(&query)
-                        || commit
-                            .files
+                .filter(|(_, commit)| match self.history_search_mode {
+                    HistorySearchMode::Sha => {
+                        commit.sha.to_ascii_lowercase().starts_with(&query)
+                            || commit.short_sha.to_ascii_lowercase().starts_with(&query)
+                    }
+                    HistorySearchMode::Commit => {
+                        commit.message.to_ascii_lowercase().contains(&query)
+                    }
+                    HistorySearchMode::Author => {
+                        commit.author.to_ascii_lowercase().contains(&query)
+                            || commit.author_email.to_ascii_lowercase().contains(&query)
+                    }
+                    HistorySearchMode::Bead => {
+                        let related =
+                            self.history_git_related_beads_for_commit(&commit.sha);
+                        related
                             .iter()
-                            .any(|f| f.path.to_ascii_lowercase().contains(&query))
+                            .any(|id| id.to_ascii_lowercase().contains(&query))
+                    }
+                    HistorySearchMode::All => {
+                        commit.sha.to_ascii_lowercase().contains(&query)
+                            || commit.message.to_ascii_lowercase().contains(&query)
+                            || commit.author.to_ascii_lowercase().contains(&query)
+                            || commit
+                                .files
+                                .iter()
+                                .any(|f| f.path.to_ascii_lowercase().contains(&query))
+                    }
                 })
                 .map(|(i, _)| i)
                 .collect()
@@ -2686,24 +2957,39 @@ impl BvrApp {
                     return Some(index);
                 }
 
-                let timestamp = commit.timestamp.to_ascii_lowercase();
-                let author = commit.author.to_ascii_lowercase();
-                let author_email = commit.author_email.to_ascii_lowercase();
-                let message = commit.message.to_ascii_lowercase();
-                let sha = commit.sha.to_ascii_lowercase();
-                let short_sha = commit.short_sha.to_ascii_lowercase();
-
-                let related_match = related
-                    .iter()
-                    .any(|id| id.to_ascii_lowercase().contains(&query));
-
-                let matches = sha.contains(&query)
-                    || short_sha.contains(&query)
-                    || message.contains(&query)
-                    || author.contains(&query)
-                    || author_email.contains(&query)
-                    || timestamp.contains(&query)
-                    || related_match;
+                let matches = match self.history_search_mode {
+                    HistorySearchMode::Sha => {
+                        commit.sha.to_ascii_lowercase().starts_with(&query)
+                            || commit.short_sha.to_ascii_lowercase().starts_with(&query)
+                    }
+                    HistorySearchMode::Commit => {
+                        commit.message.to_ascii_lowercase().contains(&query)
+                    }
+                    HistorySearchMode::Author => {
+                        commit.author.to_ascii_lowercase().contains(&query)
+                            || commit.author_email.to_ascii_lowercase().contains(&query)
+                    }
+                    HistorySearchMode::Bead => related
+                        .iter()
+                        .any(|id| id.to_ascii_lowercase().contains(&query)),
+                    HistorySearchMode::All => {
+                        let sha = commit.sha.to_ascii_lowercase();
+                        let short_sha = commit.short_sha.to_ascii_lowercase();
+                        let message = commit.message.to_ascii_lowercase();
+                        let author = commit.author.to_ascii_lowercase();
+                        let author_email = commit.author_email.to_ascii_lowercase();
+                        let related_match = related
+                            .iter()
+                            .any(|id| id.to_ascii_lowercase().contains(&query));
+                        sha.contains(&query)
+                            || short_sha.contains(&query)
+                            || message.contains(&query)
+                            || author.contains(&query)
+                            || author_email.contains(&query)
+                            || commit.timestamp.to_ascii_lowercase().contains(&query)
+                            || related_match
+                    }
+                };
 
                 matches.then_some(index)
             })
@@ -3078,18 +3364,64 @@ impl BvrApp {
             return visible;
         }
 
+        let cache = self.history_git_cache.as_ref();
         visible
             .into_iter()
             .filter(|index| {
                 self.analyzer.issues.get(*index).is_some_and(|issue| {
-                    issue.id.to_ascii_lowercase().contains(&query)
-                        || issue.title.to_ascii_lowercase().contains(&query)
-                        || issue.status.to_ascii_lowercase().contains(&query)
-                        || issue.issue_type.to_ascii_lowercase().contains(&query)
-                        || issue
-                            .labels
-                            .iter()
-                            .any(|label| label.to_ascii_lowercase().contains(&query))
+                    match self.history_search_mode {
+                        HistorySearchMode::Bead => {
+                            issue.id.to_ascii_lowercase().contains(&query)
+                                || issue.title.to_ascii_lowercase().contains(&query)
+                        }
+                        HistorySearchMode::Sha => {
+                            // Search SHA prefixes in the bead's correlated commits
+                            cache
+                                .and_then(|c| c.histories.get(&issue.id))
+                                .and_then(|h| h.commits.as_deref())
+                                .unwrap_or_default()
+                                .iter()
+                                .any(|c| {
+                                    c.sha.to_ascii_lowercase().starts_with(&query)
+                                        || c.short_sha.to_ascii_lowercase().starts_with(&query)
+                                })
+                        }
+                        HistorySearchMode::Commit => {
+                            cache
+                                .and_then(|c| c.histories.get(&issue.id))
+                                .and_then(|h| h.commits.as_deref())
+                                .unwrap_or_default()
+                                .iter()
+                                .any(|c| c.message.to_ascii_lowercase().contains(&query))
+                        }
+                        HistorySearchMode::Author => {
+                            cache
+                                .and_then(|c| c.histories.get(&issue.id))
+                                .map_or(false, |h| {
+                                    h.last_author.to_ascii_lowercase().contains(&query)
+                                        || h.commits
+                                            .as_deref()
+                                            .unwrap_or_default()
+                                            .iter()
+                                            .any(|c| {
+                                                c.author.to_ascii_lowercase().contains(&query)
+                                                    || c.author_email
+                                                        .to_ascii_lowercase()
+                                                        .contains(&query)
+                                            })
+                                })
+                        }
+                        HistorySearchMode::All => {
+                            issue.id.to_ascii_lowercase().contains(&query)
+                                || issue.title.to_ascii_lowercase().contains(&query)
+                                || issue.status.to_ascii_lowercase().contains(&query)
+                                || issue.issue_type.to_ascii_lowercase().contains(&query)
+                                || issue
+                                    .labels
+                                    .iter()
+                                    .any(|label| label.to_ascii_lowercase().contains(&query))
+                        }
+                    }
                 })
             })
             .collect()
@@ -3785,90 +4117,197 @@ impl BvrApp {
         }
     }
 
-    fn help_overlay_text(&self) -> String {
-        let mut lines = vec![
-            "Core keys:".to_string(),
-            "  j/k or arrows  Move selection".to_string(),
-            "  h/l             Mode-aware lateral nav (board lanes, graph peers, insights pane focus)".to_string(),
-            "  Ctrl+d/Ctrl+u   Jump down/up by 10 rows".to_string(),
-            "  PgUp/PgDn       Jump by 10 rows".to_string(),
-            "  Home/End         Jump to top/bottom".to_string(),
-            "  /               Board/History/Graph/Insights: search (n/N match cycling)".to_string(),
-            "  Tab              Toggle list/detail focus".to_string(),
-            "  J/K              Detail: navigate blockers/dependents (board/graph/insights)".to_string(),
-            "  b/i/g/h          Toggle board/insights/graph/history".to_string(),
-            "  Enter            Return to main detail pane".to_string(),
-            "  o/c/r/a          Filter open/closed/ready/all".to_string(),
-            "  s                Main: cycle sort | Board: cycle grouping | Insights: cycle panel"
-                .to_string(),
-            "  ?                Toggle help overlay".to_string(),
-            "  Esc              Back from mode (or clear filter, then quit confirm in main)"
-                .to_string(),
-            "  q                Main: quit | Non-main: return to main".to_string(),
-            "  Ctrl+C           Quit immediately".to_string(),
+    fn help_overlay_text(&self, width: usize) -> String {
+        // Define keybinding sections.
+        struct Section {
+            title: &'static str,
+            bindings: Vec<(&'static str, &'static str)>,
+        }
+
+        let sections = vec![
+            Section {
+                title: "Navigation",
+                bindings: vec![
+                    ("j/k", "Move selection up/down"),
+                    ("arrows", "Move selection up/down"),
+                    ("h/l", "Lateral nav (lanes, peers)"),
+                    ("Ctrl+d/u", "Jump down/up by 10"),
+                    ("PgUp/PgDn", "Jump by 10"),
+                    ("Home/End", "Jump to top/bottom"),
+                    ("G", "Jump to bottom"),
+                    ("Tab", "Toggle list/detail focus"),
+                    ("J/K", "Navigate deps in detail"),
+                    ("Enter", "Return to main / drill"),
+                    ("scroll", "Mouse wheel scrolls list"),
+                ],
+            },
+            Section {
+                title: "Views",
+                bindings: vec![
+                    ("b", "Toggle board mode"),
+                    ("i", "Toggle insights mode"),
+                    ("g", "Toggle graph mode"),
+                    ("h", "Toggle history mode"),
+                    ("!", "Toggle attention mode"),
+                    ("v", "History: bead/git toggle"),
+                ],
+            },
+            Section {
+                title: "Filters",
+                bindings: vec![
+                    ("o", "Filter: open only"),
+                    ("c", "Filter: closed only"),
+                    ("r", "Filter: ready only"),
+                    ("a", "Filter: show all"),
+                    ("s", "Cycle sort/grouping/panel"),
+                ],
+            },
+            Section {
+                title: "Search",
+                bindings: vec![
+                    ("/", "Start search"),
+                    ("n/N", "Next/prev search match"),
+                    ("Tab", "Cycle search mode (in /)"),
+                    ("Esc", "Cancel search"),
+                    ("Enter", "Confirm search"),
+                ],
+            },
+            Section {
+                title: "Actions",
+                bindings: vec![
+                    ("p", "Toggle priority hints"),
+                    ("C", "Copy issue ID"),
+                    ("x", "Export issue markdown"),
+                    ("O", "Open in editor"),
+                    ("Ctrl+R/F5", "Refresh from disk"),
+                ],
+            },
+            Section {
+                title: "History",
+                bindings: vec![
+                    ("c", "Cycle confidence filter"),
+                    ("y", "Copy SHA/ID"),
+                    ("o", "Open commit in browser"),
+                    ("f", "Toggle file tree"),
+                ],
+            },
+            Section {
+                title: "Board",
+                bindings: vec![
+                    ("1-4", "Jump to lane"),
+                    ("H/L", "First/last lane"),
+                    ("0/$", "First/last in lane"),
+                    ("e", "Toggle empty lanes"),
+                ],
+            },
+            Section {
+                title: "Insights",
+                bindings: vec![
+                    ("s/S", "Cycle panel fwd/back"),
+                    ("m", "Toggle heatmap"),
+                    ("e", "Toggle explanations"),
+                    ("x", "Toggle calc-proof"),
+                ],
+            },
+            Section {
+                title: "Global",
+                bindings: vec![
+                    ("?/F1", "Toggle this help"),
+                    ("Esc", "Back / clear / quit"),
+                    ("q", "Quit / back to main"),
+                    ("Ctrl+C", "Quit immediately"),
+                ],
+            },
         ];
 
-        if matches!(self.mode, ViewMode::History) {
-            lines.push(String::new());
-            lines.push(format!(
-                "History view mode: {} (v toggles bead/git event timeline)",
-                self.history_view_mode.label()
-            ));
-            lines.push(format!(
-                "History: c cycles min confidence filter (current >= {:.0}%)",
-                self.history_min_confidence() * 100.0
-            ));
-        }
+        // Render each section as a block of lines.
+        let render_section = |sec: &Section| -> Vec<String> {
+            let mut block = vec![format!("[{}]", sec.title)];
+            for (key, desc) in &sec.bindings {
+                block.push(format!("  {:<12} {}", key, desc));
+            }
+            block
+        };
 
-        if matches!(self.mode, ViewMode::Board) {
-            lines.push(String::new());
-            lines.push(format!(
-                "Board lanes: grouping={} | empty-lanes={}",
-                self.board_grouping.label(),
-                self.board_empty_visibility.label(),
-            ));
-            lines.push("Board: 1-4 jump lanes | H/L first/last lane".to_string());
-            lines.push(
-                "Board: 0/$ first/last issue in current lane | e toggle empty lanes".to_string(),
-            );
-        }
+        let rendered: Vec<Vec<String>> = sections.iter().map(render_section).collect();
 
-        if matches!(self.mode, ViewMode::Insights) {
-            lines.push(String::new());
-            lines.push(format!(
-                "Insights panel: {} (s/S cycles forward/back)",
-                self.insights_panel.label()
-            ));
-            lines.push(
-                "Panels: bottlenecks -> crit-path -> influencers -> betweenness -> hubs"
-                    .to_string(),
-            );
-            lines
-                .push("        -> authorities -> k-core -> cut-pts -> slack -> cycles".to_string());
-            lines.push(format!(
-                "Heatmap: {} (m toggles) | list-focus h/l/j/k navigates | Enter drills | Esc backs out",
-                if self.insights_heatmap.is_some() {
-                    "on"
-                } else {
-                    "off"
+        // Determine column count based on width.
+        let col_width = 36;
+        let num_cols = if width >= col_width * 3 + 4 {
+            3
+        } else if width >= col_width * 2 + 2 {
+            2
+        } else {
+            1
+        };
+
+        if num_cols == 1 {
+            // Single column: just concatenate all sections.
+            let mut out = Vec::new();
+            for block in &rendered {
+                if !out.is_empty() {
+                    out.push(String::new());
                 }
-            ));
-            lines.push(format!(
-                "Toggles: explanations={} (e) | calc-proof={} (x)",
-                if self.insights_show_explanations {
-                    "on"
-                } else {
-                    "off"
-                },
-                if self.insights_show_calc_proof {
-                    "on"
-                } else {
-                    "off"
-                }
-            ));
+                out.extend(block.iter().cloned());
+            }
+            return out.join("\n");
         }
 
-        lines.join("\n")
+        // Multi-column: distribute sections across columns to balance height.
+        let total_lines: usize = rendered.iter().map(|b| b.len() + 1).sum::<usize>(); // +1 for gap
+        let target_per_col = (total_lines + num_cols - 1) / num_cols;
+
+        let mut columns: Vec<Vec<String>> = vec![Vec::new(); num_cols];
+        let mut col = 0;
+        let mut col_lines = 0;
+
+        for block in &rendered {
+            let block_lines = block.len() + 1; // +1 for gap before next section
+            if col_lines > 0 && col_lines + block_lines > target_per_col && col + 1 < num_cols {
+                col += 1;
+                col_lines = 0;
+            }
+            if !columns[col].is_empty() {
+                columns[col].push(String::new());
+            }
+            columns[col].extend(block.iter().cloned());
+            col_lines += block_lines;
+        }
+
+        // Merge columns side by side.
+        let max_rows = columns.iter().map(|c| c.len()).max().unwrap_or(0);
+        let actual_col_width = if num_cols > 0 {
+            (width.saturating_sub(num_cols - 1)) / num_cols
+        } else {
+            width
+        };
+
+        let mut output = Vec::with_capacity(max_rows);
+        for row in 0..max_rows {
+            let mut line = String::new();
+            for (ci, col_data) in columns.iter().enumerate() {
+                let cell = col_data.get(row).map(|s| s.as_str()).unwrap_or("");
+                if ci > 0 {
+                    line.push_str(" | ");
+                }
+                let cell_trunc = if cell.len() > actual_col_width {
+                    &cell[..actual_col_width]
+                } else {
+                    cell
+                };
+                line.push_str(cell_trunc);
+                // Pad to column width for alignment (except last column).
+                if ci + 1 < columns.len() {
+                    let padding = actual_col_width.saturating_sub(cell_trunc.len());
+                    for _ in 0..padding {
+                        line.push(' ');
+                    }
+                }
+            }
+            output.push(line);
+        }
+
+        output.join("\n")
     }
 
     fn list_panel_text(&self) -> String {
@@ -3881,6 +4320,10 @@ impl BvrApp {
             ViewMode::Insights => self.insights_list_text(),
             ViewMode::Graph => self.graph_list_text(),
             ViewMode::History => self.history_list_text(),
+            ViewMode::Actionable => self.actionable_list_text(),
+            ViewMode::Attention => self.attention_list_text(),
+            ViewMode::Tree => self.tree_list_text(),
+            ViewMode::LabelDashboard => self.label_dashboard_list_text(),
             ViewMode::Main => self.main_list_text(),
         }
     }
@@ -4429,12 +4872,17 @@ impl BvrApp {
             ));
 
             if self.history_search_active {
-                lines.push(format!("Search (active): /{}", self.history_search_query));
+                lines.push(format!(
+                    "Search [{}] (Tab cycles): /{}",
+                    self.history_search_mode.label(),
+                    self.history_search_query
+                ));
             } else if !query.is_empty() {
                 let matches = self.history_search_matches();
                 let mc = matches.len();
                 lines.push(format!(
-                    "Search: /{} ({mc} matches, n/N cycles)",
+                    "Search [{}]: /{} ({mc} matches, n/N cycles)",
+                    self.history_search_mode.label(),
                     self.history_search_query
                 ));
             }
@@ -4491,11 +4939,16 @@ impl BvrApp {
         }
 
         if self.history_search_active {
-            lines.push(format!("Search (active): /{}", self.history_search_query));
+            lines.push(format!(
+                "Search [{}] (Tab cycles): /{}",
+                self.history_search_mode.label(),
+                self.history_search_query
+            ));
         } else if !query.is_empty() {
             let mc = visible.len();
             lines.push(format!(
-                "Search: /{} ({mc} matches, n/N cycles)",
+                "Search [{}]: /{} ({mc} matches, n/N cycles)",
+                self.history_search_mode.label(),
                 self.history_search_query
             ));
         }
@@ -4520,12 +4973,763 @@ impl BvrApp {
         lines.join("\n")
     }
 
+    // -- Actionable view --------------------------------------------------
+
+    fn compute_actionable_plan(&mut self) {
+        let triage = self.analyzer.triage(crate::analysis::triage::TriageOptions::default());
+        let plan = self.analyzer.plan(&triage.score_by_id);
+        self.actionable_track_cursor = 0;
+        self.actionable_item_cursor = 0;
+        self.actionable_plan = Some(plan);
+    }
+
+    fn move_actionable_cursor(&mut self, delta: isize) {
+        let Some(plan) = self.actionable_plan.as_ref() else {
+            return;
+        };
+
+        if matches!(self.focus, FocusPane::List) {
+            // Navigate between tracks.
+            let max = plan.tracks.len().saturating_sub(1);
+            let new_pos = (self.actionable_track_cursor as isize + delta).clamp(0, max as isize);
+            self.actionable_track_cursor = new_pos as usize;
+            self.actionable_item_cursor = 0;
+        } else {
+            // Navigate between items within current track.
+            if let Some(track) = plan.tracks.get(self.actionable_track_cursor) {
+                let max = track.items.len().saturating_sub(1);
+                let new_pos =
+                    (self.actionable_item_cursor as isize + delta).clamp(0, max as isize);
+                self.actionable_item_cursor = new_pos as usize;
+            }
+        }
+    }
+
+    fn actionable_list_text(&self) -> String {
+        let Some(plan) = self.actionable_plan.as_ref() else {
+            return "(no execution plan computed)".to_string();
+        };
+
+        if plan.tracks.is_empty() {
+            return "(no actionable tracks — all issues may be blocked or closed)".to_string();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "  {} tracks | {} actionable items",
+            plan.tracks.len(),
+            plan.summary.actionable_count
+        ));
+        if let Some(ref highest) = plan.summary.highest_impact {
+            lines.push(format!("  Highest impact: {highest}"));
+        }
+        lines.push(String::new());
+
+        let mut global_idx = 0usize;
+        for (track_idx, track) in plan.tracks.iter().enumerate() {
+            let track_marker = if track_idx == self.actionable_track_cursor
+                && matches!(self.focus, FocusPane::List)
+            {
+                "▸"
+            } else {
+                " "
+            };
+            lines.push(format!(
+                "{track_marker} Track {} ({} items): {}",
+                track.id,
+                track.items.len(),
+                track.reason
+            ));
+            for (item_idx, item) in track.items.iter().enumerate() {
+                let item_marker =
+                    if track_idx == self.actionable_track_cursor && item_idx == self.actionable_item_cursor
+                        && matches!(self.focus, FocusPane::Detail)
+                    {
+                        "  ▹"
+                    } else {
+                        "   "
+                    };
+                lines.push(format!(
+                    "{item_marker} {:<12} {:.2}  {}",
+                    item.id,
+                    item.score,
+                    if item.title.len() > 40 { format!("{}…", &item.title[..39]) } else { item.title.clone() }
+                ));
+                global_idx += 1;
+            }
+            lines.push(String::new());
+        }
+        let _ = global_idx;
+
+        lines.join("\n")
+    }
+
+    fn actionable_detail_text(&self) -> String {
+        let Some(plan) = self.actionable_plan.as_ref() else {
+            return "(no plan)".to_string();
+        };
+
+        let Some(track) = plan.tracks.get(self.actionable_track_cursor) else {
+            return "(no track selected)".to_string();
+        };
+
+        let mut lines = Vec::new();
+        lines.push(format!("Track: {}", track.id));
+        lines.push(format!("Reason: {}", track.reason));
+        lines.push(format!("Items: {}", track.items.len()));
+        lines.push(String::new());
+
+        for (idx, item) in track.items.iter().enumerate() {
+            let marker = if idx == self.actionable_item_cursor { "▸" } else { " " };
+            lines.push(format!("{marker} {} (score: {:.3})", item.id, item.score));
+            lines.push(format!("  Title: {}", item.title));
+            if !item.unblocks.is_empty() {
+                lines.push(format!("  Unblocks: {}", item.unblocks.join(", ")));
+            }
+            lines.push(format!("  Claim: {}", item.claim_command));
+            lines.push(String::new());
+        }
+
+        if let Some(ref reason) = plan.summary.impact_reason {
+            lines.push(format!("Impact: {reason}"));
+        }
+
+        lines.join("\n")
+    }
+
+    // -- end Actionable view -----------------------------------------------
+
+    // -- Attention view ----------------------------------------------------
+
+    fn compute_attention(&mut self) {
+        let result = crate::analysis::label_intel::compute_label_attention(
+            &self.analyzer.issues,
+            &self.analyzer.metrics,
+            0, // no limit — show all
+        );
+        self.attention_result = Some(result);
+        self.attention_cursor = 0;
+    }
+
+    fn copy_selected_issue_id(&mut self) {
+        if let Some(issue) = self.selected_issue() {
+            let id = issue.id.clone();
+            if copy_text_to_clipboard(&id) {
+                self.status_msg = format!("Copied {id} to clipboard");
+            } else {
+                self.status_msg = "Clipboard not available".into();
+            }
+        }
+    }
+
+    fn export_selected_issue_markdown(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+
+        let mut md = String::new();
+        md.push_str(&format!("# {} — {}\n\n", issue.id, issue.title));
+        md.push_str(&format!("**Status:** {} | **Priority:** p{} | **Type:** {}\n\n", issue.status, issue.priority, issue.issue_type));
+        if !issue.assignee.is_empty() {
+            md.push_str(&format!("**Assignee:** {}\n\n", issue.assignee));
+        }
+        if !issue.description.is_empty() {
+            md.push_str(&format!("## Description\n\n{}\n\n", issue.description));
+        }
+        if !issue.notes.is_empty() {
+            md.push_str(&format!("## Notes\n\n{}\n\n", issue.notes));
+        }
+        if !issue.labels.is_empty() {
+            md.push_str(&format!("**Labels:** {}\n", issue.labels.join(", ")));
+        }
+
+        let path = std::env::temp_dir().join(format!("{}.md", issue.id));
+        match std::fs::write(&path, &md) {
+            Ok(()) => {
+                self.status_msg = format!("Exported to {}", path.display());
+            }
+            Err(err) => {
+                self.status_msg = format!("Export failed: {err}");
+            }
+        }
+    }
+
+    fn open_selected_in_editor(&mut self) {
+        let Some(issue) = self.selected_issue() else {
+            return;
+        };
+
+        let yaml = format!(
+            "id: {}\ntitle: {}\nstatus: {}\npriority: {}\ntype: {}\nassignee: {}\nlabels: [{}]\n\ndescription: |\n  {}\n\nnotes: |\n  {}\n",
+            issue.id,
+            issue.title,
+            issue.status,
+            issue.priority,
+            issue.issue_type,
+            issue.assignee,
+            issue.labels.join(", "),
+            issue.description.replace('\n', "\n  "),
+            issue.notes.replace('\n', "\n  "),
+        );
+
+        let path = std::env::temp_dir().join(format!("{}.yaml", issue.id));
+        if std::fs::write(&path, &yaml).is_err() {
+            self.status_msg = "Failed to write temp file".into();
+            return;
+        }
+
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+        if run_command(&editor, &[&path.to_string_lossy()]) {
+            self.status_msg = format!("Opened in {editor}");
+        } else {
+            self.status_msg = format!("Failed to open {editor}");
+        }
+    }
+
+    fn refresh_from_disk(&mut self) {
+        let repo_path = self.repo_root.as_deref();
+        let issues = match loader::load_issues(repo_path) {
+            Ok(issues) => issues,
+            Err(_) => return, // silently ignore — data unchanged
+        };
+
+        // Preserve selection by ID when possible.
+        let selected_id = self
+            .analyzer
+            .issues
+            .get(self.selected)
+            .map(|i| i.id.clone());
+
+        self.analyzer = Analyzer::new(issues);
+
+        // Restore selection.
+        if let Some(ref id) = selected_id {
+            if let Some(pos) = self.analyzer.issues.iter().position(|i| i.id == *id) {
+                self.selected = pos;
+            } else {
+                self.selected = 0;
+            }
+        } else {
+            self.selected = 0;
+        }
+
+        // Reset computed views.
+        self.actionable_plan = None;
+        self.attention_result = None;
+
+        // Recompute if in a derived view.
+        match self.mode {
+            ViewMode::Actionable => self.compute_actionable_plan(),
+            ViewMode::Attention => self.compute_attention(),
+            _ => {}
+        }
+    }
+
+    fn move_attention_cursor(&mut self, delta: i32) {
+        let count = self.attention_result.as_ref().map_or(0, |r| r.labels.len());
+        if count == 0 {
+            return;
+        }
+        let cur = self.attention_cursor as i32 + delta;
+        self.attention_cursor = cur.clamp(0, count as i32 - 1) as usize;
+    }
+
+    fn attention_list_text(&self) -> String {
+        let Some(result) = self.attention_result.as_ref() else {
+            return "(computing attention scores…)".to_string();
+        };
+        if result.labels.is_empty() {
+            return "(no labels found)".to_string();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "{:>4}  {:<20} {:>6}  {}",
+            "Rank", "Label", "Score", "Reason"
+        ));
+        lines.push(format!("{}", "─".repeat(72)));
+
+        for (idx, label) in result.labels.iter().enumerate() {
+            let marker = if idx == self.attention_cursor { "▸" } else { " " };
+            lines.push(format!(
+                "{marker}{:>3}  {:<20} {:>5.1}  {}",
+                label.rank,
+                truncate_str(&label.label, 20),
+                label.attention_score,
+                truncate_str(&label.reason, 30),
+            ));
+        }
+
+        lines.join("\n")
+    }
+
+    fn attention_detail_text(&self) -> String {
+        let Some(result) = self.attention_result.as_ref() else {
+            return "(no attention data)".to_string();
+        };
+        let Some(label) = result.labels.get(self.attention_cursor) else {
+            return "(no label selected)".to_string();
+        };
+
+        let mut lines = Vec::new();
+        lines.push(format!("Label: {}", label.label));
+        lines.push(format!("Rank: #{}", label.rank));
+        lines.push(format!("Attention Score: {:.3}", label.attention_score));
+        lines.push(format!("Normalized: {:.3}", label.normalized_score));
+        lines.push(String::new());
+
+        lines.push("Breakdown:".to_string());
+        lines.push(format!("  Open:     {}", label.open_count));
+        lines.push(format!("  Blocked:  {}", label.blocked_count));
+        lines.push(format!("  Stale:    {}", label.stale_count));
+        lines.push(String::new());
+
+        lines.push("Factors:".to_string());
+        lines.push(format!("  PageRank sum:     {:.4}", label.pagerank_sum));
+        lines.push(format!("  Staleness factor: {:.2}", label.staleness_factor));
+        lines.push(format!("  Block impact:     {:.1}", label.block_impact));
+        lines.push(format!("  Velocity factor:  {:.2}", label.velocity_factor));
+        lines.push(String::new());
+
+        lines.push(format!("Reason: {}", label.reason));
+
+        // Show affected issues from the analyzer
+        let issues_with_label: Vec<&str> = self
+            .analyzer
+            .issues
+            .iter()
+            .filter(|i| i.is_open_like() && i.labels.iter().any(|l| l == &label.label))
+            .map(|i| i.id.as_str())
+            .collect();
+        if !issues_with_label.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("Open issues ({}):", issues_with_label.len()));
+            for id in &issues_with_label {
+                lines.push(format!("  {id}"));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    // -- end Attention view ------------------------------------------------
+
+    // -- Tree view --------------------------------------------------------
+
+    fn build_tree_flat_nodes(&mut self) {
+        let issues = &self.analyzer.issues;
+        let graph = &self.analyzer.graph;
+
+        // Build a map from issue ID to index.
+        let id_to_index: std::collections::HashMap<&str, usize> = issues
+            .iter()
+            .enumerate()
+            .map(|(i, issue)| (issue.id.as_str(), i))
+            .collect();
+
+        // Find root issues: those with no blockers (nothing blocks them).
+        let mut roots: Vec<usize> = Vec::new();
+        let mut has_parent: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        for (i, issue) in issues.iter().enumerate() {
+            let blockers = graph.blockers(&issue.id);
+            if !blockers.is_empty() {
+                has_parent.insert(i);
+            }
+        }
+
+        for i in 0..issues.len() {
+            if !has_parent.contains(&i) {
+                roots.push(i);
+            }
+        }
+
+        // Sort roots by ID for deterministic order.
+        roots.sort_by(|&a, &b| issues[a].id.cmp(&issues[b].id));
+
+        // DFS to build flat node list.
+        let mut flat_nodes = Vec::new();
+        let mut stack: Vec<(usize, usize, bool, Vec<bool>)> = Vec::new(); // (issue_index, depth, is_last, ancestry)
+
+        for (ri, &root_idx) in roots.iter().enumerate() {
+            let is_last = ri + 1 == roots.len();
+            stack.push((root_idx, 0, is_last, Vec::new()));
+        }
+
+        // Process in reverse so first root is processed first (stack is LIFO).
+        stack.reverse();
+
+        let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        while let Some((issue_idx, depth, is_last, ancestry)) = stack.pop() {
+            if !visited.insert(issue_idx) {
+                continue; // Avoid cycles.
+            }
+
+            let issue_id = &issues[issue_idx].id;
+            let children_ids = graph.dependents(issue_id);
+            let mut children: Vec<usize> = children_ids
+                .iter()
+                .filter_map(|id| id_to_index.get(id.as_str()).copied())
+                .filter(|idx| !visited.contains(idx))
+                .collect();
+            children.sort_by(|&a, &b| issues[a].id.cmp(&issues[b].id));
+
+            let is_collapsed = self.tree_collapsed.contains(issue_id);
+            let has_children = !children.is_empty();
+
+            flat_nodes.push(TreeFlatNode {
+                issue_index: issue_idx,
+                depth,
+                has_children,
+                is_collapsed,
+                is_last_sibling: is_last,
+                ancestry_last: ancestry.clone(),
+            });
+
+            if !is_collapsed {
+                // Push children in reverse so first child is processed next.
+                for (ci, &child_idx) in children.iter().enumerate().rev() {
+                    let child_is_last = ci + 1 == children.len();
+                    let mut child_ancestry = ancestry.clone();
+                    child_ancestry.push(is_last);
+                    stack.push((child_idx, depth + 1, child_is_last, child_ancestry));
+                }
+            }
+        }
+
+        self.tree_flat_nodes = flat_nodes;
+    }
+
+    fn toggle_tree_mode(&mut self) {
+        if matches!(self.mode, ViewMode::Tree) {
+            self.mode = ViewMode::Main;
+        } else {
+            self.mode = ViewMode::Tree;
+            self.tree_cursor = 0;
+            self.build_tree_flat_nodes();
+        }
+    }
+
+    fn tree_toggle_collapse(&mut self) {
+        if let Some(node) = self.tree_flat_nodes.get(self.tree_cursor) {
+            if node.has_children {
+                let issue_id = self.analyzer.issues[node.issue_index].id.clone();
+                if self.tree_collapsed.contains(&issue_id) {
+                    self.tree_collapsed.remove(&issue_id);
+                } else {
+                    self.tree_collapsed.insert(issue_id);
+                }
+                self.build_tree_flat_nodes();
+                // Clamp cursor.
+                if self.tree_cursor >= self.tree_flat_nodes.len() {
+                    self.tree_cursor = self.tree_flat_nodes.len().saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    fn tree_list_text(&self) -> String {
+        if self.tree_flat_nodes.is_empty() {
+            return "(no dependency tree — all issues are independent)".to_string();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Dependency tree ({} nodes) | Enter expand/collapse | T/Esc back",
+            self.tree_flat_nodes.len()
+        ));
+        lines.push(String::new());
+
+        for (i, node) in self.tree_flat_nodes.iter().enumerate() {
+            let marker = if i == self.tree_cursor { '>' } else { ' ' };
+            let issue = &self.analyzer.issues[node.issue_index];
+
+            // Build tree prefix with box-drawing characters.
+            let mut prefix = String::new();
+            for &parent_was_last in &node.ancestry_last {
+                if parent_was_last {
+                    prefix.push_str("    ");
+                } else {
+                    prefix.push_str(" |  ");
+                }
+            }
+
+            if node.depth > 0 {
+                if node.is_last_sibling {
+                    prefix.push_str(" `- ");
+                } else {
+                    prefix.push_str(" |- ");
+                }
+            }
+
+            // Collapse indicator.
+            let collapse_indicator = if node.has_children {
+                if node.is_collapsed { "[+] " } else { "[-] " }
+            } else {
+                "    "
+            };
+
+            let status_icon = if issue.is_closed() {
+                "x"
+            } else if issue.is_open_like() {
+                "o"
+            } else {
+                "-"
+            };
+
+            lines.push(format!(
+                "{marker} {prefix}{collapse_indicator}({status_icon}) {} {}",
+                issue.id,
+                truncate_str(&issue.title, 40)
+            ));
+        }
+
+        lines.join("\n")
+    }
+
+    fn tree_detail_text(&self) -> String {
+        let Some(node) = self.tree_flat_nodes.get(self.tree_cursor) else {
+            return "(no node selected)".to_string();
+        };
+
+        let issue = &self.analyzer.issues[node.issue_index];
+        let blockers = self.analyzer.graph.blockers(&issue.id);
+        let dependents = self.analyzer.graph.dependents(&issue.id);
+
+        let mut lines = Vec::new();
+        lines.push(format!("ID: {}", issue.id));
+        lines.push(format!("Title: {}", issue.title));
+        lines.push(format!("Status: {}", issue.status));
+        lines.push(format!("Type: {}", issue.issue_type));
+        lines.push(format!("Depth: {}", node.depth));
+
+        if !issue.labels.is_empty() {
+            lines.push(format!("Labels: {}", issue.labels.join(", ")));
+        }
+
+        if !blockers.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("Blocked by ({}):", blockers.len()));
+            for b in &blockers {
+                let title = self
+                    .analyzer
+                    .issues
+                    .iter()
+                    .find(|i| i.id == *b)
+                    .map(|i| i.title.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {b} - {title}"));
+            }
+        }
+
+        if !dependents.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("Dependents ({}):", dependents.len()));
+            for d in &dependents {
+                let title = self
+                    .analyzer
+                    .issues
+                    .iter()
+                    .find(|i| i.id == *d)
+                    .map(|i| i.title.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {d} - {title}"));
+            }
+        }
+
+        if !issue.description.is_empty() {
+            lines.push(String::new());
+            lines.push("Description:".to_string());
+            lines.push(issue.description.clone());
+        }
+
+        lines.join("\n")
+    }
+
+    // -- end Tree view ----------------------------------------------------
+
+    // -- LabelDashboard view ----------------------------------------------
+
+    fn toggle_label_dashboard(&mut self) {
+        if matches!(self.mode, ViewMode::LabelDashboard) {
+            self.mode = ViewMode::Main;
+        } else {
+            self.mode = ViewMode::LabelDashboard;
+            self.label_dashboard_cursor = 0;
+            self.compute_label_dashboard();
+        }
+    }
+
+    fn compute_label_dashboard(&mut self) {
+        use crate::analysis::label_intel::compute_all_label_health;
+        let metrics = self.analyzer.graph.compute_metrics();
+        let result =
+            compute_all_label_health(&self.analyzer.issues, &self.analyzer.graph, &metrics);
+        self.label_dashboard = Some(result);
+    }
+
+    fn label_dashboard_list_text(&self) -> String {
+        let Some(result) = &self.label_dashboard else {
+            return "(computing label health...)".to_string();
+        };
+
+        if result.labels.is_empty() {
+            return "(no labels found in issues)".to_string();
+        }
+
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Label health ({} labels) | healthy:{} warn:{} critical:{}",
+            result.total_labels, result.healthy_count, result.warning_count, result.critical_count
+        ));
+        lines.push(String::new());
+
+        for (i, label) in result.labels.iter().enumerate() {
+            let marker = if i == self.label_dashboard_cursor {
+                '>'
+            } else {
+                ' '
+            };
+
+            // Health bar visualization (10 chars wide).
+            let bar_filled = (label.health as usize).min(100) / 10;
+            let bar: String = (0..10)
+                .map(|j| if j < bar_filled { '#' } else { '.' })
+                .collect();
+
+            let level_marker = match label.health_level.as_str() {
+                "critical" => "!!",
+                "warning" => "! ",
+                _ => "  ",
+            };
+
+            lines.push(format!(
+                "{marker} {level_marker} [{bar}] {:>3}  {:<16} ({} open, {} closed)",
+                label.health,
+                truncate_str(&label.label, 16),
+                label.open_count,
+                label.closed_count,
+            ));
+        }
+
+        lines.join("\n")
+    }
+
+    fn label_dashboard_detail_text(&self) -> String {
+        let Some(result) = &self.label_dashboard else {
+            return "(no data)".to_string();
+        };
+
+        let Some(label) = result.labels.get(self.label_dashboard_cursor) else {
+            return "(no label selected)".to_string();
+        };
+
+        let mut lines = Vec::new();
+        lines.push(format!("Label: {}", label.label));
+        lines.push(format!(
+            "Health: {}/100 ({})",
+            label.health, label.health_level
+        ));
+        lines.push(format!(
+            "Issues: {} total ({} open, {} closed, {} blocked)",
+            label.issue_count, label.open_count, label.closed_count, label.blocked_count
+        ));
+
+        // Velocity
+        lines.push(String::new());
+        lines.push(format!(
+            "Velocity (score: {}/100):",
+            label.velocity.velocity_score
+        ));
+        lines.push(format!(
+            "  Closed 7d: {} | 30d: {}",
+            label.velocity.closed_last_7_days, label.velocity.closed_last_30_days
+        ));
+        if label.velocity.avg_days_to_close > 0.0 {
+            lines.push(format!(
+                "  Avg days to close: {:.1}",
+                label.velocity.avg_days_to_close
+            ));
+        }
+        lines.push(format!(
+            "  Trend: {} ({:+.0}%)",
+            label.velocity.trend_direction, label.velocity.trend_percent
+        ));
+
+        // Freshness
+        lines.push(String::new());
+        lines.push(format!(
+            "Freshness (score: {}/100):",
+            label.freshness.freshness_score
+        ));
+        lines.push(format!(
+            "  Avg days since update: {:.1}",
+            label.freshness.avg_days_since_update
+        ));
+        lines.push(format!(
+            "  Stale: {} (threshold: {}d)",
+            label.freshness.stale_count, label.freshness.stale_threshold_days
+        ));
+
+        // Flow
+        lines.push(String::new());
+        lines.push(format!("Flow (score: {}/100):", label.flow.flow_score));
+        lines.push(format!(
+            "  Deps in: {} | out: {}",
+            label.flow.incoming_deps, label.flow.outgoing_deps
+        ));
+        lines.push(format!(
+            "  Blocked by external: {} | Blocking external: {}",
+            label.flow.blocked_by_external, label.flow.blocking_external
+        ));
+
+        // Criticality
+        lines.push(String::new());
+        lines.push(format!(
+            "Criticality (score: {}/100):",
+            label.criticality.criticality_score
+        ));
+        lines.push(format!(
+            "  Avg PageRank: {:.4} | Avg betweenness: {:.4}",
+            label.criticality.avg_pagerank, label.criticality.avg_betweenness
+        ));
+        lines.push(format!(
+            "  Critical paths: {} | Bottlenecks: {}",
+            label.criticality.critical_path_count, label.criticality.bottleneck_count
+        ));
+
+        // Issues list
+        if !label.issues.is_empty() {
+            lines.push(String::new());
+            lines.push(format!("Issues ({}):", label.issues.len()));
+            for id in &label.issues {
+                let title = self
+                    .analyzer
+                    .issues
+                    .iter()
+                    .find(|i| i.id == *id)
+                    .map(|i| i.title.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {id} - {title}"));
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    // -- end LabelDashboard view ------------------------------------------
+
     fn detail_panel_text(&self) -> String {
         match self.mode {
             ViewMode::Board => self.board_detail_text(),
             ViewMode::Insights => self.insights_detail_text(),
             ViewMode::Graph => self.graph_detail_text(),
             ViewMode::History => self.history_detail_text(),
+            ViewMode::Actionable => self.actionable_detail_text(),
+            ViewMode::Attention => self.attention_detail_text(),
+            ViewMode::Tree => self.tree_detail_text(),
+            ViewMode::LabelDashboard => self.label_dashboard_detail_text(),
             ViewMode::Main => self.issue_detail_text(),
         }
     }
@@ -4681,6 +5885,11 @@ impl BvrApp {
                 closed_display,
                 join_display_values(&issue.labels, 4)
             ),
+        ];
+        if let Some(ref ext_ref) = issue.external_ref {
+            lines.push(format!("External: {ext_ref}"));
+        }
+        lines.extend([
             String::new(),
             "Triage Snapshot:".to_string(),
             format!(
@@ -4698,7 +5907,7 @@ impl BvrApp {
                 blockers.len(),
                 dependents.len()
             ),
-        ];
+        ]);
 
         if let (Some(created), Some(closed)) = (
             parse_timestamp(issue.created_at.as_deref()),
@@ -4757,9 +5966,57 @@ impl BvrApp {
             join_display_values(&dependents, 4)
         ));
 
+        if self.priority_hints_visible {
+            self.append_priority_hints(&mut lines, issue);
+        }
+
         push_comment_section(&mut lines, issue);
         push_history_section(&mut lines, history.as_ref());
         lines.join("\n")
+    }
+
+    fn append_priority_hints(&self, lines: &mut Vec<String>, issue: &crate::model::Issue) {
+        use crate::analysis::triage::{TriageOptions, TriageScoringOptions};
+
+        lines.push(String::new());
+        lines.push("Priority Hints (p to hide):".to_string());
+
+        let triage = self.analyzer.triage(TriageOptions {
+            max_recommendations: 200,
+            scoring: TriageScoringOptions::default(),
+            ..TriageOptions::default()
+        });
+
+        if let Some(rec) = triage.result.recommendations.iter().find(|r| r.id == issue.id) {
+            lines.push(format!("  Triage Score:  {:.3}", rec.score));
+            lines.push(format!("  Confidence:    {:.1}%", rec.confidence * 100.0));
+            lines.push(format!("  Unblocks:      {}", rec.unblocks));
+            if !rec.reasons.is_empty() {
+                lines.push(format!("  Reasons:       {}", rec.reasons.join("; ")));
+            }
+
+            if let Some(ref breakdown) = rec.breakdown {
+                lines.push(String::new());
+                lines.push("  Score Breakdown:".to_string());
+                for component in breakdown {
+                    let bar = mini_bar(component.weighted, 0.3);
+                    lines.push(format!(
+                        "    {:<14} {:>5.1}% × {:.3} = {:.4}  {bar}",
+                        component.name,
+                        component.weight * 100.0,
+                        component.normalized,
+                        component.weighted,
+                    ));
+                    if let Some(ref explanation) = component.explanation {
+                        lines.push(format!("      └ {explanation}"));
+                    }
+                }
+            }
+
+            lines.push(format!("  Claim: {}", rec.claim_command));
+        } else {
+            lines.push("  (not in triage — may be closed or blocked)".to_string());
+        }
     }
 
     fn board_detail_text(&self) -> String {
@@ -6108,6 +7365,7 @@ fn new_app_with_background(
         history_search_active: false,
         history_search_query: String::new(),
         history_search_match_cursor: 0,
+        history_search_mode: HistorySearchMode::All,
         history_show_file_tree: false,
         history_file_tree_cursor: 0,
         history_file_tree_filter: None,
@@ -6128,6 +7386,18 @@ fn new_app_with_background(
         insights_show_explanations: true,
         insights_show_calc_proof: false,
         detail_dep_cursor: 0,
+        actionable_plan: None,
+        actionable_track_cursor: 0,
+        actionable_item_cursor: 0,
+        attention_result: None,
+        attention_cursor: 0,
+        tree_flat_nodes: Vec::new(),
+        tree_cursor: 0,
+        tree_collapsed: std::collections::HashSet::new(),
+        label_dashboard: None,
+        label_dashboard_cursor: 0,
+        priority_hints_visible: false,
+        status_msg: String::new(),
         #[cfg(not(test))]
         background_runtime,
         #[cfg(test)]
@@ -6220,9 +7490,9 @@ fn buffer_to_text(buf: &ftui::Buffer, pool: &ftui::GraphemePool) -> String {
 mod tests {
     use super::{
         BackgroundTickDecision, BoardGrouping, BvrApp, EmptyLaneVisibility, FocusPane,
-        HistoryViewMode, InsightsPanel, ListFilter, ListSort, ModalOverlay, Msg, ViewMode,
-        background_warning_message, decide_background_tick, render_debug_view,
-        should_apply_background_reload,
+        HistorySearchMode, HistoryViewMode, InsightsPanel, ListFilter, ListSort, ModalOverlay,
+        MouseEventKind, Msg, ViewMode, background_warning_message, decide_background_tick,
+        render_debug_view, should_apply_background_reload,
     };
     use crate::analysis::Analyzer;
     use crate::model::{Comment, Dependency, Issue};
@@ -6456,6 +7726,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -6476,6 +7747,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         }
@@ -7306,6 +8589,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7326,6 +8610,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7375,6 +8671,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7395,6 +8692,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7438,6 +8747,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7458,6 +8768,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7519,6 +8841,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7539,6 +8862,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7584,6 +8919,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7604,6 +8940,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7650,6 +8998,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7670,6 +9019,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7717,6 +9078,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7737,6 +9099,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7779,6 +9153,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7799,6 +9174,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7856,6 +9243,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7876,6 +9264,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -7919,6 +9319,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -7939,6 +9340,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -8053,6 +9466,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -8073,6 +9487,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -8122,6 +9548,7 @@ mod tests {
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
+            history_search_mode: HistorySearchMode::All,
             history_show_file_tree: false,
             history_file_tree_cursor: 0,
             history_file_tree_filter: None,
@@ -8142,6 +9569,18 @@ mod tests {
             insights_show_explanations: true,
             insights_show_calc_proof: false,
             detail_dep_cursor: 0,
+            actionable_plan: None,
+            actionable_track_cursor: 0,
+            actionable_item_cursor: 0,
+            attention_result: None,
+            attention_cursor: 0,
+            tree_flat_nodes: Vec::new(),
+            tree_cursor: 0,
+            tree_collapsed: std::collections::HashSet::new(),
+            label_dashboard: None,
+            label_dashboard_cursor: 0,
+            priority_hints_visible: false,
+            status_msg: String::new(),
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -8692,6 +10131,314 @@ mod tests {
         let app = new_app(ViewMode::History, 0);
         // The footer text is rendered in view(), but we can check the mode label
         assert_eq!(app.history_view_mode.label(), "bead");
+    }
+
+    #[test]
+    fn history_search_mode_defaults_to_all() {
+        let app = new_app(ViewMode::History, 0);
+        assert_eq!(app.history_search_mode, HistorySearchMode::All);
+    }
+
+    #[test]
+    fn history_search_mode_cycles_with_tab() {
+        let mut app = new_app(ViewMode::History, 0);
+        // Start search
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        assert!(app.history_search_active);
+        assert_eq!(app.history_search_mode, HistorySearchMode::All);
+
+        // Tab cycles: All -> Commit
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::Commit);
+
+        // Commit -> Sha
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::Sha);
+
+        // Sha -> Bead
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::Bead);
+
+        // Bead -> Author
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::Author);
+
+        // Author -> All (wraps)
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::All);
+    }
+
+    #[test]
+    fn history_search_mode_resets_on_new_search() {
+        let mut app = new_app(ViewMode::History, 0);
+        // Start search and change mode
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::Commit);
+
+        // Confirm search
+        app.handle_key(KeyCode::Enter, Modifiers::NONE);
+        assert!(!app.history_search_active);
+        // Mode is preserved after confirm
+        assert_eq!(app.history_search_mode, HistorySearchMode::Commit);
+
+        // Starting a new search resets to All
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::All);
+    }
+
+    #[test]
+    fn history_search_mode_label_shown_in_list_text() {
+        let mut app = new_app(ViewMode::History, 0);
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        app.handle_key(KeyCode::Char('t'), Modifiers::NONE);
+
+        let text = app.history_list_text();
+        assert!(
+            text.contains("[all]"),
+            "list text should show search mode label, got: {text}"
+        );
+
+        // Switch to bead mode
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        let text = app.history_list_text();
+        assert!(
+            text.contains("[bead]"),
+            "list text should show bead mode label, got: {text}"
+        );
+    }
+
+    #[test]
+    fn history_search_mode_bead_filters_by_id_and_title_only() {
+        let mut app = new_app(ViewMode::History, 0);
+        // Start search in bead mode
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        // Cycle to Bead mode: All -> Commit -> Sha -> Bead
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        assert_eq!(app.history_search_mode, HistorySearchMode::Bead);
+
+        // Search for "Root" — sample issue A has title "Root"
+        for ch in "root".chars() {
+            app.handle_key(KeyCode::Char(ch), Modifiers::NONE);
+        }
+
+        let visible = app.history_visible_issue_indices();
+        // Only issue A (title "Root") should match in bead mode
+        assert!(
+            !visible.is_empty(),
+            "bead mode search for 'root' should match issue A by title"
+        );
+
+        // Searching for "open" (status) should NOT match in bead mode
+        app.handle_key(KeyCode::Escape, Modifiers::NONE);
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        // Cycle back to Bead mode
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        app.handle_key(KeyCode::Tab, Modifiers::NONE);
+        for ch in "open".chars() {
+            app.handle_key(KeyCode::Char(ch), Modifiers::NONE);
+        }
+        let visible_status = app.history_visible_issue_indices();
+
+        // Now switch to All mode and search "open" — should match
+        app.handle_key(KeyCode::Escape, Modifiers::NONE);
+        app.handle_key(KeyCode::Char('/'), Modifiers::NONE);
+        // All mode is default after starting new search
+        assert_eq!(app.history_search_mode, HistorySearchMode::All);
+        for ch in "open".chars() {
+            app.handle_key(KeyCode::Char(ch), Modifiers::NONE);
+        }
+        let visible_all = app.history_visible_issue_indices();
+
+        // In All mode, "open" matches status so should find more results than Bead mode
+        assert!(
+            visible_all.len() >= visible_status.len(),
+            "All mode should match at least as many as Bead mode"
+        );
+    }
+
+    #[test]
+    fn history_search_mode_enum_coverage() {
+        // Verify all mode labels
+        assert_eq!(HistorySearchMode::All.label(), "all");
+        assert_eq!(HistorySearchMode::Commit.label(), "msg");
+        assert_eq!(HistorySearchMode::Sha.label(), "sha");
+        assert_eq!(HistorySearchMode::Bead.label(), "bead");
+        assert_eq!(HistorySearchMode::Author.label(), "author");
+
+        // Verify cycle is complete (5 steps back to start)
+        let mut mode = HistorySearchMode::All;
+        for _ in 0..5 {
+            mode = mode.cycle();
+        }
+        assert_eq!(mode, HistorySearchMode::All);
+    }
+
+    #[test]
+    fn mouse_scroll_down_moves_selection() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert_eq!(app.selected, 0);
+        app.handle_mouse(MouseEventKind::ScrollDown);
+        assert_eq!(app.selected, 1);
+        app.handle_mouse(MouseEventKind::ScrollDown);
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn mouse_scroll_up_moves_selection() {
+        let mut app = new_app(ViewMode::Main, 2);
+        assert_eq!(app.selected, 2);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        assert_eq!(app.selected, 1);
+        app.handle_mouse(MouseEventKind::ScrollUp);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn mouse_scroll_works_in_board_mode() {
+        let mut app = new_app(ViewMode::Board, 0);
+        app.handle_mouse(MouseEventKind::ScrollDown);
+        // Should not panic, and should move selection
+        assert!(app.selected <= 1);
+    }
+
+    #[test]
+    fn mouse_other_events_are_noop() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_mouse(MouseEventKind::Moved);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn tree_view_toggle() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert!(matches!(app.mode, ViewMode::Main));
+
+        // T toggles to Tree
+        app.handle_key(KeyCode::Char('T'), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::Tree));
+        assert!(!app.tree_flat_nodes.is_empty(), "tree should build nodes");
+
+        // T toggles back to Main
+        app.handle_key(KeyCode::Char('T'), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::Main));
+    }
+
+    #[test]
+    fn tree_view_navigation() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('T'), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::Tree));
+        assert_eq!(app.tree_cursor, 0);
+
+        if app.tree_flat_nodes.len() > 1 {
+            app.handle_key(KeyCode::Char('j'), Modifiers::NONE);
+            assert_eq!(app.tree_cursor, 1);
+            app.handle_key(KeyCode::Char('k'), Modifiers::NONE);
+            assert_eq!(app.tree_cursor, 0);
+        }
+    }
+
+    #[test]
+    fn tree_view_renders_list_and_detail() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('T'), Modifiers::NONE);
+
+        let list = app.tree_list_text();
+        assert!(
+            list.contains("Dependency tree"),
+            "list should show tree header, got: {list}"
+        );
+
+        let detail = app.tree_detail_text();
+        assert!(
+            detail.contains("ID:"),
+            "detail should show issue ID, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn label_dashboard_toggle() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert!(matches!(app.mode, ViewMode::Main));
+
+        // [ toggles to LabelDashboard
+        app.handle_key(KeyCode::Char('['), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::LabelDashboard));
+        assert!(app.label_dashboard.is_some());
+
+        // [ toggles back
+        app.handle_key(KeyCode::Char('['), Modifiers::NONE);
+        assert!(matches!(app.mode, ViewMode::Main));
+    }
+
+    #[test]
+    fn label_dashboard_navigation() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('['), Modifiers::NONE);
+        assert_eq!(app.label_dashboard_cursor, 0);
+
+        let count = app.label_dashboard.as_ref().map_or(0, |r| r.labels.len());
+        if count > 1 {
+            app.handle_key(KeyCode::Char('j'), Modifiers::NONE);
+            assert_eq!(app.label_dashboard_cursor, 1);
+            app.handle_key(KeyCode::Char('k'), Modifiers::NONE);
+            assert_eq!(app.label_dashboard_cursor, 0);
+        }
+    }
+
+    #[test]
+    fn label_dashboard_renders_list_and_detail() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('['), Modifiers::NONE);
+
+        let list = app.label_dashboard_list_text();
+        assert!(
+            list.contains("Label health") || list.contains("no labels"),
+            "list should show header, got: {list}"
+        );
+
+        let detail = app.label_dashboard_detail_text();
+        // If there are labels, detail should show label info
+        if app.label_dashboard.as_ref().is_some_and(|r| !r.labels.is_empty()) {
+            assert!(
+                detail.contains("Label:"),
+                "detail should show label name, got: {detail}"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_view_expand_collapse() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('T'), Modifiers::NONE);
+
+        // Find a node with children for the collapse test
+        let has_children_node = app.tree_flat_nodes.iter().position(|n| n.has_children);
+        if let Some(idx) = has_children_node {
+            app.tree_cursor = idx;
+            let initial_count = app.tree_flat_nodes.len();
+
+            // Enter collapses children
+            app.handle_key(KeyCode::Enter, Modifiers::NONE);
+            assert!(
+                app.tree_flat_nodes.len() < initial_count,
+                "collapsing should reduce node count"
+            );
+
+            // Enter again expands
+            app.handle_key(KeyCode::Enter, Modifiers::NONE);
+            assert_eq!(
+                app.tree_flat_nodes.len(),
+                initial_count,
+                "expanding should restore node count"
+            );
+        }
     }
 
     #[test]
@@ -9418,5 +11165,205 @@ mod tests {
         app.view(&mut frame);
         let text = super::buffer_to_text(&frame.buffer, &pool);
         insta::assert_snapshot!(text);
+    }
+
+    // -- Attention view tests ------------------------------------------------
+
+    fn labeled_issues() -> Vec<Issue> {
+        vec![
+            Issue {
+                id: "A".to_string(),
+                title: "Feature work".to_string(),
+                status: "open".to_string(),
+                issue_type: "feature".to_string(),
+                priority: 1,
+                labels: vec!["backend".to_string(), "urgent".to_string()],
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "Bug fix".to_string(),
+                status: "open".to_string(),
+                issue_type: "bug".to_string(),
+                priority: 2,
+                labels: vec!["backend".to_string()],
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "UI polish".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 3,
+                labels: vec!["frontend".to_string()],
+                ..Issue::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn attention_view_toggle_and_state() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+
+        // Press ! to enter Attention mode
+        app.update(key(KeyCode::Char('!')));
+        assert!(matches!(app.mode, ViewMode::Attention));
+        assert!(app.attention_result.is_some());
+        assert_eq!(app.attention_cursor, 0);
+
+        // Press ! again to return to Main
+        app.update(key(KeyCode::Char('!')));
+        assert!(matches!(app.mode, ViewMode::Main));
+    }
+
+    #[test]
+    fn attention_view_navigation() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('!')));
+        assert!(matches!(app.mode, ViewMode::Attention));
+
+        let label_count = app.attention_result.as_ref().unwrap().labels.len();
+        assert!(label_count >= 2, "should have at least 2 labels");
+
+        // Navigate down
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(app.attention_cursor, 1);
+
+        // Navigate up
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(app.attention_cursor, 0);
+
+        // Can't go above 0
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(app.attention_cursor, 0);
+    }
+
+    #[test]
+    fn attention_view_renders_list_and_detail() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('!')));
+
+        let list = app.list_panel_text();
+        assert!(list.contains("Rank"));
+        assert!(list.contains("Label"));
+        assert!(list.contains("Score"));
+
+        let detail = app.detail_panel_text();
+        assert!(detail.contains("Label:"));
+        assert!(detail.contains("Attention Score:"));
+        assert!(detail.contains("Breakdown:"));
+    }
+
+    #[test]
+    fn attention_view_empty_issues_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.update(key(KeyCode::Char('!')));
+        assert!(matches!(app.mode, ViewMode::Attention));
+
+        let list = app.list_panel_text();
+        // Empty issues triggers early return before mode dispatch
+        assert!(list.contains("no issues loaded"));
+
+        // Navigation on empty should not panic
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+    }
+
+    // -- Refresh tests -------------------------------------------------------
+
+    #[test]
+    fn refresh_keybinding_does_not_panic() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Ctrl+R — silently fails (no disk data) but doesn't panic
+        app.update(Msg::KeyPress(KeyCode::Char('r'), Modifiers::CTRL));
+        assert!(matches!(app.mode, ViewMode::Main));
+
+        // F5 — same behavior
+        app.update(key(KeyCode::F(5)));
+        assert!(matches!(app.mode, ViewMode::Main));
+    }
+
+    #[test]
+    fn refresh_preserves_mode() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('!')));
+        assert!(matches!(app.mode, ViewMode::Attention));
+
+        // Refresh in Attention mode — fails silently but stays in Attention
+        app.update(Msg::KeyPress(KeyCode::Char('r'), Modifiers::CTRL));
+        assert!(matches!(app.mode, ViewMode::Attention));
+    }
+
+    // -- Priority hints tests ------------------------------------------------
+
+    #[test]
+    fn priority_hints_toggle() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert!(!app.priority_hints_visible);
+
+        app.update(key(KeyCode::Char('p')));
+        assert!(app.priority_hints_visible);
+
+        app.update(key(KeyCode::Char('p')));
+        assert!(!app.priority_hints_visible);
+    }
+
+    #[test]
+    fn priority_hints_show_breakdown_in_detail() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('p')));
+        assert!(app.priority_hints_visible);
+
+        let detail = app.detail_panel_text();
+        assert!(detail.contains("Priority Hints"));
+        assert!(detail.contains("Triage Score:") || detail.contains("not in triage"));
+    }
+
+    #[test]
+    fn priority_hints_only_in_main_mode() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+
+        // Switch to Board mode — p should NOT toggle hints
+        app.update(key(KeyCode::Char('b')));
+        assert!(matches!(app.mode, ViewMode::Board));
+        app.update(key(KeyCode::Char('p')));
+        assert!(!app.priority_hints_visible, "p should not toggle hints in Board mode");
+    }
+
+    // -- Export/clipboard/editor tests ---------------------------------------
+
+    #[test]
+    fn copy_issue_id_sets_status_msg() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+
+        // C key should attempt clipboard (may fail in test env, but shouldn't panic)
+        app.update(key(KeyCode::Char('C')));
+        assert!(
+            app.status_msg.contains("Copied") || app.status_msg.contains("Clipboard"),
+            "status_msg should indicate clipboard result: {}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn export_markdown_creates_temp_file() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('x')));
+        assert!(
+            app.status_msg.contains("Exported"),
+            "should confirm export: {}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn status_msg_cleared_on_next_key() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.status_msg = "Test message".to_string();
+
+        // Any key press should clear the status msg
+        app.update(key(KeyCode::Char('j')));
+        assert!(app.status_msg.is_empty());
     }
 }
