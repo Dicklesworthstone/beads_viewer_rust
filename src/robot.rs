@@ -49,7 +49,10 @@ pub fn compute_data_hash(issues: &[Issue]) -> String {
                 issue.id.clone(),
                 issue.status.clone(),
                 issue.priority,
-                issue.updated_at.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
+                issue
+                    .updated_at
+                    .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                    .unwrap_or_default(),
             )
         })
         .collect::<Vec<_>>();

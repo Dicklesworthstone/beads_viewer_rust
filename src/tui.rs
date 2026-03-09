@@ -1297,8 +1297,10 @@ impl Model for BvrApp {
             }
             ViewMode::FlowMatrix => {
                 let label_count = self.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
-                let dep_count =
-                    self.flow_matrix.as_ref().map_or(0, |f| f.total_cross_label_deps);
+                let dep_count = self
+                    .flow_matrix
+                    .as_ref()
+                    .map_or(0, |f| f.total_cross_label_deps);
                 format!(
                     "Flow: {label_count} labels, {dep_count} cross-deps | j/k rows | h/l cols | Tab focus | ]/Esc back"
                 )
@@ -3286,7 +3288,7 @@ impl BvrApp {
                     || event.event_details.to_ascii_lowercase().contains(&query)
                     || event
                         .event_timestamp
-                        .map(|dt| dt.to_rfc3339().to_ascii_lowercase())
+                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true).to_ascii_lowercase())
                         .is_some_and(|timestamp| timestamp.contains(&query))
             })
             .collect()
@@ -3353,18 +3355,14 @@ impl BvrApp {
                             .then_with(|| left_issue.priority.cmp(&right_issue.priority))
                             .then_with(|| left_issue.id.cmp(&right_issue.id))
                     }
-                    ListSort::CreatedAsc => cmp_opt_datetime(
-                        left_issue.created_at,
-                        right_issue.created_at,
-                        false,
-                    )
-                    .then_with(|| left_issue.id.cmp(&right_issue.id)),
-                    ListSort::CreatedDesc => cmp_opt_datetime(
-                        left_issue.created_at,
-                        right_issue.created_at,
-                        true,
-                    )
-                    .then_with(|| left_issue.id.cmp(&right_issue.id)),
+                    ListSort::CreatedAsc => {
+                        cmp_opt_datetime(left_issue.created_at, right_issue.created_at, false)
+                            .then_with(|| left_issue.id.cmp(&right_issue.id))
+                    }
+                    ListSort::CreatedDesc => {
+                        cmp_opt_datetime(left_issue.created_at, right_issue.created_at, true)
+                            .then_with(|| left_issue.id.cmp(&right_issue.id))
+                    }
                     ListSort::Priority => left_issue
                         .priority
                         .cmp(&right_issue.priority)
@@ -5871,8 +5869,12 @@ impl BvrApp {
         }
 
         let labels = &flow.labels;
-        let row = self.flow_matrix_row_cursor.min(labels.len().saturating_sub(1));
-        let col = self.flow_matrix_col_cursor.min(labels.len().saturating_sub(1));
+        let row = self
+            .flow_matrix_row_cursor
+            .min(labels.len().saturating_sub(1));
+        let col = self
+            .flow_matrix_col_cursor
+            .min(labels.len().saturating_sub(1));
         let from_label = &labels[row];
         let to_label = &labels[col];
 
@@ -7072,7 +7074,7 @@ impl BvrApp {
                 for (idx, event) in history.events.into_iter().enumerate() {
                     let ts = event
                         .timestamp
-                        .map(|dt| dt.to_rfc3339())
+                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
                         .unwrap_or_else(|| "n/a".to_string());
                     let icon = lifecycle_icon(&event.kind);
                     let connector = if idx + 1 < event_count {
@@ -7478,11 +7480,6 @@ fn top_metric_entries(
     });
     entries.truncate(limit);
     entries
-}
-
-fn parse_timestamp(raw: Option<&str>) -> Option<DateTime<Utc>> {
-    raw.and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
 }
 
 fn cmp_opt_datetime(
@@ -10753,10 +10750,7 @@ mod tests {
 
         let detail = app.flow_matrix_detail_text();
         // Detail should have some content
-        assert!(
-            !detail.is_empty(),
-            "detail should not be empty"
-        );
+        assert!(!detail.is_empty(), "detail should not be empty");
     }
 
     #[test]

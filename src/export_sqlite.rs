@@ -247,10 +247,10 @@ fn insert_issues(tx: &Transaction<'_>, issues: &[Issue]) -> Result<()> {
     for issue in sorted {
         let labels = serde_json::to_string(&issue.labels)?;
         let source_repo = normalized_source_repo(issue);
-        let created_at = issue.created_at.map(|dt| dt.to_rfc3339());
-        let updated_at = issue.updated_at.map(|dt| dt.to_rfc3339());
-        let due_date = issue.due_date.map(|dt| dt.to_rfc3339());
-        let closed_at = issue.closed_at.map(|dt| dt.to_rfc3339());
+        let created_at = issue.created_at.map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        let updated_at = issue.updated_at.map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        let due_date = issue.due_date.map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        let closed_at = issue.closed_at.map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
         stmt.execute(params![
             issue.id.as_str(),
             issue.title.as_str(),
@@ -487,7 +487,7 @@ fn collect_dependency_rows(issues: &[Issue]) -> Vec<ExportDependencyRow> {
                 depends_on_id: dep.depends_on_id.clone(),
                 dep_type: dep.dep_type.clone(),
                 created_by: dep.created_by.clone(),
-                created_at: dep.created_at.map(|dt| dt.to_rfc3339()),
+                created_at: dep.created_at.map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             });
         }
     }
@@ -514,7 +514,7 @@ fn collect_comment_rows(issues: &[Issue]) -> Vec<ExportCommentRow> {
                 issue_id: issue.id.clone(),
                 author: comment.author.clone(),
                 text: comment.text.clone(),
-                created_at: comment.created_at.map(|dt| dt.to_rfc3339()),
+                created_at: comment.created_at.map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             });
         }
     }

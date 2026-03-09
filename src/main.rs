@@ -1803,6 +1803,13 @@ struct EarlyCommandOutcome {
     to_stderr: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IssueLoadTarget {
+    BeadsFile(PathBuf),
+    WorkspaceConfig(PathBuf),
+    RepoPath(Option<PathBuf>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundModeSource {
     CliFlag,
@@ -1870,13 +1877,127 @@ fn build_background_mode_config(
         .filter(|value| *value > 0)
         .unwrap_or(bvr::tui::BackgroundModeConfig::DEFAULT_POLL_INTERVAL_MS);
 
+    let load_target = match resolve_issue_load_target(cli) {
+        Ok(load_target) => load_target,
+        Err(error) => {
+            eprintln!("warning: background mode disabled: {error}");
+            return None;
+        }
+    };
+
+    let (beads_file, workspace_config, repo_path) = match load_target {
+        IssueLoadTarget::BeadsFile(path) => (Some(path), None, None),
+        IssueLoadTarget::WorkspaceConfig(path) => (None, Some(path), None),
+        IssueLoadTarget::RepoPath(path) => (None, None, path),
+    };
+
     Some(bvr::tui::BackgroundModeConfig {
-        beads_file: cli.beads_file.clone(),
-        workspace_config: cli.workspace.as_deref().map(resolve_workspace_config_path),
-        repo_path: cli.repo_path.clone(),
+        beads_file,
+        workspace_config,
+        repo_path,
         repo_filter: cli.repo.clone(),
         poll_interval_ms,
     })
+}
+
+fn workspace_discovery_start_points(cli: &Cli) -> Vec<PathBuf> {
+    let mut starts = Vec::<PathBuf>::new();
+    if let Some(path) = cli.repo_path.clone() {
+        starts.push(path);
+    }
+    if let Ok(path) = std::env::current_dir()
+        && !starts.iter().any(|existing| existing == &path)
+    {
+        starts.push(path);
+    }
+    if starts.is_empty() {
+        starts.push(PathBuf::from("."));
+    }
+    starts
+}
+
+fn format_path_list(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| format!("  - {}", path.display()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn discover_workspace_config_for_cli(cli: &Cli) -> bvr::Result<Option<PathBuf>> {
+    if cli.workspace.is_some() || cli.beads_file.is_some() {
+        return Ok(None);
+    }
+
+    let starts = workspace_discovery_start_points(cli);
+    let mut candidates = Vec::<PathBuf>::new();
+    for start in &starts {
+        if let Some(candidate) = loader::find_workspace_config_from(start)
+            && !candidates.iter().any(|existing| existing == &candidate)
+        {
+            candidates.push(candidate);
+        }
+    }
+
+    if candidates.len() > 1 {
+        return Err(bvr::BvrError::InvalidArgument(format!(
+            "workspace auto-discovery is ambiguous.\n\
+             Searched for {} from:\n{}\n\
+             Candidates:\n{}\n\
+             Remediation:\n\
+               1. Re-run with --workspace <path-to-.bv/workspace.yaml>.\n\
+               2. Or re-run with --beads-file <path-to-issues.jsonl> to bypass workspace aggregation.",
+            loader::WORKSPACE_CONFIG_PATH,
+            format_path_list(&starts),
+            format_path_list(&candidates),
+        )));
+    }
+
+    Ok(candidates.into_iter().next())
+}
+
+fn resolve_issue_load_target(cli: &Cli) -> bvr::Result<IssueLoadTarget> {
+    if let Some(path) = &cli.beads_file {
+        return Ok(IssueLoadTarget::BeadsFile(path.clone()));
+    }
+
+    if let Some(path) = &cli.workspace {
+        return Ok(IssueLoadTarget::WorkspaceConfig(
+            resolve_workspace_config_path(path),
+        ));
+    }
+
+    if let Some(path) = discover_workspace_config_for_cli(cli)? {
+        return Ok(IssueLoadTarget::WorkspaceConfig(path));
+    }
+
+    Ok(IssueLoadTarget::RepoPath(cli.repo_path.clone()))
+}
+
+fn with_workspace_discovery_guidance(cli: &Cli, error: bvr::BvrError) -> bvr::BvrError {
+    if cli.workspace.is_some() || cli.beads_file.is_some() {
+        return error;
+    }
+
+    let error_message = error.to_string();
+    match error {
+        bvr::BvrError::MissingBeadsDir(_) | bvr::BvrError::MissingBeadsFile(_) => {
+            let starts = workspace_discovery_start_points(cli);
+            bvr::BvrError::InvalidArgument(format!(
+                "no workspace config or single-repo beads data could be resolved.\n\
+                 Searched for {} from:\n{}\n\
+                 Workspace candidates: none\n\
+                 Single-repo fallback error: {error_message}\n\
+                 Remediation:\n\
+                   1. Re-run with --workspace <path-to-.bv/workspace.yaml>.\n\
+                   2. Or re-run with --beads-file <path-to-issues.jsonl>.\n\
+                   3. Or run from a repository/workspace containing .beads or .bv/workspace.yaml.",
+                loader::WORKSPACE_CONFIG_PATH,
+                format_path_list(&starts),
+            ))
+        }
+        _ => error,
+    }
 }
 
 fn parse_background_mode_bool(raw: &str) -> Option<bool> {
@@ -1986,15 +2107,12 @@ fn load_issues(cli: &Cli) -> bvr::Result<Vec<bvr::model::Issue>> {
         return load_issues_at_revision(cli, ref_name);
     }
 
-    if let Some(path) = &cli.beads_file {
-        return loader::load_issues_from_file(path);
+    match resolve_issue_load_target(cli)? {
+        IssueLoadTarget::BeadsFile(path) => loader::load_issues_from_file(&path),
+        IssueLoadTarget::WorkspaceConfig(path) => loader::load_workspace_issues(&path),
+        IssueLoadTarget::RepoPath(repo_path) => loader::load_issues(repo_path.as_deref())
+            .map_err(|error| with_workspace_discovery_guidance(cli, error)),
     }
-
-    if let Some(path) = &cli.workspace {
-        return loader::load_workspace_issues(&resolve_workspace_config_path(path));
-    }
-
-    loader::load_issues(cli.repo_path.as_deref())
 }
 
 fn count_pages_export_issues(
@@ -2009,17 +2127,17 @@ fn count_pages_export_issues(
 }
 
 fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
-    if let Some(path) = &cli.beads_file {
-        return Ok(vec![path.clone()]);
+    match resolve_issue_load_target(cli)? {
+        IssueLoadTarget::BeadsFile(path) => Ok(vec![path]),
+        IssueLoadTarget::WorkspaceConfig(path) => loader::find_workspace_issue_paths(&path),
+        IssueLoadTarget::RepoPath(repo_path) => {
+            let beads_dir = loader::get_beads_dir(repo_path.as_deref())
+                .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
+            let beads_path = loader::find_jsonl_path(&beads_dir)
+                .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
+            Ok(vec![beads_path])
+        }
     }
-
-    if let Some(path) = &cli.workspace {
-        return loader::find_workspace_issue_paths(&resolve_workspace_config_path(path));
-    }
-
-    let beads_dir = loader::get_beads_dir(cli.repo_path.as_deref())?;
-    let beads_path = loader::find_jsonl_path(&beads_dir)?;
-    Ok(vec![beads_path])
 }
 
 fn file_mtime_epoch_millis(path: &Path) -> bvr::Result<u64> {
@@ -2288,7 +2406,7 @@ fn build_robot_history_output(
                     event_type: event.kind.clone(),
                     timestamp: event
                         .timestamp
-                        .map(|dt| dt.to_rfc3339())
+                        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
                         .unwrap_or_default(),
                     commit_sha: String::new(),
                     commit_message: event.details.clone(),
@@ -5088,10 +5206,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BackgroundModeSource, Cli, build_background_mode_config, filter_by_repo,
+        BackgroundModeSource, Cli, IssueLoadTarget, build_background_mode_config, filter_by_repo,
         generate_daily_burndown_points, handle_operational_commands, parse_background_mode_bool,
         parse_scope_git_header_line, resolve_background_mode, resolve_git_toplevel,
-        resolve_reference_file_path, resolve_workspace_config_path,
+        resolve_issue_load_target, resolve_reference_file_path, resolve_workspace_config_path,
     };
 
     #[test]
@@ -5195,6 +5313,67 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let resolved = resolve_workspace_config_path(dir.path());
         assert!(resolved.ends_with(".bv/workspace.yaml"));
+    }
+
+    #[test]
+    fn resolve_issue_load_target_discovers_workspace_from_repo_path() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let workspace_dir = root.join(".bv");
+        let nested = root.join("services/api/src");
+        fs::create_dir_all(&workspace_dir).expect("create .bv");
+        fs::create_dir_all(&nested).expect("create nested");
+        let config_path = workspace_dir.join("workspace.yaml");
+        fs::write(&config_path, "repos:\n  - path: services/api\n").expect("write workspace");
+
+        let nested_arg = nested.to_string_lossy().to_string();
+        let cli = Cli::parse_from(["bvr", "--repo-path", &nested_arg]);
+
+        let target = resolve_issue_load_target(&cli).expect("resolve issue load target");
+        assert_eq!(target, IssueLoadTarget::WorkspaceConfig(config_path));
+    }
+
+    #[test]
+    fn resolve_issue_load_target_prefers_explicit_workspace_over_discovery() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+
+        let explicit_root = root.join("explicit");
+        let discovered_root = root.join("discovered");
+        let explicit_workspace = explicit_root.join(".bv");
+        let discovered_workspace = discovered_root.join(".bv");
+        let nested = discovered_root.join("services/api");
+
+        fs::create_dir_all(&explicit_workspace).expect("create explicit .bv");
+        fs::create_dir_all(&discovered_workspace).expect("create discovered .bv");
+        fs::create_dir_all(&nested).expect("create nested");
+
+        fs::write(
+            explicit_workspace.join("workspace.yaml"),
+            "repos:\n  - path: services/api\n",
+        )
+        .expect("write explicit workspace");
+        fs::write(
+            discovered_workspace.join("workspace.yaml"),
+            "repos:\n  - path: services/api\n",
+        )
+        .expect("write discovered workspace");
+
+        let explicit_arg = explicit_root.to_string_lossy().to_string();
+        let nested_arg = nested.to_string_lossy().to_string();
+        let cli = Cli::parse_from([
+            "bvr",
+            "--workspace",
+            &explicit_arg,
+            "--repo-path",
+            &nested_arg,
+        ]);
+
+        let target = resolve_issue_load_target(&cli).expect("resolve issue load target");
+        assert_eq!(
+            target,
+            IssueLoadTarget::WorkspaceConfig(explicit_workspace.join("workspace.yaml"))
+        );
     }
 
     #[test]
@@ -5305,6 +5484,47 @@ mod tests {
                 .ends_with(".bv/workspace.yaml")
         );
         assert!(config.poll_interval_ms > 0);
+    }
+
+    #[test]
+    fn build_background_mode_config_discovers_workspace_without_flag() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        let workspace_dir = root.join(".bv");
+        let nested = root.join("services/api");
+        fs::create_dir_all(&workspace_dir).expect("create .bv");
+        fs::create_dir_all(&nested).expect("create nested");
+        fs::write(
+            workspace_dir.join("workspace.yaml"),
+            "repos:\n  - path: services/api\n",
+        )
+        .expect("write workspace");
+
+        let nested_arg = nested.to_string_lossy().to_string();
+        let cli = Cli::parse_from(["bvr", "--background-mode", "--repo-path", &nested_arg]);
+        let config = build_background_mode_config(&cli, true).expect("background config");
+
+        assert_eq!(config.beads_file, None);
+        assert_eq!(config.repo_path, None);
+        assert_eq!(
+            config.workspace_config,
+            Some(workspace_dir.join("workspace.yaml"))
+        );
+    }
+
+    #[test]
+    fn load_issues_reports_workspace_search_guidance_when_no_sources_exist() {
+        let temp = tempdir().expect("tempdir");
+        let empty_root = temp.path().join("empty");
+        fs::create_dir_all(&empty_root).expect("create empty root");
+        let empty_arg = empty_root.to_string_lossy().to_string();
+        let cli = Cli::parse_from(["bvr", "--repo-path", &empty_arg]);
+
+        let error = super::load_issues(&cli).expect_err("missing sources");
+        let message = error.to_string();
+        assert!(message.contains("Searched for .bv/workspace.yaml"));
+        assert!(message.contains("--workspace"));
+        assert!(message.contains("--beads-file"));
     }
 
     #[test]
