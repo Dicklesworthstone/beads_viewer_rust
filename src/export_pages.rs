@@ -639,7 +639,16 @@ fn install_preview_signal_handlers() -> Result<Arc<AtomicBool>> {
     Ok(shutdown_requested)
 }
 
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 fn render_index_html(title: &str, include_history: bool) -> String {
+    let title = escape_html(title);
     format!(
         r#"<!doctype html>
 <html lang="en">
