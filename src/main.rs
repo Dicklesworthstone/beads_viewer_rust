@@ -267,14 +267,14 @@ fn main() -> ExitCode {
     };
 
     // Load feedback adjustments for triage scoring (persisted from --feedback-accept/ignore).
-    let feedback_weight_adjustments = {
+    let feedback_data = {
         let work_dir = cli
             .workspace
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let feedback = bvr::analysis::recipe::FeedbackData::load(&work_dir);
-        feedback.weight_adjustment_map()
+        bvr::analysis::recipe::FeedbackData::load(&work_dir)
     };
+    let feedback_weight_adjustments = feedback_data.weight_adjustment_map();
 
     if cli.robot_next || cli.robot_triage || cli.robot_triage_by_track || cli.robot_triage_by_label
     {
@@ -328,11 +328,20 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
 
+        let feedback_stats = {
+            let stats = feedback_data.stats();
+            if stats.total_accepted > 0 || stats.total_ignored > 0 {
+                Some(stats)
+            } else {
+                None
+            }
+        };
         let output = RobotTriageOutput {
             envelope: envelope(&issues),
             as_of: as_of.clone(),
             as_of_commit: as_of_commit.clone(),
             triage: triage.result,
+            feedback: feedback_stats,
             usage_hints: vec![
                 "jq '.triage.quick_ref.top_picks[:3]'".to_string(),
                 "jq '.triage.blockers_to_clear | map(.id)'".to_string(),
@@ -1192,7 +1201,8 @@ fn main() -> ExitCode {
             let result = bvr::analysis::file_intel::find_related_work(
                 bead_id,
                 &history_output.histories_map,
-                cli.related_limit,
+                cli.related_min_relevance,
+                cli.related_max_results,
             );
             let output = bvr::analysis::file_intel::RobotRelatedWorkOutput {
                 envelope: envelope(&issues),
@@ -4489,6 +4499,8 @@ struct RobotTriageOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     as_of_commit: Option<String>,
     triage: bvr::analysis::triage::TriageResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feedback: Option<bvr::analysis::recipe::FeedbackStats>,
     usage_hints: Vec<String>,
 }
 

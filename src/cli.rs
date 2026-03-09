@@ -288,8 +288,11 @@ pub struct Cli {
     #[arg(long)]
     pub robot_related: Option<String>,
 
+    #[arg(long, default_value_t = 20)]
+    pub related_min_relevance: u32,
+
     #[arg(long, default_value_t = 10)]
-    pub related_limit: usize,
+    pub related_max_results: usize,
 
     #[arg(long)]
     pub robot_blocker_chain: Option<String>,

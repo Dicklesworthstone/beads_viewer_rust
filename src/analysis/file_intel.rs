@@ -800,7 +800,8 @@ pub struct RelatedWorkResult {
 pub fn find_related_work(
     bead_id: &str,
     histories: &BTreeMap<String, HistoryBeadCompat>,
-    limit: usize,
+    min_relevance: u32,
+    max_results: usize,
 ) -> RelatedWorkResult {
     let Some(source) = histories.get(bead_id) else {
         return RelatedWorkResult {
@@ -864,8 +865,13 @@ pub fn find_related_work(
             .then_with(|| a.bead_id.cmp(&b.bead_id))
     });
 
-    if limit > 0 {
-        related.truncate(limit);
+    if min_relevance > 0 {
+        let threshold = f64::from(min_relevance);
+        related.retain(|r| r.relevance >= threshold);
+    }
+
+    if max_results > 0 {
+        related.truncate(max_results);
     }
 
     RelatedWorkResult {
@@ -1292,7 +1298,7 @@ mod tests {
             make_history("bd-3", "open", &["unrelated.rs"]),
         );
 
-        let result = find_related_work("bd-1", &histories, 10);
+        let result = find_related_work("bd-1", &histories, 0, 10);
 
         assert_eq!(result.source_bead, "bd-1");
         assert_eq!(result.related.len(), 1); // Only bd-2 shares files
@@ -1303,7 +1309,7 @@ mod tests {
     #[test]
     fn related_work_missing_bead() {
         let histories = BTreeMap::new();
-        let result = find_related_work("nonexistent", &histories, 10);
+        let result = find_related_work("nonexistent", &histories, 0, 10);
         assert!(result.related.is_empty());
     }
 }

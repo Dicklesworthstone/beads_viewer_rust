@@ -102,6 +102,7 @@ fn bench_triage(c: &mut Criterion) {
         group_by_track: true,
         group_by_label: true,
         max_recommendations: 50,
+        ..TriageOptions::default()
     };
 
     for &size in &[100, 500, 1000] {
@@ -142,6 +143,7 @@ fn bench_plan(c: &mut Criterion) {
             group_by_track: false,
             group_by_label: false,
             max_recommendations: 50,
+            ..TriageOptions::default()
         };
         let triage = analyzer.triage(opts);
         let scores: HashMap<String, f64> = triage
@@ -265,6 +267,7 @@ fn bench_real_fixture(c: &mut Criterion) {
                 group_by_track: true,
                 group_by_label: true,
                 max_recommendations: 50,
+                ..TriageOptions::default()
             }))
         });
     });
