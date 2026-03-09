@@ -4149,6 +4149,8 @@ impl BvrApp {
                     ("g", "Toggle graph mode"),
                     ("h", "Toggle history mode"),
                     ("!", "Toggle attention mode"),
+                    ("T", "Toggle tree view"),
+                    ("[", "Toggle label dashboard"),
                     ("v", "History: bead/git toggle"),
                 ],
             },
