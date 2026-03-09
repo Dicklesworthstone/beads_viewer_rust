@@ -556,8 +556,8 @@ fn calculate_metric_deltas(inputs: MetricDeltaInputs<'_>) -> MetricDeltas {
             - i64::try_from(before_counts.total).unwrap_or(i64::MAX),
         open_issues: i64::try_from(after_counts.open).unwrap_or(i64::MAX)
             - i64::try_from(before_counts.open).unwrap_or(i64::MAX),
-        closed_issues: i64::try_from(after_counts.closed).unwrap_or(i64::MAX)
-            - i64::try_from(before_counts.closed).unwrap_or(i64::MAX),
+        closed_issues: i64::try_from(after_counts.terminal()).unwrap_or(i64::MAX)
+            - i64::try_from(before_counts.terminal()).unwrap_or(i64::MAX),
         blocked_issues: i64::try_from(after_counts.blocked).unwrap_or(i64::MAX)
             - i64::try_from(before_counts.blocked).unwrap_or(i64::MAX),
         total_edges: i64::try_from(inputs.to_edge_count).unwrap_or(i64::MAX)
@@ -578,7 +578,14 @@ struct SnapshotCounts {
     total: usize,
     open: usize,
     closed: usize,
+    tombstone: usize,
     blocked: usize,
+}
+
+impl SnapshotCounts {
+    fn terminal(&self) -> usize {
+        self.closed + self.tombstone
+    }
 }
 
 fn snapshot_counts(issues: &[Issue]) -> SnapshotCounts {
@@ -588,15 +595,15 @@ fn snapshot_counts(issues: &[Issue]) -> SnapshotCounts {
     };
 
     for issue in issues {
-        let normalized = issue.normalized_status();
-        if matches!(normalized.as_str(), "closed" | "tombstone") {
+        if issue.is_tombstone() {
+            counts.tombstone = counts.tombstone.saturating_add(1);
+        } else if issue.is_closed() {
             counts.closed = counts.closed.saturating_add(1);
-            continue;
-        }
-
-        counts.open = counts.open.saturating_add(1);
-        if normalized == "blocked" {
-            counts.blocked = counts.blocked.saturating_add(1);
+        } else {
+            counts.open = counts.open.saturating_add(1);
+            if issue.normalized_status() == "blocked" {
+                counts.blocked = counts.blocked.saturating_add(1);
+            }
         }
     }
 

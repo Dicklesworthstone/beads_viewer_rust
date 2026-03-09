@@ -55,6 +55,12 @@ pub struct Issue {
     pub dependencies: Vec<Dependency>,
     #[serde(default)]
     pub source_repo: String,
+    /// Internal content hash for dedup — computed, not serialized to JSON output.
+    #[serde(default, skip_serializing)]
+    pub content_hash: Option<String>,
+    /// Optional link to external issue tracker (e.g., GitHub issue URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -105,9 +111,22 @@ impl Issue {
         self.status.trim().to_ascii_lowercase()
     }
 
+    /// Returns true for any terminal status (closed or tombstone).
     #[must_use]
     pub fn is_closed_like(&self) -> bool {
         matches!(self.normalized_status().as_str(), "closed" | "tombstone")
+    }
+
+    /// Returns true only for the "closed" status (not tombstone).
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.normalized_status() == "closed"
+    }
+
+    /// Returns true only for the "tombstone" status (permanently removed).
+    #[must_use]
+    pub fn is_tombstone(&self) -> bool {
+        self.normalized_status() == "tombstone"
     }
 
     #[must_use]
@@ -284,6 +303,33 @@ mod tests {
     }
 
     #[test]
+    fn is_closed_vs_tombstone_distinction() {
+        let closed = Issue {
+            status: "closed".to_string(),
+            ..Default::default()
+        };
+        assert!(closed.is_closed());
+        assert!(!closed.is_tombstone());
+        assert!(closed.is_closed_like());
+
+        let tombstone = Issue {
+            status: "tombstone".to_string(),
+            ..Default::default()
+        };
+        assert!(!tombstone.is_closed());
+        assert!(tombstone.is_tombstone());
+        assert!(tombstone.is_closed_like());
+
+        let open = Issue {
+            status: "open".to_string(),
+            ..Default::default()
+        };
+        assert!(!open.is_closed());
+        assert!(!open.is_tombstone());
+        assert!(!open.is_closed_like());
+    }
+
+    #[test]
     fn is_open_like_for_all_open_statuses() {
         for status in [
             "open",
@@ -304,6 +350,22 @@ mod tests {
                 "{status} should not be closed-like"
             );
         }
+    }
+
+    #[test]
+    fn content_hash_and_external_ref_defaults() {
+        let issue = Issue::default();
+        assert!(issue.content_hash.is_none());
+        assert!(issue.external_ref.is_none());
+
+        let issue_with_ref = Issue {
+            external_ref: Some("https://github.com/org/repo/issues/42".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            issue_with_ref.external_ref.as_deref(),
+            Some("https://github.com/org/repo/issues/42")
+        );
     }
 
     // -- Priority normalization --
