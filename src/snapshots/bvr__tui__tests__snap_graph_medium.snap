@@ -1,3 +1,6 @@
+  [2m2026-03-09T19:07:54.211756Z[0m [33m WARN[0m [1;33mrch::hook[0m[33m: [33mexec called with non-compilation command: cat /data/projects/beads_viewer_rust/src/snapshots/bvr__tui__tests__snap_graph_medium.snap[0m
+    [2;3mat[0m rch/src/hook.rs:171 [2;3mon[0m ThreadId(1)
+
 ---
 source: src/tui.rs
 expression: text

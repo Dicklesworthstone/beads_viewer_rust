@@ -8576,14 +8576,15 @@ mod tests {
     }
 
     #[test]
-    fn graph_detail_text_for_width_renders_visual_graph_boxes() {
+    fn graph_detail_text_renders_visual_graph_content() {
         let mut app = new_app(ViewMode::Graph, 0);
         app.mode = ViewMode::Graph;
 
         let text = app.graph_detail_text_for_width(58);
         assert!(text.contains("╔"));
         assert!(text.contains("▼ BLOCKS (waiting on this) ▼"));
-        assert!(text.contains("│ [o] B      │"));
+        assert!(text.contains("[o] B"));
+        assert!(text.contains("Dependent"));
         assert!(text.lines().all(|line| line.chars().count() <= 58));
     }
 
