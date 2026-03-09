@@ -1,9 +1,8 @@
 ---
 source: src/tui.rs
-assertion_line: 10298
 expression: text
 ---
-bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc
+bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌History Events [focus]──────────────────┐┌History Timeline────────────────────────────────────────┐
 │                                        ││                                                        │
 │ No git commits correlated with beads.  ││ No correlated git commits available.                   │

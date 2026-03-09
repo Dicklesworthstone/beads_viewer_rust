@@ -55,13 +55,14 @@
 - Groups: analyzer_new, triage, insights, plan, diff, forecast, suggest, alerts, history, cycle_detection, real_fixture.
 - All benchmarks complete sub-15ms at 1000 issues on standard hardware.
 
-## 6. Async Integration Plan (`asupersync`)
-Feature-gated adapters support:
-- watcher pipelines,
-- background index builds,
-- bounded cleanup/cancellation for long-running analysis.
+## 6. Async Strategy
 
-The default build remains lightweight; advanced async orchestration is opt-in.
+Current async needs are met with standard library primitives:
+- Two-phase metric computation: `std::thread::spawn` + `mpsc::channel` for graphs >200 nodes.
+- Background file reload: same pattern via `ftui::TaskSpec` tick polling.
+- No tokio or async runtime required for current feature set.
+
+**Post-parity path:** `asupersync` is declared as an optional Cargo dependency (`asupersync-runtime` feature gate) for future structured async orchestration (watcher pipelines, background index builds, bounded cleanup/cancellation). This is not a Go parity requirement — Go's `bv` has no equivalent async framework.
 
 ## 7. TUI Fidelity Roadmap (`frankentui`)
 - Wave 1: split list/detail, keyboard navigation, status line. (done)

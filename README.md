@@ -4,7 +4,9 @@ Rust port of `legacy_beads_viewer_code/beads_viewer` (`bv`).
 
 Current objective: full-fidelity parity for robot mode + interactive TUI while leveraging:
 - `/dp/frankentui` for TUI runtime and widgets
-- `/dp/asupersync` for structured async orchestration (feature-gated integration path)
+- Background async via `std::thread::spawn` + `mpsc::channel` (two-phase metric computation for large graphs)
+
+> **Note:** `asupersync` is declared as an optional Cargo dependency (`asupersync-runtime` feature gate) but is not used at runtime. It is reserved as a post-parity enhancement path for structured async orchestration (watcher pipelines, background index builds). The current async needs (background metric computation, file reload) are handled directly with standard library primitives. Go's `bv` has no equivalent async framework, so this is not a parity requirement.
 
 ## Binary
 

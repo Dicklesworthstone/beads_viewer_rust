@@ -1,9 +1,8 @@
 ---
 source: src/tui.rs
-assertion_line: 11474
 expression: text
 ---
-bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc bac
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Help──────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 │ [Navigation]                                     | [Search]                                      │
@@ -20,16 +19,16 @@ bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help |
 │   scroll       Mouse wheel scrolls list          |   O            Open in editor                 │
 │                                                  |   Ctrl+R/F5    Refresh from disk              │
 │ [Views]                                          |                                               │
-│   b            Toggle board mode                 | [History]                                     │
-│   i            Toggle insights mode              |   c            Cycle confidence filter        │
-│   g            Toggle graph mode                 |   y            Copy SHA/ID                    │
-│   h            Toggle history mode               |   o            Open commit in browser         │
-│   !            Toggle attention mode             |   f            Toggle file tree               │
-│   T            Toggle tree view                  |                                               │
-│   [            Toggle label dashboard            | [Board]                                       │
-│   ]            Toggle flow matrix                |   1-4          Jump to lane                   │
-│   v            History: bead/git toggle          |   H/L          First/last lane                │
-│                                                  |   0/$          First/last in lane             │
+│   a            Toggle actionable mode            | [History]                                     │
+│   b            Toggle board mode                 |   c            Cycle confidence filter        │
+│   i            Toggle insights mode              |   y            Copy SHA/ID                    │
+│   g            Toggle graph mode                 |   o            Open commit in browser         │
+│   h            Toggle history mode               |   f            Toggle file tree               │
+│   !            Toggle attention mode             |                                               │
+│   T            Toggle tree view                  | [Board]                                       │
+│   [            Toggle label dashboard            |   1-4          Jump to lane                   │
+│   ]            Toggle flow matrix                |   H/L          First/last lane                │
+│   v            History: bead/git toggle          |   0/$          First/last in lane             │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ? or Esc close | j/k scroll | Ctrl+d/u page | line 1/37

@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc
+bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌History Beads [focus]───────────────────┐┌History Timeline────────────────────────────────────────┐
 │                                        ││                                                        │
 │ Bead history list (3 beads) | v toggle ││ History Summary: beads=3 closed-like=1 selected=A      │

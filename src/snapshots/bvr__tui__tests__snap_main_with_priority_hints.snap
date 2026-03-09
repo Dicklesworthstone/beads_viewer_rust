@@ -1,9 +1,8 @@
 ---
 source: src/tui.rs
-assertion_line: 11893
 expression: text
 ---
-bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc bac
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
 │                                        ││                                                        │
 │ > A              open        p1 Featur ││ F A  Feature work                                      │

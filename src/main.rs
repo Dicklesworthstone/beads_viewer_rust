@@ -232,8 +232,51 @@ fn main() -> ExitCode {
 
     // --pages wizard and --preview-pages do not require loading issues.
     if cli.pages {
-        bvr::export_pages::print_pages_wizard();
-        return ExitCode::SUCCESS;
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            // Non-interactive mode: just print help
+            bvr::export_pages::print_pages_wizard();
+            return ExitCode::SUCCESS;
+        }
+        let beads_path = cli.beads_file.clone();
+        let no_hooks = cli.no_hooks;
+        let repo_path = cli.repo_path.clone();
+        let no_live_reload = cli.no_live_reload;
+        let stdin = std::io::stdin();
+        let mut reader = std::io::BufReader::new(stdin.lock());
+        let mut writer = std::io::stderr();
+        match bvr::pages_wizard::run_wizard_interactive(
+            &mut reader,
+            &mut writer,
+            beads_path,
+            |config| {
+                let output = config.output_path.as_deref().unwrap_or(Path::new("./bv-pages"));
+                let issues = load_issues(&cli)?;
+                let options = bvr::export_pages::ExportPagesOptions {
+                    title: config.title.clone(),
+                    include_closed: config.include_closed,
+                    include_history: config.include_history,
+                };
+                let count = count_pages_export_issues(&issues, &options);
+                bvr::export_md::run_export_with_hooks(
+                    output, "html", count, no_hooks, repo_path.as_deref(),
+                    || bvr::export_pages::export_pages_bundle(&issues, output, &options),
+                )?;
+                Ok(())
+            },
+            |path| {
+                bvr::export_pages::run_preview_server(path, !no_live_reload)
+            },
+        ) {
+            Ok(Some(_config)) => return ExitCode::SUCCESS,
+            Ok(None) => {
+                eprintln!("Wizard cancelled.");
+                return ExitCode::from(1);
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        }
     }
 
     if let Some(bundle_path) = cli.preview_pages.as_deref() {
@@ -1599,12 +1642,12 @@ fn main() -> ExitCode {
             include_closed: cli.pages_include_closed,
             include_history: cli.pages_include_history,
         };
-        let export_issue_count = count_pages_export_issues(&issues, &options);
+        let mut issue_count = count_pages_export_issues(&issues, &options);
 
         match bvr::export_md::run_export_with_hooks(
             export_path,
             "html",
-            export_issue_count,
+            issue_count,
             cli.no_hooks,
             cli.repo_path.as_deref(),
             || bvr::export_pages::export_pages_bundle(&issues, export_path, &options),
@@ -1659,25 +1702,36 @@ fn main() -> ExitCode {
                 .and_then(|raw| raw.trim().parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(2_000);
+            let debounce_ms: u64 = std::env::var("BVR_WATCH_DEBOUNCE_MS")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(500);
 
             eprintln!(
-                "Watching {} source file(s) for changes (Ctrl+C to stop)...",
-                watched_mtimes.len()
+                "Watching {} source file(s) for changes (poll {}ms, debounce {}ms, Ctrl+C to stop)...",
+                watched_mtimes.len(),
+                watch_interval_ms,
+                debounce_ms,
             );
             for (path, _) in &watched_mtimes {
                 eprintln!("  - {}", path.display());
             }
 
+            let mut cycle_count: u64 = 0;
+            let mut last_outcome = "initial export";
+            let mut last_change_at: Option<std::time::Instant> = None;
+
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(watch_interval_ms));
 
-                let mut changed = false;
+                let mut changed_files: Vec<String> = Vec::new();
                 for (path, last_mtime) in &mut watched_mtimes {
                     let current_mtime = match file_mtime_epoch_millis(path) {
                         Ok(value) => value,
                         Err(error) => {
                             eprintln!(
-                                "warning: failed to read watch source {}: {error}",
+                                "warning: cannot stat {}: {error}",
                                 path.display()
                             );
                             continue;
@@ -1686,24 +1740,62 @@ fn main() -> ExitCode {
 
                     if current_mtime > *last_mtime {
                         *last_mtime = current_mtime;
-                        changed = true;
+                        changed_files.push(path.display().to_string());
                     }
                 }
 
-                if !changed {
+                if changed_files.is_empty() {
                     if let Some(remaining) = max_loops.as_mut() {
                         *remaining = remaining.saturating_sub(1);
                         if *remaining == 0 {
+                            eprintln!("watch: max loops reached, exiting (last: {last_outcome})");
                             break;
                         }
                     }
                     continue;
                 }
 
+                // Debounce: if we detected a change, wait the debounce period
+                // then re-check to coalesce rapid successive writes.
+                let now = std::time::Instant::now();
+                if let Some(prev) = last_change_at {
+                    if now.duration_since(prev).as_millis() < u128::from(debounce_ms) {
+                        // Still within debounce window, skip this cycle
+                        continue;
+                    }
+                }
+                // Wait the debounce period, then re-scan to capture any trailing writes.
+                std::thread::sleep(std::time::Duration::from_millis(debounce_ms));
+                for (path, last_mtime) in &mut watched_mtimes {
+                    if let Ok(current_mtime) = file_mtime_epoch_millis(path) {
+                        if current_mtime > *last_mtime {
+                            *last_mtime = current_mtime;
+                            let display = path.display().to_string();
+                            if !changed_files.contains(&display) {
+                                changed_files.push(display);
+                            }
+                        }
+                    }
+                }
+                last_change_at = Some(std::time::Instant::now());
+
+                cycle_count += 1;
+                eprintln!(
+                    "watch: change #{cycle_count} detected in {} file(s):",
+                    changed_files.len()
+                );
+                for f in &changed_files {
+                    eprintln!("  ~ {f}");
+                }
+
+                let reload_start = std::time::Instant::now();
                 let refreshed_issues = match load_issues(&cli) {
                     Ok(value) => value,
                     Err(error) => {
-                        eprintln!("warning: failed to reload issues: {error}");
+                        last_outcome = "reload failed";
+                        eprintln!(
+                            "warning: reload failed: {error} (last good export still served)"
+                        );
                         continue;
                     }
                 };
@@ -1713,6 +1805,12 @@ fn main() -> ExitCode {
                     refreshed_issues
                 };
                 let refreshed_issue_count = count_pages_export_issues(&refreshed_issues, &options);
+
+                // Check if issue count actually changed (skip no-op regeneration)
+                if refreshed_issue_count == issue_count {
+                    // Content may still have changed even if count is same, so still export.
+                    // But we note this is a same-count regeneration.
+                }
 
                 match bvr::export_md::run_export_with_hooks(
                     export_path,
@@ -1729,22 +1827,28 @@ fn main() -> ExitCode {
                     },
                 ) {
                     Ok(summary) => {
+                        let elapsed = reload_start.elapsed();
+                        last_outcome = "success";
+                        issue_count = refreshed_issue_count;
                         eprintln!(
-                            "Regenerated pages bundle at {} (path: {}, issues: {}, history: {})",
-                            summary.generated_at,
+                            "watch: regenerated in {elapsed:.1?} (path: {}, issues: {}, history: {})",
                             summary.export_path,
                             summary.issue_count,
-                            summary.include_history
+                            summary.include_history,
                         );
                     }
                     Err(error) => {
-                        eprintln!("warning: export regeneration failed: {error}");
+                        last_outcome = "export failed";
+                        eprintln!(
+                            "warning: export failed: {error} (last good export still served)"
+                        );
                     }
                 }
 
                 if let Some(remaining) = max_loops.as_mut() {
                     *remaining = remaining.saturating_sub(1);
                     if *remaining == 0 {
+                        eprintln!("watch: max loops reached after {cycle_count} cycle(s), exiting");
                         break;
                     }
                 }

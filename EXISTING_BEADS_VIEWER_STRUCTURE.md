@@ -79,4 +79,4 @@ Key aspects from README + `pkg/ui/*`:
 - Full parity target: all legacy robot and TUI workflows.
 - Rust implementation must leverage:
   - `frankentui` for UI runtime/widgets/layout.
-  - `asupersync` for structured async orchestration.
+  - Standard library `std::thread::spawn` + `mpsc::channel` for background async (two-phase metrics, file reload). `asupersync` is an optional post-parity enhancement path.

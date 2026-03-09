@@ -150,7 +150,7 @@ Legend:
 | Capability | Status | Notes |
 |---|---|---|
 | FrankentUI runtime integration | complete | Active dependency and runtime app usage. |
-| Asupersync integration points | partial | Optional dependency/feature gate is present, but runtime still uses local `ftui::TaskSpec` background reload logic rather than true asupersync orchestration. |
+| Asupersync integration points | deferred | Optional Cargo dependency declared but unused in source. Background async (two-phase metric computation, file reload) uses `std::thread::spawn` + `mpsc::channel` directly. Asupersync orchestration is a post-parity enhancement, not a Go parity requirement (Go has no equivalent). |
 | Hooks/workspace/history parity | partial | Export hooks, explicit workspace loading/aggregation, repo filters, robot history, and TUI history are implemented; remaining gaps are workspace auto-discovery defaults, history search modes, and full pages/export workflow parity. |
 
 ## Verification

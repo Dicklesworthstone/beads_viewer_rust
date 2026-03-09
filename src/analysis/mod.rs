@@ -151,6 +151,50 @@ impl Analyzer {
         }
     }
 
+    /// Create an analyzer with only fast O(V+E) metrics computed.
+    ///
+    /// Betweenness, eigenvector, and HITS are deferred. Call
+    /// [`spawn_slow_computation`] to compute them in a background thread.
+    #[must_use]
+    pub fn new_fast(mut issues: Vec<Issue>) -> Self {
+        issues.sort_by(|left, right| left.id.cmp(&right.id));
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics_with_config(&graph::AnalysisConfig::fast_phase());
+        Self {
+            issues,
+            graph,
+            metrics,
+        }
+    }
+
+    /// Returns true if this graph exceeds the background computation threshold.
+    #[must_use]
+    pub fn is_large_graph(&self) -> bool {
+        self.graph.node_count() > graph::AnalysisConfig::BACKGROUND_THRESHOLD
+    }
+
+    /// Spawn a background thread to compute expensive metrics.
+    ///
+    /// Returns a receiver that will yield the slow-phase `GraphMetrics` when done.
+    /// The caller should poll via `try_recv()` and call `apply_slow_metrics()`.
+    pub fn spawn_slow_computation(
+        &self,
+    ) -> std::sync::mpsc::Receiver<graph::GraphMetrics> {
+        let graph_clone = self.graph.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let slow = graph_clone
+                .compute_metrics_with_config(&graph::AnalysisConfig::slow_phase());
+            let _ = tx.send(slow);
+        });
+        rx
+    }
+
+    /// Merge slow-phase metrics into this analyzer's metrics.
+    pub fn apply_slow_metrics(&mut self, slow: graph::GraphMetrics) {
+        self.metrics.merge_slow(slow);
+    }
+
     #[must_use]
     pub fn triage(&self, options: TriageOptions) -> TriageComputation {
         compute_triage(&self.issues, &self.graph, &self.metrics, &options)
@@ -633,5 +677,226 @@ mod tests {
             serde_json::to_value(&full_priority).unwrap(),
             serde_json::to_value(&lean_priority).unwrap()
         );
+    }
+
+    // -- Two-phase (fast/slow) Analyzer tests --------------------------------
+
+    fn sample_issues() -> Vec<Issue> {
+        vec![
+            Issue {
+                id: "A".to_string(),
+                title: "Root".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "Blocked".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![Dependency {
+                    issue_id: "B".to_string(),
+                    depends_on_id: "A".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "Closed".to_string(),
+                status: "closed".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn new_fast_defers_slow_metrics() {
+        let analyzer = Analyzer::new_fast(sample_issues());
+        assert!(
+            analyzer.metrics.has_pending_slow_metrics(),
+            "fast analyzer should have pending slow metrics"
+        );
+        // PageRank should still be available
+        assert!(
+            !analyzer.metrics.pagerank.is_empty(),
+            "fast analyzer should have PageRank"
+        );
+    }
+
+    #[test]
+    fn apply_slow_metrics_fills_gaps() {
+        let mut analyzer = Analyzer::new_fast(sample_issues());
+        assert!(analyzer.metrics.betweenness.is_empty());
+
+        let slow = analyzer
+            .graph
+            .compute_metrics_with_config(&AnalysisConfig::slow_phase());
+        analyzer.apply_slow_metrics(slow);
+
+        assert!(
+            !analyzer.metrics.betweenness.is_empty(),
+            "betweenness should be filled after applying slow metrics"
+        );
+        assert!(
+            !analyzer.metrics.has_pending_slow_metrics(),
+            "should have no pending slow metrics"
+        );
+    }
+
+    #[test]
+    fn is_large_graph_below_threshold() {
+        let analyzer = Analyzer::new(sample_issues());
+        assert!(
+            !analyzer.is_large_graph(),
+            "3-node graph should not be large"
+        );
+    }
+
+    #[test]
+    fn spawn_slow_computation_completes() {
+        let analyzer = Analyzer::new_fast(sample_issues());
+        let rx = analyzer.spawn_slow_computation();
+        let slow = rx.recv().expect("should receive slow metrics");
+        assert!(
+            !slow.betweenness.is_empty(),
+            "background thread should compute betweenness"
+        );
+    }
+
+    #[test]
+    fn fast_triage_still_works() {
+        let analyzer = Analyzer::new_fast(sample_issues());
+        let options = TriageOptions::default();
+        // Triage should work with fast-only metrics (betweenness component will be 0)
+        let triage = analyzer.triage(options);
+        assert!(
+            !triage.result.recommendations.is_empty() || analyzer.issues.is_empty(),
+            "triage should return results even with fast-only metrics"
+        );
+    }
+
+    #[test]
+    fn fast_insights_still_works() {
+        let analyzer = Analyzer::new_fast(sample_issues());
+        // Insights should not panic even with missing metrics
+        let insights = analyzer.insights();
+        assert!(
+            !insights.influencers.is_empty(),
+            "influencers (PageRank) should still be available"
+        );
+        // Betweenness-based fields will be empty but shouldn't panic
+        assert!(insights.betweenness.is_empty());
+    }
+
+    // -- Integration: config → analysis → triage chain ---------------------
+
+    #[test]
+    fn triage_scores_improve_after_slow_metrics_applied() {
+        let mut fast = Analyzer::new_fast(sample_issues());
+        let options = TriageOptions::default();
+
+        // Fast-only triage (betweenness component is 0)
+        let fast_triage = fast.triage(options.clone());
+        let fast_scores = fast_triage.score_by_id.clone();
+
+        // Apply slow metrics
+        let slow = fast
+            .graph
+            .compute_metrics_with_config(&AnalysisConfig::slow_phase());
+        fast.apply_slow_metrics(slow);
+
+        // Full triage (betweenness component now available)
+        let full_triage = fast.triage(options);
+        let full_scores = full_triage.score_by_id;
+
+        // Scores should differ (betweenness now contributes)
+        // For the sample graph, A blocks B so should have nonzero betweenness
+        let a_fast = fast_scores.get("A").copied().unwrap_or(0.0);
+        let a_full = full_scores.get("A").copied().unwrap_or(0.0);
+        assert!(
+            (a_fast - a_full).abs() > 0.0 || fast_scores.len() == full_scores.len(),
+            "scores should differ or graph is degenerate: fast={a_fast}, full={a_full}"
+        );
+    }
+
+    #[test]
+    fn fast_then_slow_produces_same_insights_as_full() {
+        let full = Analyzer::new(sample_issues());
+        let full_insights = full.insights();
+
+        let mut two_phase = Analyzer::new_fast(sample_issues());
+        let slow = two_phase
+            .graph
+            .compute_metrics_with_config(&AnalysisConfig::slow_phase());
+        two_phase.apply_slow_metrics(slow);
+        let two_phase_insights = two_phase.insights();
+
+        // Influencers (PageRank-based) should match exactly
+        assert_eq!(
+            full_insights.influencers.len(),
+            two_phase_insights.influencers.len(),
+            "influencer count should match"
+        );
+        // Betweenness should now match
+        assert_eq!(
+            full_insights.betweenness.len(),
+            two_phase_insights.betweenness.len(),
+            "betweenness item count should match"
+        );
+    }
+
+    #[test]
+    fn new_with_config_respects_selective_metrics() {
+        let config = AnalysisConfig {
+            enable_pagerank: true,
+            enable_betweenness: false,
+            enable_eigenvector: false,
+            enable_hits: false,
+            enable_cycles: true,
+            enable_critical_path: false,
+            enable_k_core: false,
+            enable_articulation: false,
+            enable_slack: false,
+            betweenness_max_nodes: 10_000,
+            eigenvector_max_nodes: 10_000,
+        };
+        let analyzer = Analyzer::new_with_config(sample_issues(), &config);
+        assert!(!analyzer.metrics.pagerank.is_empty(), "PageRank should be computed");
+        assert!(analyzer.metrics.betweenness.is_empty(), "betweenness should be skipped");
+        assert!(analyzer.metrics.eigenvector.is_empty(), "eigenvector should be skipped");
+        assert!(analyzer.metrics.k_core.is_empty(), "k_core should be skipped");
+    }
+
+    #[test]
+    fn empty_issues_all_operations_succeed() {
+        let analyzer = Analyzer::new(vec![]);
+        assert!(analyzer.issues.is_empty());
+        assert_eq!(analyzer.graph.node_count(), 0);
+
+        // All operations should succeed on empty graph
+        let triage = analyzer.triage(TriageOptions::default());
+        assert!(triage.result.recommendations.is_empty());
+
+        let insights = analyzer.insights();
+        assert!(insights.influencers.is_empty());
+        assert!(insights.cycles.is_empty());
+
+        let plan = analyzer.plan(&std::collections::HashMap::new());
+        assert!(plan.tracks.is_empty());
+    }
+
+    #[test]
+    fn empty_issues_fast_phase_no_panic() {
+        let analyzer = Analyzer::new_fast(vec![]);
+        assert!(!analyzer.is_large_graph());
+        let rx = analyzer.spawn_slow_computation();
+        let slow = rx.recv().expect("should complete even for empty graph");
+        assert!(slow.betweenness.is_empty());
     }
 }

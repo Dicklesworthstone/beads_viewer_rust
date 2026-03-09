@@ -859,7 +859,7 @@ fn watch_export_regenerates_after_change_and_keeps_repo_filter() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Regenerated pages bundle at"),
+        stderr.contains("watch: regenerated"),
         "expected regeneration log in stderr, got: {stderr}"
     );
 
@@ -941,7 +941,7 @@ fn watch_export_regenerates_after_workspace_change() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Regenerated pages bundle at"),
+        stderr.contains("watch: regenerated"),
         "expected regeneration log in stderr, got: {stderr}"
     );
 

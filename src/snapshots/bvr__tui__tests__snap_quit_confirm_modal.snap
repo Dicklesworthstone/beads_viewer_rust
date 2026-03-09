@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc bac
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Confirm Quit──────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 │ Quit bvr?                                                                                        │

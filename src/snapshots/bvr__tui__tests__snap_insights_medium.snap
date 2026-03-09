@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc
+bvr | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Insight Queue [focus]───────────────────┐┌Insight Detail──────────────────────────────────────────┐
 │                                        ││                                                        │
 │ [Bottlenecks] s/S cycles panel | e exp ││ Insights Summary: bottlenecks=2 crit-path=3 cycles=0 c │

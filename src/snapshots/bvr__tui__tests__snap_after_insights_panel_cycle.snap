@@ -2,14 +2,14 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc
+bvr | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Insight Queue [focus]───────────────────┐┌Insight Detail──────────────────────────────────────────┐
 │                                        ││                                                        │
-│ [Betweenness] s/S cycles panel | e exp ││ Insights Summary: bottlenecks=2 crit-path=3 cycles=0 c │
+│ [Influencers (PageRank)] s/S cycles pa ││ Insights Summary: bottlenecks=2 crit-path=3 cycles=0 c │
 │                                        ││                                                        │
-│  1. A            [.................... ││ Focus: A (Root)                                        │
-│  2. B            [.................... ││ Status: open | Priority: p0                            │
-│  3. C            [.................... ││                                                        │
+│  1. A            [#########........... ││ Focus: A (Root)                                        │
+│  2. B            [#####............... ││ Status: open | Priority: p0                            │
+│  3. C            [#####............... ││                                                        │
 │                                        ││ All Metrics:                                           │
 │                                        ││   PageRank:     0.4805                                 │
 │                                        ││   Betweenness:  0.0000                                 │
@@ -31,4 +31,4 @@ bvr | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default | ? he
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Insights [betweenness] | s/S panel | e explanations=on | x proof=off
+Insights [influencers] | s/S panel | e explanations=on | x proof=off

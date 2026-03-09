@@ -1,9 +1,8 @@
 ---
 source: src/tui.rs
-assertion_line: 11902
 expression: text
 ---
-bvr | mode=Board | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc
+bvr | mode=Board | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Board Lanes─────────────────────────────┐┌Board Focus [focus]─────────────────────────────────────┐
 │                                        ││                                                        │
 │ Grouping: status (s cycles) | Empty: A ││ ┌────────────────────────────────────────┐             │

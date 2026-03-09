@@ -1,9 +1,8 @@
 ---
 source: src/tui.rs
-assertion_line: 11921
 expression: text
 ---
-bvr | mode=Graph | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc
+bvr | mode=Graph | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Graph Nodes─────────────────────────────┐┌Graph Focus [focus]─────────────────────────────────────┐
 │                                        ││                                                        │
 │ Nodes (3) by critical-path score | h/l ││ Graph: nodes=3 edges=1 cycles=0 actionable=1           │

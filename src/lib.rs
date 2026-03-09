@@ -19,6 +19,7 @@ pub mod export_pages;
 pub mod export_sqlite;
 pub mod loader;
 pub mod model;
+pub mod pages_wizard;
 pub mod robot;
 pub mod tui;
 pub mod viewer_assets;

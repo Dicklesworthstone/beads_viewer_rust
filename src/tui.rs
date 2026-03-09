@@ -611,6 +611,7 @@ struct FlatFileEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InsightsPanel {
     Bottlenecks,
+    Keystones,
     CriticalPath,
     Influencers,
     Betweenness,
@@ -620,12 +621,14 @@ enum InsightsPanel {
     CutPoints,
     Slack,
     Cycles,
+    Priority,
 }
 
 impl InsightsPanel {
     fn label(self) -> &'static str {
         match self {
             Self::Bottlenecks => "Bottlenecks",
+            Self::Keystones => "Keystones",
             Self::CriticalPath => "Critical Path",
             Self::Influencers => "Influencers (PageRank)",
             Self::Betweenness => "Betweenness",
@@ -635,12 +638,14 @@ impl InsightsPanel {
             Self::CutPoints => "Cut Points",
             Self::Slack => "Slack (Zero)",
             Self::Cycles => "Cycles",
+            Self::Priority => "Priority",
         }
     }
 
     fn short_label(self) -> &'static str {
         match self {
             Self::Bottlenecks => "bottlenecks",
+            Self::Keystones => "keystones",
             Self::CriticalPath => "crit-path",
             Self::Influencers => "influencers",
             Self::Betweenness => "betweenness",
@@ -650,12 +655,14 @@ impl InsightsPanel {
             Self::CutPoints => "cut-pts",
             Self::Slack => "slack",
             Self::Cycles => "cycles",
+            Self::Priority => "priority",
         }
     }
 
     fn next(self) -> Self {
         match self {
-            Self::Bottlenecks => Self::CriticalPath,
+            Self::Bottlenecks => Self::Keystones,
+            Self::Keystones => Self::CriticalPath,
             Self::CriticalPath => Self::Influencers,
             Self::Influencers => Self::Betweenness,
             Self::Betweenness => Self::Hubs,
@@ -664,14 +671,16 @@ impl InsightsPanel {
             Self::Cores => Self::CutPoints,
             Self::CutPoints => Self::Slack,
             Self::Slack => Self::Cycles,
-            Self::Cycles => Self::Bottlenecks,
+            Self::Cycles => Self::Priority,
+            Self::Priority => Self::Bottlenecks,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            Self::Bottlenecks => Self::Cycles,
-            Self::CriticalPath => Self::Bottlenecks,
+            Self::Bottlenecks => Self::Priority,
+            Self::Keystones => Self::Bottlenecks,
+            Self::CriticalPath => Self::Keystones,
             Self::Influencers => Self::CriticalPath,
             Self::Betweenness => Self::Influencers,
             Self::Hubs => Self::Betweenness,
@@ -680,6 +689,7 @@ impl InsightsPanel {
             Self::CutPoints => Self::Cores,
             Self::Slack => Self::CutPoints,
             Self::Cycles => Self::Slack,
+            Self::Priority => Self::Cycles,
         }
     }
 }
@@ -736,10 +746,7 @@ enum ModalOverlay {
         cursor: usize,
     },
     /// Repo picker: shows workspace repos for filtering.
-    RepoPicker {
-        items: Vec<String>,
-        cursor: usize,
-    },
+    RepoPicker { items: Vec<String>, cursor: usize },
 }
 
 /// State for the multi-step pages export wizard.
@@ -908,6 +915,9 @@ struct BvrApp {
     time_travel_last_ref: Option<String>,
     priority_hints_visible: bool,
     status_msg: String,
+    slow_metrics_pending: bool,
+    #[cfg(not(test))]
+    slow_metrics_rx: Option<std::sync::mpsc::Receiver<crate::analysis::graph::GraphMetrics>>,
     #[cfg(not(test))]
     background_runtime: Option<BackgroundRuntimeState>,
     /// Per-key event trace log for e2e debugging. Each entry records
@@ -999,15 +1009,30 @@ impl Model for BvrApp {
                 self.analyzer.issues.len(),
                 self.list_filter.label(),
             ),
-            _ => format!(
-                "bvr | mode={} | focus={} | issues={}/{} | filter={} | sort={} | ? help | Tab focus | Esc back/quit",
-                self.mode.label(),
-                self.focus.label(),
-                visible_count,
-                self.analyzer.issues.len(),
-                self.list_filter.label(),
-                self.list_sort.label()
-            ),
+            _ => {
+                let mut filter_label = self.list_filter.label().to_string();
+                if let Some(ref label) = self.modal_label_filter {
+                    filter_label = format!("{filter_label}+label:{label}");
+                }
+                if let Some(ref repo) = self.modal_repo_filter {
+                    filter_label = format!("{filter_label}+repo:{repo}");
+                }
+                let metrics_hint = if self.slow_metrics_pending {
+                    " | metrics: computing..."
+                } else {
+                    ""
+                };
+                format!(
+                    "bvr | mode={} | focus={} | issues={}/{} | filter={} | sort={}{} | ? help | Tab focus |",
+                    self.mode.label(),
+                    self.focus.label(),
+                    visible_count,
+                    self.analyzer.issues.len(),
+                    filter_label,
+                    self.list_sort.label(),
+                    metrics_hint,
+                )
+            }
         };
         Paragraph::new(header_text)
             .style(tokens::header_bg())
@@ -1476,6 +1501,18 @@ impl BvrApp {
 
     #[cfg(not(test))]
     fn handle_background_tick(&mut self) -> Cmd<Msg> {
+        // Poll for slow metric completion
+        if self.slow_metrics_pending {
+            if let Some(rx) = self.slow_metrics_rx.as_ref() {
+                if let Ok(slow) = rx.try_recv() {
+                    self.analyzer.apply_slow_metrics(slow);
+                    self.slow_metrics_pending = false;
+                    self.slow_metrics_rx = None;
+                    self.status_msg = "Background metrics computed".to_string();
+                }
+            }
+        }
+
         let next_tick = self.background_tick_command();
         let Some(runtime) = self.background_runtime.as_mut() else {
             return Cmd::None;
@@ -1580,7 +1617,23 @@ impl BvrApp {
     fn apply_background_reload(&mut self, issues: Vec<Issue>) {
         let selected_id = self.selected_issue().map(|issue| issue.id.clone());
 
-        self.analyzer = Analyzer::new(issues);
+        let use_two_phase =
+            issues.len() > crate::analysis::graph::AnalysisConfig::BACKGROUND_THRESHOLD;
+        if use_two_phase {
+            self.analyzer = Analyzer::new_fast(issues);
+            #[cfg(not(test))]
+            {
+                self.slow_metrics_rx = Some(self.analyzer.spawn_slow_computation());
+            }
+            self.slow_metrics_pending = true;
+        } else {
+            self.analyzer = Analyzer::new(issues);
+            self.slow_metrics_pending = false;
+            #[cfg(not(test))]
+            {
+                self.slow_metrics_rx = None;
+            }
+        }
         self.history_git_cache = None;
         self.detail_dep_cursor = 0;
         self.board_detail_scroll_offset = 0;
@@ -2158,9 +2211,7 @@ impl BvrApp {
                 KeyCode::Backspace => {
                     self.time_travel_ref_input.pop();
                 }
-                KeyCode::Char(ch)
-                    if !modifiers.contains(Modifiers::CTRL) && !ch.is_control() =>
-                {
+                KeyCode::Char(ch) if !modifiers.contains(Modifiers::CTRL) && !ch.is_control() => {
                     self.time_travel_ref_input.push(ch);
                 }
                 _ => {}
@@ -2458,8 +2509,7 @@ impl BvrApp {
                         self.time_travel_category_cursor.saturating_sub(1);
                     self.time_travel_issue_cursor = 0;
                 } else {
-                    self.time_travel_issue_cursor =
-                        self.time_travel_issue_cursor.saturating_sub(1);
+                    self.time_travel_issue_cursor = self.time_travel_issue_cursor.saturating_sub(1);
                 }
             }
             KeyCode::Char('d')
@@ -4560,6 +4610,7 @@ impl BvrApp {
             Section {
                 title: "Views",
                 bindings: vec![
+                    ("a", "Toggle actionable mode"),
                     ("b", "Toggle board mode"),
                     ("i", "Toggle insights mode"),
                     ("g", "Toggle graph mode"),
@@ -4577,7 +4628,6 @@ impl BvrApp {
                     ("o", "Filter: open only"),
                     ("c", "Filter: closed only"),
                     ("r", "Filter: ready only"),
-                    ("a", "Filter: show all"),
                     ("s", "Cycle sort/grouping/panel"),
                 ],
             },
@@ -5050,6 +5100,49 @@ impl BvrApp {
                     ));
                 }
             }
+            InsightsPanel::Keystones => {
+                let mut keystones = self
+                    .analyzer
+                    .issues
+                    .iter()
+                    .filter(|issue| issue.is_open_like())
+                    .filter_map(|issue| {
+                        self.analyzer
+                            .metrics
+                            .critical_depth
+                            .get(&issue.id)
+                            .copied()
+                            .map(|depth| (issue.id.as_str(), depth))
+                    })
+                    .filter(|(_, depth)| *depth > 0)
+                    .collect::<Vec<_>>();
+
+                keystones
+                    .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+
+                if keystones.is_empty() {
+                    lines.push("  (no foundational chain detected)".to_string());
+                } else {
+                    lines.extend(keystones.iter().take(15).enumerate().map(
+                        |(index, (id, depth))| {
+                            let unblocks = self
+                                .analyzer
+                                .metrics
+                                .blocks_count
+                                .get(*id)
+                                .copied()
+                                .unwrap_or_default();
+                            format!(
+                                " {}. {:<12} depth={} unblocks={}",
+                                index + 1,
+                                id,
+                                depth,
+                                unblocks
+                            )
+                        },
+                    ));
+                }
+            }
             InsightsPanel::CriticalPath => {
                 if insights.critical_path.is_empty() {
                     lines.push("  (no critical path detected)".to_string());
@@ -5129,6 +5222,23 @@ impl BvrApp {
                             format!(" {}. {}", index + 1, cycle.join(" -> "))
                         }),
                     );
+                }
+            }
+            InsightsPanel::Priority => {
+                let recommendations = self.analyzer.priority(0.0, 15, None, None);
+                if recommendations.is_empty() {
+                    lines.push("  (no priority recommendations available)".to_string());
+                } else {
+                    lines.extend(recommendations.iter().enumerate().map(|(index, item)| {
+                        format!(
+                            " {}. {:<12} score={:.3} unblocks={} p{}",
+                            index + 1,
+                            item.id,
+                            item.score,
+                            item.unblocks,
+                            item.priority
+                        )
+                    }));
                 }
             }
         }
@@ -5657,7 +5767,23 @@ impl BvrApp {
             .get(self.selected)
             .map(|i| i.id.clone());
 
-        self.analyzer = Analyzer::new(issues);
+        let use_two_phase =
+            issues.len() > crate::analysis::graph::AnalysisConfig::BACKGROUND_THRESHOLD;
+        if use_two_phase {
+            self.analyzer = Analyzer::new_fast(issues);
+            #[cfg(not(test))]
+            {
+                self.slow_metrics_rx = Some(self.analyzer.spawn_slow_computation());
+            }
+            self.slow_metrics_pending = true;
+        } else {
+            self.analyzer = Analyzer::new(issues);
+            self.slow_metrics_pending = false;
+            #[cfg(not(test))]
+            {
+                self.slow_metrics_rx = None;
+            }
+        }
 
         // Restore selection.
         if let Some(ref id) = selected_id {
@@ -6523,15 +6649,9 @@ impl BvrApp {
         };
 
         let mut lines = Vec::new();
-        let ref_label = self
-            .time_travel_last_ref
-            .as_deref()
-            .unwrap_or("unknown");
+        let ref_label = self.time_travel_last_ref.as_deref().unwrap_or("unknown");
         lines.push(format!(" Diff from: {ref_label}"));
-        lines.push(format!(
-            " Summary: {} changes",
-            diff.summary.total_changes
-        ));
+        lines.push(format!(" Summary: {} changes", diff.summary.total_changes));
         lines.push(String::new());
 
         let cats = self.time_travel_categories();
@@ -6581,7 +6701,9 @@ impl BvrApp {
             return " No changes in this diff.".to_string();
         }
 
-        let cat_idx = self.time_travel_category_cursor.min(cats.len().saturating_sub(1));
+        let cat_idx = self
+            .time_travel_category_cursor
+            .min(cats.len().saturating_sub(1));
         let (label, _) = cats[cat_idx];
 
         let mut lines = Vec::new();
@@ -6597,10 +6719,7 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        lines.push(format!(
-                            " {marker} {} [{}] {}",
-                            di.id, di.status, di.title
-                        ));
+                        lines.push(format!(" {marker} {} [{}] {}", di.id, di.status, di.title));
                     }
                 }
             }
@@ -6612,10 +6731,7 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        lines.push(format!(
-                            " {marker} {} [{}] {}",
-                            di.id, di.status, di.title
-                        ));
+                        lines.push(format!(" {marker} {} [{}] {}", di.id, di.status, di.title));
                     }
                 }
             }
@@ -6627,10 +6743,7 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        lines.push(format!(
-                            " {marker} {} [{}] {}",
-                            di.id, di.status, di.title
-                        ));
+                        lines.push(format!(" {marker} {} [{}] {}", di.id, di.status, di.title));
                     }
                 }
             }
@@ -6642,10 +6755,7 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        lines.push(format!(
-                            " {marker} {} [{}] {}",
-                            di.id, di.status, di.title
-                        ));
+                        lines.push(format!(" {marker} {} [{}] {}", di.id, di.status, di.title));
                     }
                 }
             }
@@ -6657,11 +6767,8 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        let field_changes: Vec<&str> = mi
-                            .changes
-                            .iter()
-                            .map(|c| c.field.as_str())
-                            .collect();
+                        let field_changes: Vec<&str> =
+                            mi.changes.iter().map(|c| c.field.as_str()).collect();
                         lines.push(format!(
                             " {marker} {} ({} fields: {})",
                             mi.issue_id,
@@ -6679,10 +6786,7 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        lines.push(format!(
-                            " {marker} [{}]",
-                            cycle.join(" -> ")
-                        ));
+                        lines.push(format!(" {marker} [{}]", cycle.join(" -> ")));
                     }
                 }
             }
@@ -6694,10 +6798,7 @@ impl BvrApp {
                         } else {
                             " "
                         };
-                        lines.push(format!(
-                            " {marker} [{}]",
-                            cycle.join(" -> ")
-                        ));
+                        lines.push(format!(" {marker} [{}]", cycle.join(" -> ")));
                     }
                 }
             }
@@ -6781,12 +6882,7 @@ impl BvrApp {
             let matched_issues = sprint
                 .bead_ids
                 .iter()
-                .filter(|id| {
-                    self.analyzer
-                        .issues
-                        .iter()
-                        .any(|issue| issue.id == **id)
-                })
+                .filter(|id| self.analyzer.issues.iter().any(|issue| issue.id == **id))
                 .count();
             let closed = sprint
                 .bead_ids
@@ -6800,9 +6896,7 @@ impl BvrApp {
                 .count();
             if matched_issues > 0 {
                 let pct = (closed as f64 / matched_issues as f64 * 100.0) as u32;
-                lines.push(format!(
-                    "   {closed}/{matched_issues} done ({pct}%)"
-                ));
+                lines.push(format!("   {closed}/{matched_issues} done ({pct}%)"));
             }
         }
 
@@ -6822,10 +6916,7 @@ impl BvrApp {
         lines.push(format!(" SPRINT: {}", sprint.name));
         if sprint.is_active_at(now) {
             lines.push(" Status: ACTIVE".to_string());
-        } else if sprint
-            .end_date
-            .is_some_and(|end| end < now)
-        {
+        } else if sprint.end_date.is_some_and(|end| end < now) {
             lines.push(" Status: Completed".to_string());
         } else {
             lines.push(" Status: Upcoming".to_string());
@@ -6870,9 +6961,7 @@ impl BvrApp {
             sorted.sort_by(|(_, a), (_, b)| {
                 let a_closed = a.is_closed_like();
                 let b_closed = b.is_closed_like();
-                a_closed
-                    .cmp(&b_closed)
-                    .then(a.priority.cmp(&b.priority))
+                a_closed.cmp(&b_closed).then(a.priority.cmp(&b.priority))
             });
 
             for (i, (_, issue)) in sorted.iter().enumerate() {
@@ -8853,8 +8942,22 @@ fn new_app_with_background(
         .ok()
         .and_then(|beads_dir| beads_dir.parent().map(std::path::Path::to_path_buf));
 
+    let use_two_phase = issues.len() > crate::analysis::graph::AnalysisConfig::BACKGROUND_THRESHOLD;
+    let analyzer = if use_two_phase {
+        Analyzer::new_fast(issues)
+    } else {
+        Analyzer::new(issues)
+    };
+    #[cfg(not(test))]
+    let slow_metrics_rx = if use_two_phase {
+        Some(analyzer.spawn_slow_computation())
+    } else {
+        None
+    };
+    let slow_metrics_pending = use_two_phase;
+
     BvrApp {
-        analyzer: Analyzer::new(issues),
+        analyzer,
         repo_root,
         selected: 0,
         list_filter: ListFilter::All,
@@ -8926,6 +9029,9 @@ fn new_app_with_background(
         modal_repo_filter: None,
         priority_hints_visible: false,
         status_msg: String::new(),
+        slow_metrics_pending,
+        #[cfg(not(test))]
+        slow_metrics_rx,
         #[cfg(not(test))]
         background_runtime,
         #[cfg(test)]
@@ -9230,6 +9336,60 @@ mod tests {
         ]
     }
 
+    fn graph_many_blocker_issues() -> Vec<Issue> {
+        let mut issues = vec![Issue {
+            id: "MAIN".to_string(),
+            title: "Main Issue".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            dependencies: (0..10)
+                .map(|idx| Dependency {
+                    issue_id: "MAIN".to_string(),
+                    depends_on_id: format!("BLK-{idx:02}"),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                })
+                .collect(),
+            ..Issue::default()
+        }];
+
+        issues.extend((0..10).map(|idx| Issue {
+            id: format!("BLK-{idx:02}"),
+            title: format!("Blocker {idx:02}"),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }));
+
+        issues
+    }
+
+    fn graph_many_dependent_issues() -> Vec<Issue> {
+        let mut issues = vec![Issue {
+            id: "ROOT".to_string(),
+            title: "Root Issue".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+
+        issues.extend((0..10).map(|idx| Issue {
+            id: format!("DEP-{idx:02}"),
+            title: format!("Dependent {idx:02}"),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            dependencies: vec![Dependency {
+                issue_id: format!("DEP-{idx:02}"),
+                depends_on_id: "ROOT".to_string(),
+                dep_type: "blocks".to_string(),
+                ..Dependency::default()
+            }],
+            ..Issue::default()
+        }));
+
+        issues
+    }
+
     fn new_app(mode: ViewMode, selected: usize) -> BvrApp {
         BvrApp {
             analyzer: Analyzer::new(sample_issues()),
@@ -9304,6 +9464,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         }
@@ -9591,6 +9752,11 @@ mod tests {
         assert!(matches!(app.insights_panel, InsightsPanel::Bottlenecks));
 
         app.update(key(KeyCode::Char('s')));
+        assert!(matches!(app.insights_panel, InsightsPanel::Keystones));
+        let list = app.list_panel_text();
+        assert!(list.contains("[Keystones]"));
+
+        app.update(key(KeyCode::Char('s')));
         assert!(matches!(app.insights_panel, InsightsPanel::CriticalPath));
         let list = app.list_panel_text();
         assert!(list.contains("[Critical Path]"));
@@ -9619,13 +9785,40 @@ mod tests {
         app.update(key(KeyCode::Char('s')));
         assert!(matches!(app.insights_panel, InsightsPanel::Cycles));
 
+        app.update(key(KeyCode::Char('s')));
+        assert!(matches!(app.insights_panel, InsightsPanel::Priority));
+        let list = app.list_panel_text();
+        assert!(list.contains("[Priority]"));
+
         // Full cycle wraps back
         app.update(key(KeyCode::Char('s')));
         assert!(matches!(app.insights_panel, InsightsPanel::Bottlenecks));
 
         // S (shift) goes backwards
         app.update(key(KeyCode::Char('S')));
-        assert!(matches!(app.insights_panel, InsightsPanel::Cycles));
+        assert!(matches!(app.insights_panel, InsightsPanel::Priority));
+    }
+
+    #[test]
+    fn insights_keystones_and_priority_panels_render_legacy_style_rows() {
+        let mut app = new_app(ViewMode::Insights, 0);
+        app.mode = ViewMode::Insights;
+
+        app.update(key(KeyCode::Char('s')));
+        let keystones = app.list_panel_text();
+        assert!(keystones.contains("[Keystones]"));
+        assert!(keystones.contains("depth="));
+        assert!(keystones.contains("unblocks="));
+        assert!(keystones.contains("A"));
+
+        for _ in 0..10 {
+            app.update(key(KeyCode::Char('s')));
+        }
+        let priority = app.list_panel_text();
+        assert!(priority.contains("[Priority]"));
+        assert!(priority.contains("score="));
+        assert!(priority.contains("unblocks="));
+        assert!(priority.contains("p"));
     }
 
     #[test]
@@ -9723,6 +9916,42 @@ mod tests {
         assert!(text.contains("[o] B"));
         assert!(text.contains("Dependent"));
         assert!(text.lines().all(|line| line.chars().count() <= 58));
+    }
+
+    #[test]
+    fn graph_detail_text_many_blockers_shows_overflow_summary() {
+        let mut app = new_app_with_issues(ViewMode::Graph, 0, graph_many_blocker_issues());
+        app.mode = ViewMode::Graph;
+        app.select_issue_by_id("MAIN");
+
+        let text = app.graph_detail_text_for_width(120);
+        assert!(text.contains("▲ BLOCKED BY (must complete first) ▲"));
+        assert!(text.contains("[o] BLK-00"));
+        assert!(text.contains("[o] BLK-04"));
+        assert!(text.contains("Blocker 00"));
+        assert!(text.contains("Blocker 04"));
+        assert!(text.contains("+5 more"));
+        assert!(!text.contains("BLK-05"));
+        assert!(!text.contains("Blocker 05"));
+        assert!(text.lines().all(|line| line.chars().count() <= 120));
+    }
+
+    #[test]
+    fn graph_detail_text_many_dependents_shows_overflow_summary() {
+        let mut app = new_app_with_issues(ViewMode::Graph, 0, graph_many_dependent_issues());
+        app.mode = ViewMode::Graph;
+        app.select_issue_by_id("ROOT");
+
+        let text = app.graph_detail_text_for_width(120);
+        assert!(text.contains("▼ BLOCKS (waiting on this) ▼"));
+        assert!(text.contains("[o] DEP-00"));
+        assert!(text.contains("[o] DEP-04"));
+        assert!(text.contains("Dependent 00"));
+        assert!(text.contains("Dependent 04"));
+        assert!(text.contains("+5 more"));
+        assert!(!text.contains("DEP-05"));
+        assert!(!text.contains("Dependent 05"));
+        assert!(text.lines().all(|line| line.chars().count() <= 120));
     }
 
     #[test]
@@ -10383,6 +10612,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -10479,6 +10709,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -10569,6 +10800,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -10677,6 +10909,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -10769,6 +11002,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -10862,6 +11096,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -10956,6 +11191,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -11045,6 +11281,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -11149,6 +11386,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -11239,6 +11477,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -11400,6 +11639,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -11496,6 +11736,7 @@ mod tests {
             modal_repo_filter: None,
             priority_hints_visible: false,
             status_msg: String::new(),
+            slow_metrics_pending: false,
             #[cfg(test)]
             key_trace: Vec::new(),
         };
@@ -12053,6 +12294,7 @@ mod tests {
         let text = app.help_overlay_text(70);
 
         for snippet in [
+            "Toggle actionable mode",
             "Filter: open only",
             "Toggle file tree",
             "Ctrl+R/F5",
@@ -13442,7 +13684,6 @@ mod tests {
         insta::assert_snapshot!(text);
     }
 
-
     // -- Attention view tests ------------------------------------------------
 
     fn labeled_issues() -> Vec<Issue> {
@@ -13763,7 +14004,10 @@ mod tests {
         ));
         let text = app.time_travel_list_text();
         assert!(text.contains("HEAD~1"), "should show ref: {text}");
-        assert!(text.contains("New issues"), "should show new issues category: {text}");
+        assert!(
+            text.contains("New issues"),
+            "should show new issues category: {text}"
+        );
     }
 
     // -- Sprint view tests ---------------------------------------------------
@@ -13784,11 +14028,7 @@ mod tests {
         app.update(key(KeyCode::Char('S')));
         assert_eq!(app.mode, ViewMode::Sprint, "S should enter Sprint mode");
         app.update(key(KeyCode::Char('S')));
-        assert_eq!(
-            app.mode,
-            ViewMode::Main,
-            "S again should return to Main"
-        );
+        assert_eq!(app.mode, ViewMode::Main, "S again should return to Main");
     }
 
     #[test]
@@ -13889,11 +14129,11 @@ mod tests {
         app.sprint_data = vec![make_sprint("s1", "Sprint Alpha", vec!["A", "B", "C"])];
         app.sprint_cursor = 0;
         let text = app.sprint_detail_text();
-        assert!(text.contains("Progress:"), "should show progress bar: {text}");
         assert!(
-            text.contains('%'),
-            "should show percentage: {text}"
+            text.contains("Progress:"),
+            "should show progress bar: {text}"
         );
+        assert!(text.contains('%'), "should show percentage: {text}");
     }
 
     #[test]
@@ -13914,6 +14154,126 @@ mod tests {
         );
     }
 
+    // -- Modal picker tests ---------------------------------------------------
+
+    #[test]
+    fn quote_key_opens_recipe_picker() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('\'')));
+        assert!(
+            matches!(app.modal_overlay, Some(ModalOverlay::RecipePicker { .. })),
+            "' should open recipe picker"
+        );
+    }
+
+    #[test]
+    fn recipe_picker_jk_navigates() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('\'')));
+        if let Some(ModalOverlay::RecipePicker { cursor, .. }) = &app.modal_overlay {
+            assert_eq!(*cursor, 0);
+        }
+        app.update(key(KeyCode::Char('j')));
+        if let Some(ModalOverlay::RecipePicker { cursor, .. }) = &app.modal_overlay {
+            assert_eq!(*cursor, 1, "j should advance cursor");
+        }
+        app.update(key(KeyCode::Char('k')));
+        if let Some(ModalOverlay::RecipePicker { cursor, .. }) = &app.modal_overlay {
+            assert_eq!(*cursor, 0, "k should go back");
+        }
+    }
+
+    #[test]
+    fn recipe_picker_escape_closes() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('\'')));
+        assert!(app.modal_overlay.is_some());
+        app.update(key(KeyCode::Escape));
+        assert!(
+            app.modal_overlay.is_none(),
+            "Esc should close recipe picker"
+        );
+    }
+
+    #[test]
+    fn recipe_picker_enter_selects_and_closes() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('\'')));
+        app.update(key(KeyCode::Enter));
+        assert!(
+            app.modal_overlay.is_none(),
+            "Enter should close recipe picker"
+        );
+        assert!(
+            app.status_msg.contains("Recipe:"),
+            "should show recipe name in status: {}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn capital_l_opens_label_picker() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('L')));
+        assert!(
+            matches!(app.modal_overlay, Some(ModalOverlay::LabelPicker { .. })),
+            "L should open label picker"
+        );
+        // sample_issues have "core" and "parity" labels on issue A
+        if let Some(ModalOverlay::LabelPicker { items, .. }) = &app.modal_overlay {
+            assert!(!items.is_empty(), "should have labels from issues");
+        }
+    }
+
+    #[test]
+    fn label_picker_enter_filters_by_label() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('L')));
+        app.update(key(KeyCode::Enter));
+        assert!(
+            app.modal_label_filter.is_some(),
+            "Enter in label picker should set label filter"
+        );
+        assert!(
+            app.status_msg.contains("Filtering by label"),
+            "should show filter status: {}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn label_filter_clears_on_all() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.modal_label_filter = Some("core".to_string());
+        assert!(app.has_active_filter());
+        app.set_list_filter(ListFilter::All);
+        assert!(
+            app.modal_label_filter.is_none(),
+            "All filter should clear label filter"
+        );
+    }
+
+    #[test]
+    fn w_key_opens_repo_picker_or_status_msg() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('w')));
+        // sample_issues have source_repo="viewer" on issue A, "" on others
+        // So either we get a picker with repos, or a status message
+        if app.modal_overlay.is_some() {
+            assert!(
+                matches!(app.modal_overlay, Some(ModalOverlay::RepoPicker { .. })),
+                "w should open repo picker when repos exist"
+            );
+        } else {
+            // No repos -> status message
+            assert!(
+                app.status_msg.contains("repo") || app.status_msg.contains("workspace"),
+                "should indicate no repos: {}",
+                app.status_msg
+            );
+        }
+    }
+
     #[test]
     fn sprint_with_no_matching_issues_shows_message() {
         let mut app = new_app(ViewMode::Main, 0);
@@ -13929,5 +14289,740 @@ mod tests {
             text.contains("none matched"),
             "should say no issues matched: {text}"
         );
+    }
+
+    // =====================================================================
+    // bd-2ec: Expanded TUI snapshot + keyflow + edge-case coverage
+    // =====================================================================
+
+    // -- Snapshots for newer view modes ------------------------------------
+
+    snapshot_test!(snap_actionable_narrow, ViewMode::Actionable, 60, 30);
+    snapshot_test!(snap_actionable_medium, ViewMode::Actionable, 100, 30);
+    snapshot_test!(snap_actionable_wide, ViewMode::Actionable, 140, 30);
+
+    snapshot_test!(snap_tree_narrow, ViewMode::Tree, 60, 30);
+    snapshot_test!(snap_tree_medium, ViewMode::Tree, 100, 30);
+    snapshot_test!(snap_tree_wide, ViewMode::Tree, 140, 30);
+
+    snapshot_test!(
+        snap_label_dashboard_narrow,
+        ViewMode::LabelDashboard,
+        60,
+        30
+    );
+    snapshot_test!(
+        snap_label_dashboard_medium,
+        ViewMode::LabelDashboard,
+        100,
+        30
+    );
+    snapshot_test!(snap_label_dashboard_wide, ViewMode::LabelDashboard, 140, 30);
+
+    snapshot_test!(snap_flow_matrix_narrow, ViewMode::FlowMatrix, 60, 30);
+    snapshot_test!(snap_flow_matrix_medium, ViewMode::FlowMatrix, 100, 30);
+    snapshot_test!(snap_flow_matrix_wide, ViewMode::FlowMatrix, 140, 30);
+
+    snapshot_test!(snap_sprint_narrow, ViewMode::Sprint, 60, 30);
+    snapshot_test!(snap_sprint_medium, ViewMode::Sprint, 100, 30);
+    snapshot_test!(snap_sprint_wide, ViewMode::Sprint, 140, 30);
+
+    snapshot_test!(snap_time_travel_narrow, ViewMode::TimeTravelDiff, 60, 30);
+    snapshot_test!(snap_time_travel_medium, ViewMode::TimeTravelDiff, 100, 30);
+    snapshot_test!(snap_time_travel_wide, ViewMode::TimeTravelDiff, 140, 30);
+
+    // -- Interactive snapshots for newer view modes -------------------------
+
+    #[test]
+    fn snap_attention_detail_focus() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Tab));
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_tree_detail_focus() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('T')));
+        app.update(key(KeyCode::Tab));
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_label_dashboard_detail_focus() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('[')));
+        app.update(key(KeyCode::Tab));
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_flow_matrix_detail_focus() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Tab));
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_sprint_detail_focus() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.mode = ViewMode::Sprint;
+        app.sprint_data = vec![make_sprint("s1", "Sprint Alpha", vec!["A", "B", "C"])];
+        app.focus = FocusPane::Detail;
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_time_travel_input_prompt() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('t')));
+        // Now in time-travel input mode
+        app.update(key(KeyCode::Char('H')));
+        app.update(key(KeyCode::Char('E')));
+        app.update(key(KeyCode::Char('A')));
+        app.update(key(KeyCode::Char('D')));
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_recipe_picker_overlay() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('\'')));
+        assert!(app.modal_overlay.is_some());
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_label_picker_overlay() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('L')));
+        assert!(app.modal_overlay.is_some());
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    #[test]
+    fn snap_time_travel_with_diff() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.mode = ViewMode::TimeTravelDiff;
+        app.time_travel_input_active = false;
+        app.time_travel_last_ref = Some("HEAD~1".to_string());
+        app.time_travel_diff = Some(crate::analysis::diff::compare_snapshots(
+            &[],
+            &app.analyzer.issues,
+        ));
+        let text = render_app(&app, 100, 30);
+        insta::assert_snapshot!(text);
+    }
+
+    // -- Empty data / edge-case no-panic tests -----------------------------
+
+    #[test]
+    fn tree_view_empty_issues_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.update(key(KeyCode::Char('T')));
+        let list = app.list_panel_text();
+        assert!(!list.is_empty());
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+        app.update(key(KeyCode::Tab));
+        let detail = app.detail_panel_text();
+        assert!(!detail.is_empty());
+    }
+
+    #[test]
+    fn label_dashboard_empty_issues_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.update(key(KeyCode::Char('[')));
+        let list = app.list_panel_text();
+        assert!(!list.is_empty());
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+        app.update(key(KeyCode::Tab));
+        let detail = app.detail_panel_text();
+        assert!(!detail.is_empty());
+    }
+
+    #[test]
+    fn flow_matrix_empty_issues_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.update(key(KeyCode::Char(']')));
+        let list = app.list_panel_text();
+        assert!(!list.is_empty());
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+        app.update(key(KeyCode::Tab));
+        let detail = app.detail_panel_text();
+        assert!(!detail.is_empty());
+    }
+
+    #[test]
+    fn sprint_empty_issues_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.mode = ViewMode::Sprint;
+        app.sprint_data = vec![make_sprint("s1", "Sprint Empty", vec!["X"])];
+        let list = app.list_panel_text();
+        assert!(!list.is_empty());
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+        let detail = app.detail_panel_text();
+        assert!(!detail.is_empty());
+    }
+
+    #[test]
+    fn time_travel_render_all_states_no_panic() {
+        let mut app = new_app(ViewMode::Main, 0);
+        // Input active state
+        app.mode = ViewMode::TimeTravelDiff;
+        app.time_travel_input_active = true;
+        let _ = render_app(&app, 100, 30);
+
+        // No diff state
+        app.time_travel_input_active = false;
+        let _ = render_app(&app, 100, 30);
+
+        // With diff state
+        app.time_travel_diff = Some(crate::analysis::diff::compare_snapshots(
+            &[],
+            &app.analyzer.issues,
+        ));
+        let _ = render_app(&app, 100, 30);
+    }
+
+    #[test]
+    fn actionable_empty_issues_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.update(key(KeyCode::Char('a')));
+        let list = app.list_panel_text();
+        assert!(!list.is_empty());
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('k')));
+        let _ = render_app(&app, 100, 30);
+    }
+
+    #[test]
+    fn all_modes_render_at_narrow_width_no_panic() {
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Board,
+            ViewMode::Insights,
+            ViewMode::Graph,
+            ViewMode::History,
+            ViewMode::Actionable,
+            ViewMode::Attention,
+            ViewMode::Tree,
+            ViewMode::LabelDashboard,
+            ViewMode::FlowMatrix,
+            ViewMode::Sprint,
+            ViewMode::TimeTravelDiff,
+        ] {
+            let _ = render_frame(mode, 40, 10);
+        }
+    }
+
+    #[test]
+    fn all_modes_render_with_single_issue_no_panic() {
+        let single = vec![Issue {
+            id: "X".to_string(),
+            title: "Solo".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Board,
+            ViewMode::Insights,
+            ViewMode::Graph,
+            ViewMode::Actionable,
+            ViewMode::Attention,
+            ViewMode::Tree,
+            ViewMode::LabelDashboard,
+            ViewMode::FlowMatrix,
+        ] {
+            let app = new_app_with_issues(mode, 0, single.clone());
+            let _ = render_app(&app, 100, 30);
+        }
+    }
+
+    #[test]
+    fn all_modes_render_with_all_closed_issues_no_panic() {
+        let closed = vec![
+            Issue {
+                id: "X".to_string(),
+                title: "Done A".to_string(),
+                status: "closed".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "Y".to_string(),
+                title: "Done B".to_string(),
+                status: "closed".to_string(),
+                ..Issue::default()
+            },
+        ];
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Board,
+            ViewMode::Insights,
+            ViewMode::Graph,
+            ViewMode::Actionable,
+            ViewMode::Attention,
+            ViewMode::Tree,
+            ViewMode::LabelDashboard,
+            ViewMode::FlowMatrix,
+        ] {
+            let app = new_app_with_issues(mode, 0, closed.clone());
+            let _ = render_app(&app, 100, 30);
+        }
+    }
+
+    // -- Keyflow journeys through newer modes ------------------------------
+
+    #[test]
+    fn keyflow_full_newer_mode_tour() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Actionable
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Actionable);
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Attention
+        app.update(key(KeyCode::Char('!')));
+        assert_eq!(app.mode, ViewMode::Attention);
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('!')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Tree
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Tree);
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Tab));
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // LabelDashboard
+        app.update(key(KeyCode::Char('[')));
+        assert_eq!(app.mode, ViewMode::LabelDashboard);
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // FlowMatrix
+        app.update(key(KeyCode::Char(']')));
+        assert_eq!(app.mode, ViewMode::FlowMatrix);
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // TimeTravelDiff (enter then cancel)
+        app.update(key(KeyCode::Char('t')));
+        assert_eq!(app.mode, ViewMode::TimeTravelDiff);
+        app.update(key(KeyCode::Escape));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Verify key trace captured all transitions
+        assert!(
+            app.key_trace.len() >= 15,
+            "should have many trace entries: {}",
+            app.key_trace.len()
+        );
+    }
+
+    #[test]
+    fn keyflow_sprint_full_journey() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Enter sprint mode (load_sprint_data called internally, returns empty w/o disk)
+        app.update(key(KeyCode::Char('S')));
+        assert_eq!(app.mode, ViewMode::Sprint);
+
+        // Inject sprint data after entering mode (simulating disk load)
+        app.sprint_data = vec![
+            make_sprint("s1", "Sprint 1", vec!["A", "B"]),
+            make_sprint("s2", "Sprint 2", vec!["C"]),
+        ];
+
+        // Navigate sprints
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(app.sprint_cursor, 1);
+
+        // Switch to detail focus
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+
+        // Navigate back to list
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::List);
+
+        // Return to main
+        app.update(key(KeyCode::Char('S')));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn keyflow_modal_chain() {
+        let mut app = new_app(ViewMode::Main, 0);
+
+        // Open recipe picker, navigate, close
+        app.update(key(KeyCode::Char('\'')));
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::RecipePicker { .. })
+        ));
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Escape));
+        assert!(app.modal_overlay.is_none());
+
+        // Open label picker, select
+        app.update(key(KeyCode::Char('L')));
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::LabelPicker { .. })
+        ));
+        app.update(key(KeyCode::Enter));
+        assert!(app.modal_overlay.is_none());
+        assert!(app.modal_label_filter.is_some());
+
+        // Clear filter
+        app.set_list_filter(ListFilter::All);
+        assert!(app.modal_label_filter.is_none());
+    }
+
+    #[test]
+    fn keyflow_rapid_mode_switching_no_panic() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        // Rapid switching between modes — should never panic
+        let keys = [
+            KeyCode::Char('b'), // Board
+            KeyCode::Char('q'), // Back
+            KeyCode::Char('i'), // Insights
+            KeyCode::Char('q'), // Back
+            KeyCode::Char('g'), // Graph
+            KeyCode::Char('q'), // Back
+            KeyCode::Char('a'), // Actionable
+            KeyCode::Char('a'), // Back
+            KeyCode::Char('!'), // Attention
+            KeyCode::Char('!'), // Back
+            KeyCode::Char('T'), // Tree
+            KeyCode::Char('q'), // Back
+            KeyCode::Char('['), // LabelDashboard
+            KeyCode::Char('q'), // Back
+            KeyCode::Char(']'), // FlowMatrix
+            KeyCode::Char('q'), // Back
+            KeyCode::Char('t'), // TimeTravelDiff
+            KeyCode::Escape,    // Cancel
+            KeyCode::Char('b'), // Board again
+            KeyCode::Char('g'), // Graph from board?
+            KeyCode::Char('q'), // Back
+        ];
+        for k in keys {
+            app.update(key(k));
+        }
+        // Should still be in a valid state
+        assert!(!matches!(app.mode, ViewMode::TimeTravelDiff));
+    }
+
+    #[test]
+    fn keyflow_navigation_in_all_newer_modes() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        // Test j/k/Tab/Esc in each newer mode
+        for mode_key in [
+            KeyCode::Char('a'), // Actionable
+            KeyCode::Char('!'), // Attention
+            KeyCode::Char('T'), // Tree
+            KeyCode::Char('['), // LabelDashboard
+            KeyCode::Char(']'), // FlowMatrix
+        ] {
+            app.update(key(mode_key));
+            app.update(key(KeyCode::Char('j')));
+            app.update(key(KeyCode::Char('j')));
+            app.update(key(KeyCode::Char('k')));
+            app.update(key(KeyCode::Tab));
+            app.update(key(KeyCode::Char('j')));
+            app.update(key(KeyCode::Tab));
+            // Return to main
+            let exit_key = match mode_key {
+                KeyCode::Char('a') => KeyCode::Char('a'),
+                KeyCode::Char('!') => KeyCode::Char('!'),
+                _ => KeyCode::Char('q'),
+            };
+            app.update(key(exit_key));
+            assert_eq!(
+                app.mode,
+                ViewMode::Main,
+                "should return to Main from mode entered via {:?}",
+                mode_key
+            );
+        }
+    }
+
+    #[test]
+    fn keyflow_help_from_newer_modes() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        // Help should work from any mode
+        for mode_key in [
+            KeyCode::Char('a'),
+            KeyCode::Char('T'),
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+        ] {
+            app.update(key(mode_key));
+            app.update(key(KeyCode::Char('?')));
+            assert!(app.show_help, "help should open in mode {:?}", mode_key);
+            app.update(key(KeyCode::Char('?')));
+            assert!(!app.show_help);
+            // Return to main via q (or a for actionable)
+            let exit = match mode_key {
+                KeyCode::Char('a') => KeyCode::Char('a'),
+                _ => KeyCode::Char('q'),
+            };
+            app.update(key(exit));
+        }
+    }
+
+    #[test]
+    fn keyflow_filter_then_mode_switch_preserves_filter() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        // Set open filter
+        app.update(key(KeyCode::Char('o')));
+        assert_eq!(app.list_filter, ListFilter::Open);
+
+        // Switch to Tree mode and back — filter should persist
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Tree);
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+        assert_eq!(
+            app.list_filter,
+            ListFilter::Open,
+            "filter should persist across mode transitions"
+        );
+    }
+
+    // -- Additional edge-case coverage for existing features ---------------
+
+    #[test]
+    fn graph_with_cycle_issues_no_panic() {
+        let issues = vec![
+            Issue {
+                id: "X".to_string(),
+                title: "Cyclic A".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "X".to_string(),
+                    depends_on_id: "Y".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "Y".to_string(),
+                title: "Cyclic B".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "Y".to_string(),
+                    depends_on_id: "X".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Graph,
+            ViewMode::Insights,
+            ViewMode::Actionable,
+        ] {
+            let app = new_app_with_issues(mode, 0, issues.clone());
+            let _ = render_app(&app, 100, 30);
+        }
+    }
+
+    #[test]
+    fn attention_detail_shows_correct_label_on_navigation() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        app.update(key(KeyCode::Char('!')));
+        let labels_count = app.attention_result.as_ref().unwrap().labels.len();
+        if labels_count >= 2 {
+            let detail_0 = app.detail_panel_text();
+            app.update(key(KeyCode::Char('j')));
+            let detail_1 = app.detail_panel_text();
+            // Different label should produce different detail content
+            assert_ne!(
+                detail_0, detail_1,
+                "navigating to next label should change detail"
+            );
+        }
+    }
+
+    #[test]
+    fn sprint_tab_switches_focus_and_navigation_context() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.mode = ViewMode::Sprint;
+        app.sprint_data = vec![
+            make_sprint("s1", "Sprint 1", vec!["A", "B"]),
+            make_sprint("s2", "Sprint 2", vec!["C"]),
+        ];
+
+        // List focus: j/k moves sprint_cursor
+        app.focus = FocusPane::List;
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(app.sprint_cursor, 1);
+
+        // Switch to detail
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+
+        // Detail focus: j/k moves sprint_issue_cursor (sprint 2 has 1 issue)
+        app.update(key(KeyCode::Char('j')));
+        // sprint_issue_cursor can't go past issue count - verify no panic
+
+        // Back to list
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::List);
+    }
+
+    #[test]
+    fn modal_overlay_blocks_mode_switch_keys() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('\'')));
+        assert!(app.modal_overlay.is_some());
+
+        // Mode keys should NOT switch modes while modal is open
+        app.update(key(KeyCode::Char('b')));
+        assert_eq!(
+            app.mode,
+            ViewMode::Main,
+            "b should not switch mode during modal"
+        );
+        assert!(app.modal_overlay.is_some(), "modal should still be open");
+
+        app.update(key(KeyCode::Char('g')));
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Close modal
+        app.update(key(KeyCode::Escape));
+        assert!(app.modal_overlay.is_none());
+
+        // Now mode switch should work
+        app.update(key(KeyCode::Char('b')));
+        assert_eq!(app.mode, ViewMode::Board);
+    }
+
+    #[test]
+    fn label_filter_affects_visible_issues() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        let total = app.visible_issue_indices().len();
+        assert!(total >= 3);
+
+        // Set label filter to "frontend" — only issue C has it
+        app.modal_label_filter = Some("frontend".to_string());
+        let filtered = app.visible_issue_indices().len();
+        assert!(
+            filtered < total,
+            "label filter should reduce visible issues: {filtered} < {total}"
+        );
+    }
+
+    #[test]
+    fn repo_filter_affects_visible_issues() {
+        let mut app = new_app(ViewMode::Main, 0);
+        // sample_issues: A has source_repo="viewer", B and C have ""
+        app.modal_repo_filter = Some("viewer".to_string());
+        let filtered = app.visible_issue_indices().len();
+        assert!(filtered >= 1, "repo filter should show at least one issue");
+    }
+
+    #[test]
+    fn header_shows_combined_filters() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.modal_label_filter = Some("core".to_string());
+        app.modal_repo_filter = Some("viewer".to_string());
+        let text = render_app(&app, 100, 3);
+        assert!(
+            text.contains("label:core") || text.contains("core"),
+            "header should mention label filter: {text}"
+        );
+    }
+
+    // -- Two-phase (fast/slow) metric TUI tests ------------------------------
+
+    #[test]
+    fn slow_metrics_pending_flag_default_false() {
+        let app = new_app(ViewMode::Main, 0);
+        assert!(
+            !app.slow_metrics_pending,
+            "small graph should not have pending slow metrics"
+        );
+    }
+
+    #[test]
+    fn slow_metrics_pending_shows_in_header() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.slow_metrics_pending = true;
+        let text = render_app(&app, 120, 3);
+        assert!(
+            text.contains("computing"),
+            "header should show metrics computing indicator: {text}"
+        );
+    }
+
+    #[test]
+    fn slow_metrics_pending_clears_after_apply() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.slow_metrics_pending = true;
+        let slow = app
+            .analyzer
+            .graph
+            .compute_metrics_with_config(&crate::analysis::graph::AnalysisConfig::slow_phase());
+        app.analyzer.apply_slow_metrics(slow);
+        app.slow_metrics_pending = false;
+        let text = render_app(&app, 120, 3);
+        assert!(
+            !text.contains("computing"),
+            "header should not show computing after metrics applied: {text}"
+        );
+    }
+
+    #[test]
+    fn all_modes_work_with_fast_only_metrics() {
+        // Create analyzer with fast-only metrics
+        let mut app = new_app(ViewMode::Main, 0);
+        let issues = app.analyzer.issues.clone();
+        app.analyzer = Analyzer::new_fast(issues);
+        app.slow_metrics_pending = true;
+
+        // Verify all view modes render without panic
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Board,
+            ViewMode::Graph,
+            ViewMode::Insights,
+            ViewMode::Actionable,
+        ] {
+            app.mode = mode;
+            let _ = render_app(&app, 100, 30);
+        }
     }
 }

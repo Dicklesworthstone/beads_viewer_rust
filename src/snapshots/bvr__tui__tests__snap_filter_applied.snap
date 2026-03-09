@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=Main | focus=list | issues=2/3 | filter=open | sort=default | ? help | Tab focus | Esc ba
+bvr | mode=Main | focus=list | issues=2/3 | filter=open | sort=default | ? help | Tab focus |
 ┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
 │                                        ││                                                        │
 │ > A              open        p0 Root   ││ T A  Root                                              │

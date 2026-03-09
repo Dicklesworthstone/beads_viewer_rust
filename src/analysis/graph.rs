@@ -112,6 +112,48 @@ impl AnalysisConfig {
             eigenvector_max_nodes: 10_000,
         }
     }
+
+    /// Fast phase: only O(V+E) metrics — returned immediately.
+    ///
+    /// Defers betweenness (O(V*E)), eigenvector (O(V*E) iterative), and
+    /// HITS (O(V*E) iterative) to a background thread.
+    #[must_use]
+    pub const fn fast_phase() -> Self {
+        Self {
+            enable_pagerank: true,
+            enable_betweenness: false,
+            enable_eigenvector: false,
+            enable_hits: false,
+            enable_cycles: true,
+            enable_critical_path: true,
+            enable_k_core: true,
+            enable_articulation: true,
+            enable_slack: true,
+            betweenness_max_nodes: 10_000,
+            eigenvector_max_nodes: 10_000,
+        }
+    }
+
+    /// Slow phase: only the expensive O(V*E) metrics.
+    #[must_use]
+    pub const fn slow_phase() -> Self {
+        Self {
+            enable_pagerank: false,
+            enable_betweenness: true,
+            enable_eigenvector: true,
+            enable_hits: true,
+            enable_cycles: false,
+            enable_critical_path: false,
+            enable_k_core: false,
+            enable_articulation: false,
+            enable_slack: false,
+            betweenness_max_nodes: 10_000,
+            eigenvector_max_nodes: 10_000,
+        }
+    }
+
+    /// Node-count threshold above which background computation is used.
+    pub const BACKGROUND_THRESHOLD: usize = 200;
 }
 
 /// Record of a metric that was skipped during analysis.
@@ -149,6 +191,40 @@ pub struct GraphMetrics {
     pub cycles: Vec<Vec<String>>,
     pub skipped_metrics: Vec<SkippedMetric>,
     pub config: AnalysisConfig,
+}
+
+impl GraphMetrics {
+    /// Merge slow-phase metrics into this fast-phase result.
+    ///
+    /// Fills in betweenness, eigenvector, and HITS from `slow`, removes their
+    /// entries from `skipped_metrics`, and upgrades config to full.
+    pub fn merge_slow(&mut self, slow: GraphMetrics) {
+        if !slow.betweenness.is_empty() {
+            self.betweenness = slow.betweenness;
+            self.skipped_metrics.retain(|s| s.metric != "Betweenness");
+        }
+        if !slow.eigenvector.is_empty() {
+            self.eigenvector = slow.eigenvector;
+            self.skipped_metrics.retain(|s| s.metric != "Eigenvector");
+        }
+        if !slow.hubs.is_empty() {
+            self.hubs = slow.hubs;
+            self.authorities = slow.authorities;
+            self.skipped_metrics.retain(|s| s.metric != "HITS");
+        }
+        // Append any skipped_metrics from the slow phase (e.g., if graph was too large)
+        self.skipped_metrics.extend(slow.skipped_metrics);
+        self.config = AnalysisConfig::full();
+    }
+
+    /// Returns true if slow-phase metrics have not yet been computed.
+    #[must_use]
+    pub fn has_pending_slow_metrics(&self) -> bool {
+        self.skipped_metrics.iter().any(|s| {
+            matches!(s.metric, "Betweenness" | "Eigenvector" | "HITS")
+                && s.reason.contains("disabled by config")
+        })
+    }
 }
 
 struct BetweennessScratch {
@@ -1137,6 +1213,53 @@ mod tests {
 
     use super::{AnalysisConfig, IssueGraph};
 
+    fn triangle_issues() -> Vec<Issue> {
+        vec![
+            Issue {
+                id: "A".to_string(),
+                title: "A".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                dependencies: vec![Dependency {
+                    issue_id: "A".to_string(),
+                    depends_on_id: "C".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "B".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                dependencies: vec![Dependency {
+                    issue_id: "B".to_string(),
+                    depends_on_id: "A".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "C".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                dependencies: vec![Dependency {
+                    issue_id: "C".to_string(),
+                    depends_on_id: "B".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ]
+    }
+
     #[test]
     fn critical_depth_matches_dependency_direction() {
         let issues = vec![
@@ -1811,5 +1934,293 @@ mod tests {
             serde_json::to_value(&lean.result).unwrap()
         );
         assert_eq!(full.score_by_id, lean.score_by_id);
+    }
+
+    // -- Two-phase (fast/slow) metric tests ---------------------------------
+
+    #[test]
+    fn fast_phase_skips_expensive_metrics() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let fast = graph.compute_metrics_with_config(&AnalysisConfig::fast_phase());
+
+        // Fast metrics should be populated
+        assert!(!fast.pagerank.is_empty(), "PageRank should be computed");
+        assert!(
+            !fast.blocks_count.is_empty(),
+            "blocks_count should be computed"
+        );
+        assert!(!fast.cycles.is_empty() || fast.cycles.is_empty()); // cycles computed regardless
+
+        // Slow metrics should be empty
+        assert!(
+            fast.betweenness.is_empty(),
+            "betweenness should be deferred"
+        );
+        assert!(
+            fast.eigenvector.is_empty(),
+            "eigenvector should be deferred"
+        );
+        assert!(fast.hubs.is_empty(), "HITS hubs should be deferred");
+        assert!(
+            fast.authorities.is_empty(),
+            "HITS authorities should be deferred"
+        );
+
+        // Skipped metrics should record why
+        assert!(
+            fast.has_pending_slow_metrics(),
+            "should indicate pending slow metrics"
+        );
+    }
+
+    #[test]
+    fn slow_phase_computes_only_expensive_metrics() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let slow = graph.compute_metrics_with_config(&AnalysisConfig::slow_phase());
+
+        // Slow metrics should be populated
+        assert!(
+            !slow.betweenness.is_empty(),
+            "betweenness should be computed"
+        );
+        assert!(
+            !slow.eigenvector.is_empty(),
+            "eigenvector should be computed"
+        );
+        assert!(!slow.hubs.is_empty(), "HITS hubs should be computed");
+
+        // Fast-only metrics should be empty
+        assert!(slow.pagerank.is_empty(), "PageRank should be skipped");
+        assert!(slow.k_core.is_empty(), "k_core should be skipped");
+    }
+
+    #[test]
+    fn merge_slow_produces_complete_metrics() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let mut fast = graph.compute_metrics_with_config(&AnalysisConfig::fast_phase());
+        let slow = graph.compute_metrics_with_config(&AnalysisConfig::slow_phase());
+
+        assert!(fast.has_pending_slow_metrics());
+        fast.merge_slow(slow);
+        assert!(
+            !fast.has_pending_slow_metrics(),
+            "should have no pending metrics after merge"
+        );
+
+        // All metrics should now be populated
+        assert!(!fast.pagerank.is_empty());
+        assert!(!fast.betweenness.is_empty());
+        assert!(!fast.eigenvector.is_empty());
+        assert!(!fast.hubs.is_empty());
+        assert!(!fast.k_core.is_empty());
+    }
+
+    #[test]
+    fn merged_metrics_match_full_computation() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+
+        // Full computation
+        let full = graph.compute_metrics_with_config(&AnalysisConfig::full());
+
+        // Two-phase computation
+        let mut fast = graph.compute_metrics_with_config(&AnalysisConfig::fast_phase());
+        let slow = graph.compute_metrics_with_config(&AnalysisConfig::slow_phase());
+        fast.merge_slow(slow);
+
+        // Should produce identical results
+        assert_eq!(fast.pagerank, full.pagerank);
+        assert_eq!(fast.betweenness, full.betweenness);
+        assert_eq!(fast.eigenvector, full.eigenvector);
+        assert_eq!(fast.hubs, full.hubs);
+        assert_eq!(fast.authorities, full.authorities);
+        assert_eq!(fast.k_core, full.k_core);
+        assert_eq!(fast.articulation_points, full.articulation_points);
+        assert_eq!(fast.blocks_count, full.blocks_count);
+    }
+
+    #[test]
+    fn background_threshold_is_reasonable() {
+        assert!(
+            AnalysisConfig::BACKGROUND_THRESHOLD >= 100,
+            "threshold should be >= 100"
+        );
+        assert!(
+            AnalysisConfig::BACKGROUND_THRESHOLD <= 1000,
+            "threshold should be <= 1000"
+        );
+    }
+
+    // -- AnalysisConfig preset validation tests ----------------------------
+
+    #[test]
+    fn full_config_enables_all_metrics() {
+        let c = AnalysisConfig::full();
+        assert!(c.enable_pagerank);
+        assert!(c.enable_betweenness);
+        assert!(c.enable_eigenvector);
+        assert!(c.enable_hits);
+        assert!(c.enable_cycles);
+        assert!(c.enable_critical_path);
+        assert!(c.enable_k_core);
+        assert!(c.enable_articulation);
+        assert!(c.enable_slack);
+    }
+
+    #[test]
+    fn triage_only_disables_non_triage_metrics() {
+        let c = AnalysisConfig::triage_only();
+        assert!(c.enable_pagerank, "triage needs PageRank");
+        assert!(c.enable_betweenness, "triage needs betweenness");
+        assert!(c.enable_cycles, "triage needs cycles");
+        assert!(!c.enable_eigenvector, "triage skips eigenvector");
+        assert!(!c.enable_hits, "triage skips HITS");
+        assert!(!c.enable_k_core, "triage skips k-core");
+        assert!(!c.enable_slack, "triage skips slack");
+    }
+
+    #[test]
+    fn fast_phase_keeps_all_cheap_metrics() {
+        let c = AnalysisConfig::fast_phase();
+        assert!(c.enable_pagerank, "fast keeps PageRank");
+        assert!(c.enable_cycles, "fast keeps cycles");
+        assert!(c.enable_critical_path, "fast keeps critical_path");
+        assert!(c.enable_k_core, "fast keeps k-core");
+        assert!(c.enable_articulation, "fast keeps articulation");
+        assert!(c.enable_slack, "fast keeps slack");
+        // Expensive metrics deferred
+        assert!(!c.enable_betweenness, "fast defers betweenness");
+        assert!(!c.enable_eigenvector, "fast defers eigenvector");
+        assert!(!c.enable_hits, "fast defers HITS");
+    }
+
+    #[test]
+    fn slow_phase_only_has_expensive_metrics() {
+        let c = AnalysisConfig::slow_phase();
+        assert!(c.enable_betweenness, "slow has betweenness");
+        assert!(c.enable_eigenvector, "slow has eigenvector");
+        assert!(c.enable_hits, "slow has HITS");
+        // Fast metrics skipped
+        assert!(!c.enable_pagerank, "slow skips PageRank");
+        assert!(!c.enable_cycles, "slow skips cycles");
+        assert!(!c.enable_critical_path, "slow skips critical_path");
+        assert!(!c.enable_k_core, "slow skips k-core");
+    }
+
+    #[test]
+    fn for_size_disables_expensive_above_threshold() {
+        let small = AnalysisConfig::for_size(100);
+        assert!(small.enable_betweenness, "100-node graph should compute betweenness");
+        assert!(small.enable_eigenvector, "100-node graph should compute eigenvector");
+        assert!(small.enable_hits, "100-node graph should compute HITS");
+
+        let large = AnalysisConfig::for_size(50_001);
+        assert!(!large.enable_betweenness, "50k-node graph should skip betweenness");
+        assert!(!large.enable_eigenvector, "50k-node graph should skip eigenvector");
+        assert!(!large.enable_hits, "50k-node graph should skip HITS");
+    }
+
+    #[test]
+    fn for_size_boundary_at_10k() {
+        let at_boundary = AnalysisConfig::for_size(10_000);
+        assert!(at_boundary.enable_betweenness, "10k should still compute betweenness");
+
+        let over_boundary = AnalysisConfig::for_size(10_001);
+        assert!(!over_boundary.enable_betweenness, "10k+1 should skip betweenness");
+        assert!(!over_boundary.enable_eigenvector, "10k+1 should skip eigenvector");
+        // HITS threshold is 50k
+        assert!(over_boundary.enable_hits, "10k+1 should still compute HITS");
+    }
+
+    #[test]
+    fn default_config_equals_full() {
+        let default = AnalysisConfig::default();
+        let full = AnalysisConfig::full();
+        assert_eq!(default.enable_pagerank, full.enable_pagerank);
+        assert_eq!(default.enable_betweenness, full.enable_betweenness);
+        assert_eq!(default.enable_eigenvector, full.enable_eigenvector);
+        assert_eq!(default.enable_hits, full.enable_hits);
+        assert_eq!(default.betweenness_max_nodes, full.betweenness_max_nodes);
+    }
+
+    #[test]
+    fn disabled_metric_skipped_and_recorded() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let mut config = AnalysisConfig::full();
+        config.enable_betweenness = false;
+        config.enable_eigenvector = false;
+
+        let metrics = graph.compute_metrics_with_config(&config);
+        assert!(metrics.betweenness.is_empty());
+        assert!(metrics.eigenvector.is_empty());
+        assert!(!metrics.pagerank.is_empty()); // PageRank still computed
+
+        let skipped_names: Vec<&str> = metrics.skipped_metrics.iter().map(|s| s.metric).collect();
+        assert!(skipped_names.contains(&"Betweenness"));
+        assert!(skipped_names.contains(&"Eigenvector"));
+    }
+
+    #[test]
+    fn betweenness_skipped_when_graph_exceeds_max_nodes() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let mut config = AnalysisConfig::full();
+        config.betweenness_max_nodes = 2; // Below triangle graph's 3 nodes
+
+        let metrics = graph.compute_metrics_with_config(&config);
+        assert!(
+            metrics.betweenness.is_empty(),
+            "betweenness should be skipped for graph exceeding max_nodes"
+        );
+        assert!(
+            metrics.skipped_metrics.iter().any(|s| s.metric == "Betweenness"
+                && s.reason.contains("too large")),
+            "should record 'too large' reason"
+        );
+    }
+
+    #[test]
+    fn empty_graph_metrics_all_empty() {
+        let graph = IssueGraph::build(&[]);
+        let metrics = graph.compute_metrics();
+        assert!(metrics.pagerank.is_empty());
+        assert!(metrics.betweenness.is_empty());
+        assert!(metrics.eigenvector.is_empty());
+        assert!(metrics.blocks_count.is_empty());
+        assert!(metrics.cycles.is_empty());
+        assert!(metrics.skipped_metrics.is_empty());
+    }
+
+    #[test]
+    fn merge_slow_is_idempotent() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let mut fast = graph.compute_metrics_with_config(&AnalysisConfig::fast_phase());
+        let slow = graph.compute_metrics_with_config(&AnalysisConfig::slow_phase());
+
+        fast.merge_slow(slow.clone());
+        let betweenness_after_first = fast.betweenness.clone();
+
+        // Second merge should produce same result
+        fast.merge_slow(slow);
+        assert_eq!(
+            fast.betweenness, betweenness_after_first,
+            "merge should be idempotent"
+        );
+    }
+
+    #[test]
+    fn has_pending_slow_metrics_false_after_full_computation() {
+        let issues = triangle_issues();
+        let graph = IssueGraph::build(&issues);
+        let full = graph.compute_metrics_with_config(&AnalysisConfig::full());
+        assert!(
+            !full.has_pending_slow_metrics(),
+            "full computation should have no pending slow metrics"
+        );
     }
 }

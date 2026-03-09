@@ -1,9 +1,8 @@
 ---
 source: src/tui.rs
-assertion_line: 11060
 expression: text
 ---
-bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc back/quit
+bvr | mode=History | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌History Beads [focus]──────────────────────────────┐┌History Timeline─────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ Bead history list (3 beads) | v toggles to git ti ││ History Summary: beads=3 closed-like=1 selected=A                                   │

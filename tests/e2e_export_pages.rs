@@ -519,3 +519,223 @@ fn e2e_export_complex_fixture_has_dependencies_and_metrics() {
     .expect("parse insights");
     assert!(insights.get("bottlenecks").is_some());
 }
+
+// ── Watch-export integration tests ──────────────────────────────────
+
+/// Helper: create a temporary beads file from the fixture for watch tests.
+fn create_mutable_beads_file(label: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("bvr_watch_{label}_"))
+        .tempdir()
+        .expect("create temp dir");
+    let beads_path = dir.path().join("issues.jsonl");
+    fs::copy(FIXTURE, &beads_path).expect("copy fixture");
+    (dir, beads_path)
+}
+
+#[test]
+fn e2e_watch_export_requires_export_pages_flag() {
+    let output = bvr()
+        .arg("--watch-export")
+        .arg("--beads-file")
+        .arg(FIXTURE)
+        .output()
+        .expect("execute bvr");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "watch-export without export-pages should exit 2"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--watch-export requires --export-pages"),
+        "expected guidance in stderr: {stderr}"
+    );
+}
+
+#[test]
+fn e2e_watch_export_single_cycle_regenerates() {
+    let (_beads_dir, beads_path) = create_mutable_beads_file("single");
+    let export_tmp = fresh_export_dir("watch_single");
+    let export_path = export_tmp.path().join("pages");
+
+    let output = bvr()
+        .arg("--export-pages")
+        .arg(&export_path)
+        .arg("--watch-export")
+        .arg("--beads-file")
+        .arg(&beads_path)
+        .env("BVR_WATCH_MAX_LOOPS", "2")
+        .env("BVR_WATCH_INTERVAL_MS", "100")
+        .env("BVR_WATCH_DEBOUNCE_MS", "50")
+        .output()
+        .expect("execute bvr");
+
+    save_diagnostic("watch_single_cycle", &output, &export_path);
+    assert!(
+        output.status.success(),
+        "watch with max_loops should exit 0:\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should show watching message
+    assert!(
+        stderr.contains("Watching") && stderr.contains("source file(s)"),
+        "expected watch startup message: {stderr}"
+    );
+    // Should show the watched path
+    assert!(
+        stderr.contains("issues.jsonl"),
+        "expected watched path in output: {stderr}"
+    );
+    // Should exit via max loops
+    assert!(
+        stderr.contains("max loops reached"),
+        "expected max loops exit message: {stderr}"
+    );
+    // Initial export should have created the bundle
+    assert!(
+        export_path.join("index.html").is_file(),
+        "initial export should create index.html"
+    );
+}
+
+#[test]
+fn e2e_watch_export_detects_file_change_and_regenerates() {
+    let (_beads_dir, beads_path) = create_mutable_beads_file("change");
+    let export_tmp = fresh_export_dir("watch_change");
+    let export_path = export_tmp.path().join("pages");
+
+    // Spawn the watch process in background with short intervals.
+    // We'll modify the file, then let max_loops expire.
+    let beads_path_clone = beads_path.clone();
+    let export_path_clone = export_path.clone();
+
+    // Use a thread to modify the beads file after a short delay
+    let modifier = std::thread::spawn(move || {
+        // Wait for the watch to start
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Append an issue to the beads file to trigger change detection
+        let extra_issue = r#"{"id":"WATCH-1","title":"Added by watch test","status":"open","issue_type":"task","priority":2}"#;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&beads_path_clone)
+            .expect("open beads file for append");
+        use std::io::Write;
+        writeln!(file, "{extra_issue}").expect("append issue");
+    });
+
+    let output = bvr()
+        .arg("--export-pages")
+        .arg(&export_path_clone)
+        .arg("--watch-export")
+        .arg("--beads-file")
+        .arg(&beads_path)
+        .env("BVR_WATCH_MAX_LOOPS", "5")
+        .env("BVR_WATCH_INTERVAL_MS", "100")
+        .env("BVR_WATCH_DEBOUNCE_MS", "50")
+        .timeout(std::time::Duration::from_secs(10))
+        .output()
+        .expect("execute bvr");
+
+    modifier.join().expect("modifier thread");
+    save_diagnostic("watch_change", &output, &export_path);
+    assert!(
+        output.status.success(),
+        "watch should exit 0:\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should detect the change
+    assert!(
+        stderr.contains("change #1 detected"),
+        "expected change detection message: {stderr}"
+    );
+    // Should show the changed file
+    assert!(
+        stderr.contains("issues.jsonl"),
+        "expected changed filename in output: {stderr}"
+    );
+    // Should regenerate
+    assert!(
+        stderr.contains("regenerated"),
+        "expected regeneration message: {stderr}"
+    );
+}
+
+#[test]
+fn e2e_watch_export_shows_poll_and_debounce_config() {
+    let (_beads_dir, beads_path) = create_mutable_beads_file("config");
+    let export_tmp = fresh_export_dir("watch_config");
+    let export_path = export_tmp.path().join("pages");
+
+    let output = bvr()
+        .arg("--export-pages")
+        .arg(&export_path)
+        .arg("--watch-export")
+        .arg("--beads-file")
+        .arg(&beads_path)
+        .env("BVR_WATCH_MAX_LOOPS", "1")
+        .env("BVR_WATCH_INTERVAL_MS", "200")
+        .env("BVR_WATCH_DEBOUNCE_MS", "100")
+        .output()
+        .expect("execute bvr");
+
+    save_diagnostic("watch_config", &output, &export_path);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("poll 200ms") && stderr.contains("debounce 100ms"),
+        "expected config values in startup message: {stderr}"
+    );
+}
+
+#[test]
+fn e2e_watch_export_failure_reports_last_good_served() {
+    // Start with a valid file, then replace it with invalid content
+    let (_beads_dir, beads_path) = create_mutable_beads_file("failure");
+    let export_tmp = fresh_export_dir("watch_failure");
+    let export_path = export_tmp.path().join("pages");
+
+    let beads_path_clone = beads_path.clone();
+    let modifier = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Delete the beads file to trigger a reload error
+        let _ = fs::remove_file(&beads_path_clone);
+    });
+
+    let output = bvr()
+        .arg("--export-pages")
+        .arg(&export_path)
+        .arg("--watch-export")
+        .arg("--beads-file")
+        .arg(&beads_path)
+        .env("BVR_WATCH_MAX_LOOPS", "5")
+        .env("BVR_WATCH_INTERVAL_MS", "100")
+        .env("BVR_WATCH_DEBOUNCE_MS", "50")
+        .timeout(std::time::Duration::from_secs(10))
+        .output()
+        .expect("execute bvr");
+
+    modifier.join().expect("modifier thread");
+    save_diagnostic("watch_failure", &output, &export_path);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The initial export should have succeeded
+    assert!(
+        stderr.contains("Exported pages bundle"),
+        "initial export should succeed: {stderr}"
+    );
+    // After file deletion, either stat fails (warning) or reload fails
+    // Either way, the last good export should still be served
+    let has_failure_msg = stderr.contains("last good export still served")
+        || stderr.contains("cannot stat")
+        || stderr.contains("reload failed");
+    assert!(
+        has_failure_msg,
+        "expected failure/warning message: {stderr}"
+    );
+}

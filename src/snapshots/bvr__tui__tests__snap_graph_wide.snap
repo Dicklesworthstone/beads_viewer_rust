@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=Graph | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc back/quit
+bvr | mode=Graph | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Graph Nodes [focus]────────────────────────────────┐┌Graph Focus──────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ Nodes (3) by critical-path score | h/l nav | / se ││ Graph: nodes=3 edges=1 cycles=0 actionable=1                                        │

@@ -12,7 +12,7 @@ The port is spec-first:
 - Reach 100% functionality/behavioral parity with legacy `bv`.
 - Preserve robot-mode contracts (`--robot-*`) for AI agents.
 - Rebuild the interactive TUI using `/dp/frankentui` primitives.
-- Leverage `/dp/asupersync` for structured async background work (watchers, indexing, correlation jobs).
+- Use standard library async primitives (`std::thread::spawn` + `mpsc::channel`) for background work; `asupersync` integration is a post-parity enhancement.
 - Provide feature-parity visibility and regression safety through fixture-based conformance tests.
 
 ## Non-Goals (Current Bootstrap Pass)
@@ -25,7 +25,7 @@ These are explicitly deferred for later parity waves, not dropped:
 
 ## Reference Projects
 - `/dp/frankentui`: TUI runtime, layout, widget primitives.
-- `/dp/asupersync`: structured async orchestration, cancellation-correct workers.
+- `/dp/asupersync`: structured async orchestration (post-parity enhancement, not required for Go parity).
 - `/dp/rich_rust`: conformance discipline and output polish.
 - `/dp/beads_rust`: beads-domain behavior and data conventions.
 

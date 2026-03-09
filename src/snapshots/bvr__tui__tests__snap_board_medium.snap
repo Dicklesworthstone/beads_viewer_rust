@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr | mode=Board | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus | Esc ba
+bvr | mode=Board | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
 ┌Board Lanes [focus]─────────────────────┐┌Board Focus─────────────────────────────────────────────┐
 │                                        ││                                                        │
 │ Grouping: status (s cycles) | Empty: A ││ ┌────────────────────────────────────────┐             │

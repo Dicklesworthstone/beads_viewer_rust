@@ -171,13 +171,30 @@ impl PreviewShutdownReason {
 }
 
 pub fn print_pages_wizard() {
-    println!("bvr pages wizard (non-interactive)");
+    use crate::pages_wizard::{DeployTarget, WizardStep};
+
+    println!("bvr pages wizard");
     println!();
-    println!("Recommended flow:");
+    println!("Steps:");
+    for step in WizardStep::ALL {
+        println!("  {}. {}", step.display_number(), step.label());
+    }
+    println!();
+    println!("Deploy targets:");
+    for target in DeployTarget::ALL {
+        let tools = target.required_tools();
+        if tools.is_empty() {
+            println!("  - {}", target.label());
+        } else {
+            println!("  - {} (requires: {})", target.label(), tools.join(", "));
+        }
+    }
+    println!();
+    println!("Non-interactive flow:");
     println!("  1) Export bundle:  bvr --export-pages ./bv-pages");
     println!("  2) Preview bundle: bvr --preview-pages ./bv-pages");
     println!("  3) Optional watch: bvr --export-pages ./bv-pages --watch-export");
-    println!("  4) Deploy ./bv-pages to GitHub Pages, Cloudflare Pages, or any static host");
+    println!("  4) Deploy ./bv-pages to your chosen static host");
     println!();
     println!("Tip: customize title and payload scope:");
     println!("  bvr --export-pages ./bv-pages --pages-title \"Sprint Dashboard\" \\");
