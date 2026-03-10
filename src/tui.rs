@@ -5820,6 +5820,10 @@ impl BvrApp {
         let inner_width = usize::from(width.saturating_sub(4)).max(12);
         let visible_rows = usize::from(height.saturating_sub(4)).max(1);
         let selected_history = self.analyzer.history(Some(&issue.id), 1).into_iter().next();
+        let compat_history = self
+            .history_git_cache
+            .as_ref()
+            .and_then(|cache| cache.histories.get(&issue.id));
 
         let mut entries = Vec::new();
         if let Some(history) = selected_history {
@@ -5847,12 +5851,116 @@ impl BvrApp {
         }
 
         let hidden = entries.len().saturating_sub(visible_rows);
-        let mut lines = vec![format!("Cycle view for {}", issue.id), String::new()];
+        let mut lines = if let Some(compat_history) = compat_history {
+            let mut out = vec![format!("Timeline: {}", issue.id), String::new()];
+            out.push(self.history_compact_timeline_text(compat_history, inner_width));
+            if let Some(cycle) = compat_history
+                .cycle_time
+                .as_ref()
+                .and_then(|cycle| cycle.create_to_close.as_deref())
+            {
+                out.push(format!("Cycle: {}", compact_history_duration_label(cycle)));
+            }
+            if let Some(commits) = compat_history.commits.as_ref()
+                && !commits.is_empty()
+            {
+                let avg_confidence =
+                    commits.iter().map(|commit| commit.confidence).sum::<f64>() / commits.len() as f64;
+                out.push(format!(
+                    "Commits: {} | Avg confidence: {:.0}%",
+                    commits.len(),
+                    avg_confidence * 100.0
+                ));
+            }
+            out.push(String::new());
+            out
+        } else {
+            vec![format!("Cycle view for {}", issue.id), String::new()]
+        };
         lines.extend(entries.into_iter().take(visible_rows));
         if hidden > 0 {
             lines.push(format!("+{hidden} more"));
         }
         lines.join("\n")
+    }
+
+    fn history_compact_timeline_text(
+        &self,
+        history: &HistoryBeadCompat,
+        max_width: usize,
+    ) -> String {
+        let mut markers = Vec::<&str>::new();
+        let mut start_ts = None::<&str>;
+        let mut end_ts = None::<&str>;
+
+        if let Some(ref event) = history.milestones.created {
+            markers.push("○");
+            start_ts = Some(event.timestamp.as_str());
+        }
+        if let Some(ref event) = history.milestones.claimed {
+            markers.push("●");
+            start_ts = start_ts.or(Some(event.timestamp.as_str()));
+        }
+
+        let commit_count = history.commits.as_ref().map_or(0, Vec::len);
+        if commit_count > 5 {
+            markers.extend(["├", "├", "├", "├", "…"]);
+        } else {
+            for _ in 0..commit_count {
+                markers.push("├");
+            }
+        }
+
+        if let Some(ref event) = history.milestones.closed {
+            markers.push("✓");
+            end_ts = Some(event.timestamp.as_str());
+        }
+
+        if markers.is_empty() {
+            return "(no timeline data)".to_string();
+        }
+
+        let mut summary = Vec::<String>::new();
+        if let Some(ref cycle) = history.cycle_time {
+            if let Some(ref create_to_close) = cycle.create_to_close {
+                summary.push(format!(
+                    "{} cycle",
+                    compact_history_duration_label(create_to_close)
+                ));
+            }
+        }
+        if commit_count > 0 {
+            summary.push(if commit_count == 1 {
+                "1 commit".to_string()
+            } else {
+                format!("{commit_count} commits")
+            });
+        }
+
+        let mut result = markers.join("──");
+        if !summary.is_empty() {
+            result.push_str("  ");
+            result.push_str(&summary.join(", "));
+        }
+
+        if let (Some(start), Some(end)) = (start_ts, end_ts) {
+            if let (Some(start), Some(end)) = (
+                compact_history_month_day(start),
+                compact_history_month_day(end),
+            ) {
+                let date_range = format!("{start} ─ {end}");
+                if result.chars().count() + date_range.chars().count() + 4 < max_width {
+                    result.push('\n');
+                    result.push_str(&date_range);
+                }
+            }
+        }
+
+        result
+            .lines()
+            .map(|line| truncate_display(line, max_width))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     // -- Actionable view --------------------------------------------------
@@ -8655,6 +8763,10 @@ impl BvrApp {
             return self.no_filtered_issues_text("history mode");
         };
         let selected_history = self.analyzer.history(Some(&issue.id), 1).into_iter().next();
+        let compat_history = self
+            .history_git_cache
+            .as_ref()
+            .and_then(|cache| cache.histories.get(&issue.id));
 
         let all_histories = self.analyzer.history(None, 0);
         let closed_histories = all_histories
@@ -8699,11 +8811,13 @@ impl BvrApp {
         }
 
         // Show milestones from git history correlation if available
-        if let Some(compat_history) = self
-            .history_git_cache
-            .as_ref()
-            .and_then(|cache| cache.histories.get(&issue.id))
-        {
+        if let Some(compat_history) = compat_history {
+            push_text_section(
+                &mut lines,
+                "Timeline",
+                &self.history_compact_timeline_text(compat_history, 56),
+            );
+
             let ms = &compat_history.milestones;
             let has_milestones = ms.created.is_some()
                 || ms.claimed.is_some()
@@ -8744,14 +8858,15 @@ impl BvrApp {
         }
 
         lines.push(String::new());
-        lines.push("LIFECYCLE:".to_string());
-
-        if let Some(history) = selected_history {
+        if let Some(compat_history) = compat_history {
+            lines.extend(history_legacy_lifecycle_lines(compat_history, 5));
+        } else if let Some(history) = selected_history.as_ref() {
+            lines.push("LIFECYCLE:".to_string());
             if history.events.is_empty() {
                 lines.push("  (no events)".to_string());
             } else {
                 let event_count = history.events.len();
-                for (idx, event) in history.events.into_iter().enumerate() {
+                for (idx, event) in history.events.iter().enumerate() {
                     let ts = event
                         .timestamp
                         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
@@ -8769,6 +8884,7 @@ impl BvrApp {
                 }
             }
         } else {
+            lines.push("LIFECYCLE:".to_string());
             lines.push("  (history unavailable for selected issue)".to_string());
         }
 
@@ -9062,6 +9178,155 @@ fn display_or_fallback(value: &str, fallback: &str) -> String {
 
 fn format_compact_timestamp(dt: Option<DateTime<Utc>>) -> String {
     dt.map_or_else(|| "n/a".to_string(), |ts| ts.format("%Y-%m-%d").to_string())
+}
+
+fn compact_history_duration_label(raw: &str) -> String {
+    raw.split_whitespace()
+        .find_map(|token| {
+            let digits = token
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+                .collect::<String>();
+            digits
+                .parse::<i64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .map(|_| token.to_string())
+        })
+        .or_else(|| raw.split_whitespace().next().map(str::to_string))
+        .unwrap_or_else(|| raw.to_string())
+}
+
+fn compact_history_month_day(timestamp: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|dt| dt.format("%b %-d").to_string())
+}
+
+fn legacy_history_author_initials(name: &str) -> String {
+    let parts = name.split_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        [] => "??".to_string(),
+        [single] => {
+            let mut chars = single.chars();
+            match (chars.next(), chars.next()) {
+                (Some(first), Some(second)) => [first, second]
+                    .into_iter()
+                    .flat_map(char::to_uppercase)
+                    .collect(),
+                (Some(first), None) => first.to_uppercase().collect(),
+                (None, _) => "??".to_string(),
+            }
+        }
+        [first, .., last] => [first.chars().next(), last.chars().next()]
+            .into_iter()
+            .flatten()
+            .flat_map(char::to_uppercase)
+            .collect(),
+    }
+}
+
+fn legacy_history_relative_time(timestamp: &str) -> Option<String> {
+    let ts = DateTime::parse_from_rfc3339(timestamp).ok()?;
+    let diff = Utc::now().signed_duration_since(ts.with_timezone(&Utc));
+    if diff < chrono::Duration::zero() {
+        return Some("in future".to_string());
+    }
+    if diff < chrono::Duration::minutes(1) {
+        return Some("just now".to_string());
+    }
+    if diff < chrono::Duration::hours(1) {
+        return Some(format!("{}m ago", diff.num_minutes()));
+    }
+    if diff < chrono::Duration::days(1) {
+        return Some(format!("{}h ago", diff.num_hours()));
+    }
+    if diff < chrono::Duration::days(7) {
+        return Some(format!("{}d ago", diff.num_days()));
+    }
+    if diff < chrono::Duration::days(30) {
+        return Some(format!("{}w ago", diff.num_weeks()));
+    }
+    if diff < chrono::Duration::days(365) {
+        return Some(format!("{}mo ago", diff.num_days() / 30));
+    }
+    Some(format!("{}y ago", diff.num_days() / 365))
+}
+
+fn legacy_history_lifecycle_icon(kind: &str) -> &'static str {
+    match kind.to_ascii_lowercase().as_str() {
+        "created" => "🆕",
+        "claimed" | "assigned" => "👤",
+        "closed" => "✓",
+        "reopened" => "↺",
+        "modified" | "updated" => "✎",
+        _ => "•",
+    }
+}
+
+fn history_legacy_lifecycle_lines(
+    compat_history: &HistoryBeadCompat,
+    max_lines: usize,
+) -> Vec<String> {
+    let mut events = if compat_history.events.is_empty() {
+        let mut fallback = Vec::new();
+        if let Some(event) = compat_history.milestones.created.clone() {
+            fallback.push(event);
+        }
+        if let Some(event) = compat_history.milestones.claimed.clone() {
+            fallback.push(event);
+        }
+        if let Some(event) = compat_history.milestones.closed.clone() {
+            fallback.push(event);
+        }
+        if let Some(event) = compat_history.milestones.reopened.clone() {
+            fallback.push(event);
+        }
+        fallback
+    } else {
+        compat_history.events.clone()
+    };
+
+    if events.is_empty() {
+        return vec!["LIFECYCLE:".to_string(), "  (no events)".to_string()];
+    }
+
+    events.sort_by(|left, right| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left.event_type.cmp(&right.event_type))
+    });
+
+    let mut lines = vec![format!("LIFECYCLE ({})", events.len())];
+    let mut available_events = max_lines.saturating_sub(1);
+    let needs_more_line = events.len() > available_events;
+    if needs_more_line {
+        available_events = available_events.saturating_sub(1);
+    }
+
+    let mut displayed = 0usize;
+    for index in (0..events.len()).rev() {
+        if displayed >= available_events {
+            break;
+        }
+        let event = &events[index];
+        let connector = if index == 0 { "└" } else { "│" };
+        let relative = legacy_history_relative_time(&event.timestamp)
+            .unwrap_or_else(|| "n/a".to_string());
+        let initials = legacy_history_author_initials(&event.author);
+        lines.push(format!(
+            "  {connector} {} {:<7} {initials}",
+            legacy_history_lifecycle_icon(&event.event_type),
+            truncate_display(&relative, 7),
+        ));
+        displayed += 1;
+    }
+
+    if needs_more_line {
+        lines.push(format!("  +{} more", events.len() - displayed));
+    }
+
+    lines
 }
 
 fn join_display_values(values: &[String], limit: usize) -> String {
@@ -9477,11 +9742,15 @@ mod tests {
         GitCommitRecord, HistoryBeadCompat, HistoryCommitCompat, HistoryGitCache, HistoryLayout,
         HistoryMilestonesCompat, HistorySearchMode, HistoryViewMode, InsightsPanel, ListFilter,
         ListSort, ModalOverlay, MouseEventKind, Msg, ViewMode, background_warning_message,
-        buffer_to_text, decide_background_tick, record_view_size, render_debug_view,
-        should_apply_background_reload,
+        buffer_to_text, compact_history_duration_label, decide_background_tick,
+        history_legacy_lifecycle_lines, legacy_history_author_initials, record_view_size,
+        render_debug_view, should_apply_background_reload,
     };
+    use chrono::Utc;
     use crate::analysis::Analyzer;
-    use crate::analysis::git_history::HistoryFileChangeCompat;
+    use crate::analysis::git_history::{
+        HistoryCycleCompat, HistoryEventCompat, HistoryFileChangeCompat,
+    };
     use crate::model::{Comment, Dependency, Issue, Sprint, ts};
     use ftui::core::event::{KeyCode, Modifiers};
     use ftui::runtime::{Cmd, Model};
@@ -12909,6 +13178,47 @@ mod tests {
     }
 
     #[test]
+    fn history_timeline_text_uses_legacy_summary_when_git_history_exists() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
+        {
+            let history = app
+                .history_git_cache
+                .as_mut()
+                .and_then(|cache| cache.histories.get_mut("A"))
+                .expect("history A present");
+            history.milestones.created = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "created".to_string(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.milestones.closed = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "closed".to_string(),
+                timestamp: "2026-01-04T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.cycle_time = Some(HistoryCycleCompat {
+                claim_to_close: Some("2d 0h 0m".to_string()),
+                create_to_close: Some("3d 0h 0m".to_string()),
+                create_to_claim: Some("1d 0h 0m".to_string()),
+            });
+        }
+
+        let text = app.history_timeline_text(48, 12);
+        assert!(text.contains("Timeline: A"));
+        assert!(text.contains("3d cycle"));
+        assert!(text.contains("Cycle: 3d"));
+        assert!(text.contains("Avg confidence"));
+    }
+
+    #[test]
     fn history_detail_shows_yof_hints() {
         let app = new_app(ViewMode::History, 0);
         let detail = app.detail_panel_text();
@@ -13134,6 +13444,290 @@ mod tests {
         app.view(&mut frame);
         let git_view = buffer_to_text(&frame.buffer, &pool);
         assert!(git_view.contains("mode=History ◉ Git"));
+    }
+
+    #[test]
+    fn compact_history_duration_label_prefers_first_nonzero_unit() {
+        assert_eq!(compact_history_duration_label("3d 0h 0m"), "3d");
+        assert_eq!(compact_history_duration_label("0d 5h 0m"), "5h");
+        assert_eq!(compact_history_duration_label("0d 0h 15m"), "15m");
+    }
+
+    #[test]
+    fn legacy_history_author_initials_match_go_contract() {
+        assert_eq!(legacy_history_author_initials(""), "??");
+        assert_eq!(legacy_history_author_initials("alice"), "AL");
+        assert_eq!(legacy_history_author_initials("Alice Baker"), "AB");
+        assert_eq!(legacy_history_author_initials("Alice Beth Carter"), "AC");
+    }
+
+    #[test]
+    fn history_compact_timeline_matches_legacy_marker_contract() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
+        let history = {
+            let history = app
+                .history_git_cache
+                .as_mut()
+                .and_then(|cache| cache.histories.get_mut("A"))
+                .expect("history A present");
+
+            history.milestones.created = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "created".to_string(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.milestones.claimed = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "claimed".to_string(),
+                timestamp: "2026-01-02T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.milestones.closed = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "closed".to_string(),
+                timestamp: "2026-01-04T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.cycle_time = Some(HistoryCycleCompat {
+                claim_to_close: Some("2d 0h 0m".to_string()),
+                create_to_close: Some("3d 0h 0m".to_string()),
+                create_to_claim: Some("1d 0h 0m".to_string()),
+            });
+            history.clone()
+        };
+
+        let text = app.history_compact_timeline_text(&history, 80);
+        assert!(text.contains("○"));
+        assert!(text.contains("●"));
+        assert!(text.contains("├"));
+        assert!(text.contains("✓"));
+        assert!(text.contains("3d cycle"));
+        assert!(text.contains("2 commits"));
+    }
+
+    #[test]
+    fn history_compact_timeline_collapses_many_commit_markers() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
+        let history = {
+            let history = app
+                .history_git_cache
+                .as_mut()
+                .and_then(|cache| cache.histories.get_mut("A"))
+                .expect("history A present");
+
+            history.milestones.created = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "created".to_string(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.commits = Some(vec![
+                history_commit("a1", "feat: one", 0.90, &["src/a.rs"]),
+                history_commit("a2", "feat: two", 0.90, &["src/b.rs"]),
+                history_commit("a3", "feat: three", 0.90, &["src/c.rs"]),
+                history_commit("a4", "feat: four", 0.90, &["src/d.rs"]),
+                history_commit("a5", "feat: five", 0.90, &["src/e.rs"]),
+                history_commit("a6", "feat: six", 0.90, &["src/f.rs"]),
+                history_commit("a7", "feat: seven", 0.90, &["src/g.rs"]),
+            ]);
+            history.clone()
+        };
+
+        let text = app.history_compact_timeline_text(&history, 80);
+        assert!(text.contains("…"));
+        assert!(text.contains("7 commits"));
+    }
+
+    #[test]
+    fn history_detail_surfaces_compact_timeline_when_git_history_exists() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
+        {
+            let history = app
+                .history_git_cache
+                .as_mut()
+                .and_then(|cache| cache.histories.get_mut("A"))
+                .expect("history A present");
+
+            history.milestones.created = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "created".to_string(),
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.milestones.closed = Some(HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: "closed".to_string(),
+                timestamp: "2026-01-04T00:00:00Z".to_string(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: "Alice".to_string(),
+                author_email: "alice@example.com".to_string(),
+            });
+            history.cycle_time = Some(HistoryCycleCompat {
+                claim_to_close: Some("2d 0h 0m".to_string()),
+                create_to_close: Some("3d 0h 0m".to_string()),
+                create_to_claim: Some("1d 0h 0m".to_string()),
+            });
+        }
+
+        let text = app.history_detail_text();
+        assert!(text.contains("Timeline:"));
+        assert!(text.contains("3d cycle"));
+    }
+
+    #[test]
+    fn history_legacy_lifecycle_lines_match_go_shape() {
+        let now = Utc::now();
+        let history = HistoryBeadCompat {
+            bead_id: "A".to_string(),
+            title: "Root".to_string(),
+            status: "open".to_string(),
+            events: vec![
+                HistoryEventCompat {
+                    bead_id: "A".to_string(),
+                    event_type: "created".to_string(),
+                    timestamp: (now - chrono::Duration::hours(3)).to_rfc3339(),
+                    commit_sha: String::new(),
+                    commit_message: String::new(),
+                    author: "Alice".to_string(),
+                    author_email: "alice@example.com".to_string(),
+                },
+                HistoryEventCompat {
+                    bead_id: "A".to_string(),
+                    event_type: "claimed".to_string(),
+                    timestamp: (now - chrono::Duration::hours(2)).to_rfc3339(),
+                    commit_sha: String::new(),
+                    commit_message: String::new(),
+                    author: "Bob Builder".to_string(),
+                    author_email: "bob@example.com".to_string(),
+                },
+                HistoryEventCompat {
+                    bead_id: "A".to_string(),
+                    event_type: "closed".to_string(),
+                    timestamp: (now - chrono::Duration::minutes(30)).to_rfc3339(),
+                    commit_sha: String::new(),
+                    commit_message: String::new(),
+                    author: "Carol".to_string(),
+                    author_email: "carol@example.com".to_string(),
+                },
+            ],
+            milestones: HistoryMilestonesCompat::default(),
+            commits: None,
+            cycle_time: None,
+            last_author: String::new(),
+        };
+
+        let lines = history_legacy_lifecycle_lines(&history, 5);
+        let text = lines.join("\n");
+        assert!(text.contains("LIFECYCLE (3)"));
+        assert!(text.contains("✓"));
+        assert!(text.contains("👤"));
+        assert!(text.contains("🆕"));
+        assert!(text.contains("CA"));
+        assert!(text.contains("BB"));
+        assert!(text.contains("AL"));
+    }
+
+    #[test]
+    fn history_legacy_lifecycle_lines_show_overflow_summary() {
+        let now = Utc::now();
+        let events = (0..5)
+            .map(|idx| HistoryEventCompat {
+                bead_id: "A".to_string(),
+                event_type: if idx == 0 {
+                    "created".to_string()
+                } else {
+                    "updated".to_string()
+                },
+                timestamp: (now - chrono::Duration::hours(i64::from(5 - idx))).to_rfc3339(),
+                commit_sha: String::new(),
+                commit_message: String::new(),
+                author: format!("Agent {idx}"),
+                author_email: format!("agent{idx}@example.com"),
+            })
+            .collect::<Vec<_>>();
+        let history = HistoryBeadCompat {
+            bead_id: "A".to_string(),
+            title: "Root".to_string(),
+            status: "open".to_string(),
+            events,
+            milestones: HistoryMilestonesCompat::default(),
+            commits: None,
+            cycle_time: None,
+            last_author: String::new(),
+        };
+
+        let lines = history_legacy_lifecycle_lines(&history, 5);
+        let text = lines.join("\n");
+        assert_eq!(lines.len(), 5);
+        assert!(text.contains("LIFECYCLE (5)"));
+        assert!(text.contains("+2 more"));
+    }
+
+    #[test]
+    fn history_detail_prefers_legacy_lifecycle_summary_when_git_events_exist() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
+        let now = Utc::now();
+        {
+            let history = app
+                .history_git_cache
+                .as_mut()
+                .and_then(|cache| cache.histories.get_mut("A"))
+                .expect("history A present");
+            history.events = vec![
+                HistoryEventCompat {
+                    bead_id: "A".to_string(),
+                    event_type: "created".to_string(),
+                    timestamp: (now - chrono::Duration::hours(3)).to_rfc3339(),
+                    commit_sha: String::new(),
+                    commit_message: String::new(),
+                    author: "Alice".to_string(),
+                    author_email: "alice@example.com".to_string(),
+                },
+                HistoryEventCompat {
+                    bead_id: "A".to_string(),
+                    event_type: "claimed".to_string(),
+                    timestamp: (now - chrono::Duration::hours(2)).to_rfc3339(),
+                    commit_sha: String::new(),
+                    commit_message: String::new(),
+                    author: "Bob Builder".to_string(),
+                    author_email: "bob@example.com".to_string(),
+                },
+                HistoryEventCompat {
+                    bead_id: "A".to_string(),
+                    event_type: "closed".to_string(),
+                    timestamp: (now - chrono::Duration::minutes(30)).to_rfc3339(),
+                    commit_sha: String::new(),
+                    commit_message: String::new(),
+                    author: "Carol".to_string(),
+                    author_email: "carol@example.com".to_string(),
+                },
+            ];
+        }
+
+        let text = app.history_detail_text();
+        assert!(text.contains("LIFECYCLE (3)"));
+        assert!(text.contains("🆕"));
+        assert!(text.contains("👤"));
+        assert!(text.contains("✓"));
+        assert!(text.contains("CA"));
+        assert!(!text.contains("  │ created"));
     }
 
     #[test]
