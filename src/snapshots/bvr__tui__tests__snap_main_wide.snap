@@ -31,4 +31,4 @@ bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help |
 │                                                   ││                                                                                     │
 │                                                   ││                                                                                     │
 └───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
-b/i/g/h modes | s sort (default) | p hints | C copy | x export | O edit
+b/i/g/h modes | / search | s sort (default) | p hints | C copy | x export | O edit
