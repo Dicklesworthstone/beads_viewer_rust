@@ -1,0 +1,301 @@
+---
+source: src/tui.rs
+expression: artifact
+---
+=== E2E Journey: actionable→tree→attention | 120x35 ===
+
+--- Step 1: main_start ---
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Issues [focus]──────────────────────────────┐┌Details─────────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ > A              open        p1 Feature wo ││ F A  Feature work                                                      │
+│   B              open        p2 Bug fix    ││ Status: open | Priority: p1 | Type: feature | State: ready             │
+│   C              open        p3 UI polish  ││ Assignee: unassigned | Repo: local | Estimate: n/a                     │
+│                                            ││ Created: n/a | Updated: n/a | Due: n/a                                 │
+│                                            ││ Closed: n/a | Labels: backend, urgent                                  │
+│                                            ││                                                                        │
+│                                            ││ Triage Snapshot:                                                       │
+│                                            ││   open blockers: 0 (none)                                              │
+│                                            ││   unblocks: 0 (none)                                                   │
+│                                            ││   dependency pressure: 0 upstream | 0 downstream                       │
+│                                            ││                                                                        │
+│                                            ││ Graph Signals:                                                         │
+│                                            ││   Critical depth: 1 | k-core: 0 | slack: 0.0000 | cut-point: no        │
+│                                            ││   PageRank:       0.3333  ██████  #1                                   │
+│                                            ││   Betweenness:    0.0000  ░░░░░░  #1                                   │
+│                                            ││   Eigenvector:    0.5774  ██████  #1                                   │
+│                                            ││   HITS: hub 0.0000 ░░░░░░ #1 | auth 0.0000 ░░░░░░ #1                   │
+│                                            ││                                                                        │
+│                                            ││ Dependency Map:                                                        │
+│                                            ││   upstream: none                                                       │
+│                                            ││   open gate: none                                                      │
+│                                            ││   downstream: none                                                     │
+│                                            ││                                                                        │
+│                                            ││ History Summary (1 events):                                            │
+│                                            ││   + n/a Issue A created                                                │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+b/i/g/h modes | / search | s sort (default) | p hints | C copy | x export | O edit
+
+--- Step 2: actionable_entry ---
+bvr | mode=Actionable | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Execution Tracks [focus]────────────────────┐┌Track Detail────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ ⚡ ACTIONABLE ITEMS | 3 items in 3 tracks  ││ TRACK 1                                                                │
+│ RECOMMENDED: Start with A -> highest impac ││ independent issue — can execute in parallel                            │
+│                                            ││ 1 actionable item                                                      │
+│ ▸ TRACK 1 | independent issue — can execut ││                                                                        │
+│   1 item                                   ││ ▸ A  score 0.605                                                       │
+│    └─ A             0.60  Feature work     ││   Feature work                                                         │
+│                                            ││   Claim: br update A --status=in_progress                              │
+│   TRACK 2 | independent issue — can execut ││                                                                        │
+│   1 item                                   ││ Highest impact: A                                                      │
+│    └─ B             0.59  Bug fix          ││ Impact detail: highest impact: A (score 0.60)                          │
+│                                            ││                                                                        │
+│   TRACK 3 | independent issue — can execut ││                                                                        │
+│   1 item                                   ││                                                                        │
+│    └─ C             0.43  UI polish        ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+Actionable: 3 tracks, 3 items | j/k navigate | Tab focus | a/Esc back
+
+--- Step 3: actionable_detail_nav ---
+bvr | mode=Actionable | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Execution Tracks────────────────────────────┐┌Track Detail [focus]────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ ⚡ ACTIONABLE ITEMS | 3 items in 3 tracks  ││ TRACK 1                                                                │
+│ RECOMMENDED: Start with A -> highest impac ││ independent issue — can execute in parallel                            │
+│                                            ││ 1 actionable item                                                      │
+│   TRACK 1 | independent issue — can execut ││                                                                        │
+│   1 item                                   ││ ▸ A  score 0.605                                                       │
+│   ▸└─ A             0.60  Feature work     ││   Feature work                                                         │
+│                                            ││   Claim: br update A --status=in_progress                              │
+│   TRACK 2 | independent issue — can execut ││                                                                        │
+│   1 item                                   ││ Highest impact: A                                                      │
+│    └─ B             0.59  Bug fix          ││ Impact detail: highest impact: A (score 0.60)                          │
+│                                            ││                                                                        │
+│   TRACK 3 | independent issue — can execut ││                                                                        │
+│   1 item                                   ││                                                                        │
+│    └─ C             0.43  UI polish        ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+Actionable: 3 tracks, 3 items | j/k navigate | Tab focus | a/Esc back
+
+--- Step 4: tree_entry ---
+bvr | mode=Tree | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Dependency Tree [focus]─────────────────────┐┌Issue Detail────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ Dependency tree (3 nodes) | Enter expand/c ││ ID: A                                                                  │
+│                                            ││ Title: Feature work                                                    │
+│ >     (o) A Feature work                   ││ Status: open                                                           │
+│       (o) B Bug fix                        ││ Type: feature                                                          │
+│       (o) C UI polish                      ││ Depth: 0                                                               │
+│                                            ││ Labels: backend, urgent                                                │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+Tree: 3 nodes | j/k navigate | Enter expand/collapse | Tab focus | T/Esc back
+
+--- Step 5: tree_navigate ---
+bvr | mode=Tree | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Dependency Tree [focus]─────────────────────┐┌Issue Detail────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ Dependency tree (3 nodes) | Enter expand/c ││ ID: A                                                                  │
+│                                            ││ Title: Feature work                                                    │
+│ >     (o) A Feature work                   ││ Status: open                                                           │
+│       (o) B Bug fix                        ││ Type: feature                                                          │
+│       (o) C UI polish                      ││ Depth: 0                                                               │
+│                                            ││ Labels: backend, urgent                                                │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+Tree: 3 nodes | j/k navigate | Enter expand/collapse | Tab focus | T/Esc back
+
+--- Step 6: attention_entry ---
+bvr | mode=Attention | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Label Attention [focus]─────────────────────┐┌Label Detail────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ Rank  Label                 Score  Reason  ││ Label: backend                                                         │
+│ ────────────────────────────────────────── ││ Rank: #1                                                               │
+│ ▸  1  backend                0.7  2 open i ││ Attention Score: 0.667                                                 │
+│    2  frontend               0.3  1 open i ││ Normalized: 1.000                                                      │
+│    3  urgent                 0.3  1 open i ││                                                                        │
+│                                            ││ Breakdown:                                                             │
+│                                            ││   Open:     2                                                          │
+│                                            ││   Blocked:  0                                                          │
+│                                            ││   Stale:    0                                                          │
+│                                            ││                                                                        │
+│                                            ││ Factors:                                                               │
+│                                            ││   PageRank sum:     0.6667                                             │
+│                                            ││   Staleness factor: 1.00                                               │
+│                                            ││   Block impact:     0.0                                                │
+│                                            ││   Velocity factor:  1.00                                               │
+│                                            ││                                                                        │
+│                                            ││ Reason: 2 open issue(s)                                                │
+│                                            ││                                                                        │
+│                                            ││ Open issues (2):                                                       │
+│                                            ││   A                                                                    │
+│                                            ││   B                                                                    │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+Attention: 3 labels ranked | j/k navigate | Tab focus | !/Esc back
+
+--- Step 7: attention_detail ---
+bvr | mode=Attention | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Label Attention─────────────────────────────┐┌Label Detail [focus]────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ Rank  Label                 Score  Reason  ││ Label: frontend                                                        │
+│ ────────────────────────────────────────── ││ Rank: #2                                                               │
+│    1  backend                0.7  2 open i ││ Attention Score: 0.333                                                 │
+│ ▸  2  frontend               0.3  1 open i ││ Normalized: 0.000                                                      │
+│    3  urgent                 0.3  1 open i ││                                                                        │
+│                                            ││ Breakdown:                                                             │
+│                                            ││   Open:     1                                                          │
+│                                            ││   Blocked:  0                                                          │
+│                                            ││   Stale:    0                                                          │
+│                                            ││                                                                        │
+│                                            ││ Factors:                                                               │
+│                                            ││   PageRank sum:     0.3333                                             │
+│                                            ││   Staleness factor: 1.00                                               │
+│                                            ││   Block impact:     0.0                                                │
+│                                            ││   Velocity factor:  1.00                                               │
+│                                            ││                                                                        │
+│                                            ││ Reason: 1 open issue(s)                                                │
+│                                            ││                                                                        │
+│                                            ││ Open issues (1):                                                       │
+│                                            ││   C                                                                    │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+Attention: 3 labels ranked | j/k navigate | Tab focus | !/Esc back
+
+--- Step 8: main_return ---
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Issues [focus]──────────────────────────────┐┌Details─────────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ > A              open        p1 Feature wo ││ F A  Feature work                                                      │
+│   B              open        p2 Bug fix    ││ Status: open | Priority: p1 | Type: feature | State: ready             │
+│   C              open        p3 UI polish  ││ Assignee: unassigned | Repo: local | Estimate: n/a                     │
+│                                            ││ Created: n/a | Updated: n/a | Due: n/a                                 │
+│                                            ││ Closed: n/a | Labels: backend, urgent                                  │
+│                                            ││                                                                        │
+│                                            ││ Triage Snapshot:                                                       │
+│                                            ││   open blockers: 0 (none)                                              │
+│                                            ││   unblocks: 0 (none)                                                   │
+│                                            ││   dependency pressure: 0 upstream | 0 downstream                       │
+│                                            ││                                                                        │
+│                                            ││ Graph Signals:                                                         │
+│                                            ││   Critical depth: 1 | k-core: 0 | slack: 0.0000 | cut-point: no        │
+│                                            ││   PageRank:       0.3333  ██████  #1                                   │
+│                                            ││   Betweenness:    0.0000  ░░░░░░  #1                                   │
+│                                            ││   Eigenvector:    0.5774  ██████  #1                                   │
+│                                            ││   HITS: hub 0.0000 ░░░░░░ #1 | auth 0.0000 ░░░░░░ #1                   │
+│                                            ││                                                                        │
+│                                            ││ Dependency Map:                                                        │
+│                                            ││   upstream: none                                                       │
+│                                            ││   open gate: none                                                      │
+│                                            ││   downstream: none                                                     │
+│                                            ││                                                                        │
+│                                            ││ History Summary (1 events):                                            │
+│                                            ││   + n/a Issue A created                                                │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+b/i/g/h modes | / search | s sort (default) | p hints | C copy | x export | O edit

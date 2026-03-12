@@ -1,0 +1,301 @@
+---
+source: src/tui.rs
+expression: artifact
+---
+=== E2E Journey: history-deep-dive | 120x35 ===
+
+--- Step 1: history_entry ---
+bvr | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Beads With History [focus]────────┐┌Commits─────────────────────────────────┐┌Commit Details──────────────────────────┐
+│                                  ││                                        ││                                        │
+│ Bead history list (3 beads) | v  ││ No commits correlated with A.          ││ History Summary: beads=3 closed-like=1 │
+│                                  ││                                        ││                                        │
+│ > A            events: 2 open    ││                                        ││ Issue: A (Root)                        │
+│   B            events: 3 open    ││                                        ││ Status: open                           │
+│   C            events: 3 closed  ││                                        ││ Min confidence filter: >= 0%           │
+│                                  ││                                        ││ Created/Updated/Closed: 2026-01-01 / 2 │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││ Timeline:                              │
+│                                  ││                                        ││   (no timeline data)                   │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││ LIFECYCLE:                             │
+│                                  ││                                        ││   (no events)                          │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││ v: switch to git timeline | J/K: cycle │
+│                                  ││                                        ││ y: copy bead ID | o: open commit | f:  │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (bead): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 2: history_bead_nav ---
+bvr | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Beads With History [focus]────────┐┌Commits─────────────────────────────────┐┌Commit Details──────────────────────────┐
+│                                  ││                                        ││                                        │
+│ Bead history list (3 beads) | v  ││ No commits correlated with B.          ││ History Summary: beads=3 closed-like=1 │
+│                                  ││                                        ││                                        │
+│   A            events: 2 open    ││                                        ││ Issue: B (Dependent)                   │
+│ > B            events: 3 open    ││                                        ││ Status: open                           │
+│   C            events: 3 closed  ││                                        ││ Min confidence filter: >= 0%           │
+│                                  ││                                        ││ Created/Updated/Closed: 2026-01-03 / 2 │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││ Timeline:                              │
+│                                  ││                                        ││   (no timeline data)                   │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││ LIFECYCLE:                             │
+│                                  ││                                        ││   (no events)                          │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││ v: switch to git timeline | J/K: cycle │
+│                                  ││                                        ││ y: copy bead ID | o: open commit | f:  │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (bead): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 3: history_git_mode ---
+bvr | mode=History ◉ Git | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Commits [focus]───────────────────┐┌Related Beads───────────────────────────┐┌Commit Details──────────────────────────┐
+│                                  ││                                        ││                                        │
+│ No git commits correlated with b ││ Select a commit to view related beads. ││ No correlated git commits available.   │
+│ (ensure repo has commits referen ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (git): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 4: history_search ---
+bvr | mode=History ◉ Git | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Commits [focus]───────────────────┐┌Related Beads───────────────────────────┐┌Commit Details──────────────────────────┐
+│                                  ││                                        ││                                        │
+│ (no commits match search: /test) ││ Select a commit to view related beads. ││ No correlated git commits available.   │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (git): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 5: history_bead_return ---
+bvr | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Beads With History [focus]────────┐┌Commits─────────────────────────────────┐┌Commit Details──────────────────────────┐
+│                                  ││                                        ││                                        │
+│ (no issues match history search: ││ Select a bead to view correlated commi ││ No issues match the active filter (all │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (bead): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 6: history_middle_focus ---
+bvr | mode=History ◈ Beads | focus=middle | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Beads With History────────────────┐┌Commits [focus]─────────────────────────┐┌Commit Details──────────────────────────┐
+│                                  ││                                        ││                                        │
+│ (no issues match history search: ││ Select a bead to view correlated commi ││ No issues match the active filter (all │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (bead): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 7: history_detail_focus ---
+bvr | mode=History ◈ Beads | focus=detail | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Beads With History────────────────┐┌Commits─────────────────────────────────┐┌Commit Details [focus]──────────────────┐
+│                                  ││                                        ││                                        │
+│ (no issues match history search: ││ Select a bead to view correlated commi ││ No issues match the active filter (all │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+└──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
+History (bead): c confidence (>= 0%) | v bead/git | / search (Tab mode) | f file-tree | h/Esc back
+
+--- Step 8: main_after_history ---
+bvr | mode=Main | focus=list | issues=3/3 | filter=all | sort=default | ? help | Tab focus |
+┌Issues [focus]──────────────────────────────┐┌Details─────────────────────────────────────────────────────────────────┐
+│                                            ││                                                                        │
+│ > A              open        p0 Root       ││ T A  Root                                                              │
+│   B              open        p0 Dependent  ││ Status: open | Priority: p0 | Type: task | State: ready                │
+│   C              closed      p0 Closed     ││ Assignee: alice | Repo: viewer | Estimate: 90m                         │
+│                                            ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a                   │
+│                                            ││ Closed: n/a | Labels: core, parity                                     │
+│                                            ││                                                                        │
+│                                            ││ Triage Snapshot:                                                       │
+│                                            ││   open blockers: 0 (none)                                              │
+│                                            ││   unblocks: 1 (B)                                                      │
+│                                            ││   dependency pressure: 0 upstream | 1 downstream                       │
+│                                            ││                                                                        │
+│                                            ││ Graph Signals:                                                         │
+│                                            ││   Critical depth: 2 | k-core: 1 | slack: 0.0000 | cut-point: no        │
+│                                            ││   PageRank:       0.4805  ██████  #1                                   │
+│                                            ││   Betweenness:    0.0000  ░░░░░░  #1                                   │
+│                                            ││   Eigenvector:    1.0000  ██████  #1                                   │
+│                                            ││   HITS: hub 0.0000 ░░░░░░ #2 | auth 1.0000 ██████ #1                   │
+│                                            ││                                                                        │
+│                                            ││ Description:                                                           │
+│                                            ││   Top-level issue that unblocks downstream work once the shared baseli │
+│                                            ││                                                                        │
+│                                            ││ Design Notes:                                                          │
+│                                            ││   Keep the main flow lean, surface the most important context first, a │
+│                                            ││                                                                        │
+│                                            ││ Acceptance Criteria:                                                   │
+│                                            ││   - Detail summary shows triage and graph context.                     │
+│                                            ││   - Rich body sections stay readable across narrow and wide panes.     │
+│                                            ││                                                                        │
+│                                            ││ Notes:                                                                 │
+│                                            ││                                                                        │
+└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
+b/i/g/h modes | / search | s sort (default) | p hints | C copy | x export | O edit

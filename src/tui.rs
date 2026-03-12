@@ -17491,4 +17491,337 @@ mod tests {
             let _ = render_app(&app, 100, 30);
         }
     }
+
+    // =========================================================================
+    // E2E TUI JOURNEYS (bd-7oo.4.6)
+    //
+    // Multi-mode investigative flows with screen captures at each transition.
+    // These exercise the complete user experience across mode boundaries.
+    //
+    // Run: cargo test --lib e2e_journey_
+    // =========================================================================
+
+    /// Helper: capture a labelled screen dump for an e2e journey step.
+    /// Returns the rendered text for assertion or snapshot use.
+    fn journey_capture(
+        app: &BvrApp,
+        width: u16,
+        height: u16,
+        step: &str,
+        captures: &mut Vec<(String, String)>,
+    ) -> String {
+        let text = render_app(app, width, height);
+        captures.push((step.to_string(), text.clone()));
+        text
+    }
+
+    /// Format all captured journey steps into a single diagnostic artifact.
+    fn journey_artifact(
+        journey_name: &str,
+        width: u16,
+        height: u16,
+        captures: &[(String, String)],
+    ) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "=== E2E Journey: {journey_name} | {width}x{height} ===\n\n"
+        ));
+        for (i, (step, text)) in captures.iter().enumerate() {
+            out.push_str(&format!("--- Step {}: {} ---\n{}\n\n", i + 1, step, text));
+        }
+        out
+    }
+
+    #[test]
+    fn e2e_journey_main_board_insights_graph_investigation() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let (w, h) = (120, 35);
+        let mut caps: Vec<(String, String)> = Vec::new();
+
+        // Step 1: Start in Main — verify issue list
+        let text = journey_capture(&app, w, h, "main_list_start", &mut caps);
+        assert!(
+            text.contains("mode=Main") || text.contains("Issues"),
+            "main should show issue list: {text}"
+        );
+
+        // Step 2: Select an issue and inspect detail
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Tab));
+        let text = journey_capture(&app, w, h, "main_detail_focus", &mut caps);
+        assert!(
+            text.contains("ID:") || text.contains("Status:"),
+            "detail should show issue: {text}"
+        );
+
+        // Step 3: Enter Board mode
+        app.update(key(KeyCode::Char('b')));
+        assert_eq!(app.mode, ViewMode::Board);
+        let text = journey_capture(&app, w, h, "board_entry", &mut caps);
+        assert!(
+            text.contains("open") || text.contains("Board"),
+            "board should show lane content: {text}"
+        );
+
+        // Step 4: Navigate board lanes
+        app.update(key(KeyCode::Char('l')));
+        app.update(key(KeyCode::Char('j')));
+        let text = journey_capture(&app, w, h, "board_navigate", &mut caps);
+        assert!(!text.is_empty());
+
+        // Step 5: Jump to Graph from board
+        app.update(key(KeyCode::Char('g')));
+        assert_eq!(app.mode, ViewMode::Graph);
+        let text = journey_capture(&app, w, h, "graph_entry_from_board", &mut caps);
+        assert!(
+            text.contains("Graph") || text.contains("graph") || text.contains("Dep"),
+            "graph should show graph content: {text}"
+        );
+
+        // Step 6: Inspect graph detail
+        app.update(key(KeyCode::Tab));
+        let text = journey_capture(&app, w, h, "graph_detail_focus", &mut caps);
+        assert!(!text.is_empty());
+
+        // Step 7: Switch to Insights
+        app.update(key(KeyCode::Char('i')));
+        assert_eq!(app.mode, ViewMode::Insights);
+        let text = journey_capture(&app, w, h, "insights_entry", &mut caps);
+        assert!(
+            text.contains("Bottleneck") || text.contains("bottleneck") || text.contains("Insight"),
+            "insights should show analysis: {text}"
+        );
+
+        // Step 8: Cycle insights panels
+        app.update(key(KeyCode::Char('s')));
+        let text = journey_capture(&app, w, h, "insights_panel_cycle", &mut caps);
+        assert!(!text.is_empty());
+
+        // Step 9: Return to Main
+        app.update(key(KeyCode::Escape));
+        assert_eq!(app.mode, ViewMode::Main);
+        let text = journey_capture(&app, w, h, "main_return", &mut caps);
+        assert!(text.contains("mode=Main") || text.contains("Issues"));
+
+        // Snapshot the full journey artifact
+        let artifact = journey_artifact("main→board→graph→insights→main", w, h, &caps);
+        insta::assert_snapshot!(artifact);
+    }
+
+    #[test]
+    fn e2e_journey_actionable_tree_attention_flow() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
+        let (w, h) = (120, 35);
+        let mut caps: Vec<(String, String)> = Vec::new();
+
+        // Step 1: Start in Main
+        journey_capture(&app, w, h, "main_start", &mut caps);
+
+        // Step 2: Enter Actionable — check execution tracks
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Actionable);
+        let text = journey_capture(&app, w, h, "actionable_entry", &mut caps);
+        assert!(
+            text.contains("ACTIONABLE") || text.contains("actionable"),
+            "should show actionable items: {text}"
+        );
+
+        // Step 3: Navigate tracks and detail
+        app.update(key(KeyCode::Tab));
+        app.update(key(KeyCode::Char('j')));
+        journey_capture(&app, w, h, "actionable_detail_nav", &mut caps);
+
+        // Step 4: Return to Main, enter Tree
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Main);
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Tree);
+        let text = journey_capture(&app, w, h, "tree_entry", &mut caps);
+        assert!(
+            text.contains("Dependency tree") || text.contains("no dependency tree"),
+            "tree should show structure: {text}"
+        );
+
+        // Step 5: Navigate tree and expand/collapse
+        let has_children = app.tree_flat_nodes.iter().any(|n| n.has_children);
+        if has_children {
+            let idx = app
+                .tree_flat_nodes
+                .iter()
+                .position(|n| n.has_children)
+                .unwrap();
+            app.tree_cursor = idx;
+            app.update(key(KeyCode::Enter)); // collapse
+            journey_capture(&app, w, h, "tree_collapsed", &mut caps);
+            app.update(key(KeyCode::Enter)); // expand
+        }
+        journey_capture(&app, w, h, "tree_navigate", &mut caps);
+
+        // Step 6: Return to Main, enter Attention
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Main);
+        app.update(key(KeyCode::Char('!')));
+        assert_eq!(app.mode, ViewMode::Attention);
+        let text = journey_capture(&app, w, h, "attention_entry", &mut caps);
+        assert!(
+            text.contains("Rank") || text.contains("Score") || text.contains("Attention"),
+            "attention should show ranked labels: {text}"
+        );
+
+        // Step 7: Navigate attention labels and detail
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Tab));
+        journey_capture(&app, w, h, "attention_detail", &mut caps);
+
+        // Step 8: Return to Main
+        app.update(key(KeyCode::Char('!')));
+        assert_eq!(app.mode, ViewMode::Main);
+        journey_capture(&app, w, h, "main_return", &mut caps);
+
+        let artifact = journey_artifact("actionable→tree→attention", w, h, &caps);
+        insta::assert_snapshot!(artifact);
+    }
+
+    #[test]
+    fn e2e_journey_narrow_geometry_stress() {
+        // Exercises the same multi-mode flow at narrow terminal width
+        let mut app = new_app(ViewMode::Main, 0);
+        let (w, h) = (40, 15);
+        let mut caps: Vec<(String, String)> = Vec::new();
+
+        // Main at narrow
+        journey_capture(&app, w, h, "narrow_main", &mut caps);
+
+        // Board at narrow
+        app.update(key(KeyCode::Char('b')));
+        journey_capture(&app, w, h, "narrow_board", &mut caps);
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Char('l')));
+        journey_capture(&app, w, h, "narrow_board_nav", &mut caps);
+
+        // Graph at narrow
+        app.update(key(KeyCode::Char('g')));
+        journey_capture(&app, w, h, "narrow_graph", &mut caps);
+
+        // Insights at narrow
+        app.update(key(KeyCode::Char('i')));
+        journey_capture(&app, w, h, "narrow_insights", &mut caps);
+        app.update(key(KeyCode::Char('s')));
+        journey_capture(&app, w, h, "narrow_insights_cycle", &mut caps);
+
+        // Actionable at narrow
+        app.update(key(KeyCode::Escape));
+        app.update(key(KeyCode::Char('a')));
+        journey_capture(&app, w, h, "narrow_actionable", &mut caps);
+
+        // Tree at narrow
+        app.update(key(KeyCode::Char('a')));
+        app.update(key(KeyCode::Char('T')));
+        journey_capture(&app, w, h, "narrow_tree", &mut caps);
+
+        // Return to Main
+        app.update(key(KeyCode::Char('T')));
+        journey_capture(&app, w, h, "narrow_main_return", &mut caps);
+
+        let artifact = journey_artifact("narrow-geometry-stress", w, h, &caps);
+        insta::assert_snapshot!(artifact);
+    }
+
+    #[test]
+    fn e2e_journey_empty_data_edge_case() {
+        // Multi-mode flow with zero issues — proves no panics and useful messaging
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        let (w, h) = (100, 30);
+        let mut caps: Vec<(String, String)> = Vec::new();
+
+        // Main with no issues
+        let text = journey_capture(&app, w, h, "empty_main", &mut caps);
+        assert!(
+            text.contains("issues=0") || text.contains("No issues") || text.contains("mode=Main"),
+            "empty main should render: {text}"
+        );
+
+        // Board with no issues
+        app.update(key(KeyCode::Char('b')));
+        let text = journey_capture(&app, w, h, "empty_board", &mut caps);
+        assert!(!text.is_empty(), "empty board should render something");
+
+        // Graph with no issues
+        app.update(key(KeyCode::Char('g')));
+        journey_capture(&app, w, h, "empty_graph", &mut caps);
+
+        // Insights with no issues
+        app.update(key(KeyCode::Char('i')));
+        journey_capture(&app, w, h, "empty_insights", &mut caps);
+
+        // Actionable with no issues
+        app.update(key(KeyCode::Escape));
+        app.update(key(KeyCode::Char('a')));
+        let text = journey_capture(&app, w, h, "empty_actionable", &mut caps);
+        assert!(
+            text.contains("Actionable")
+                || text.contains("Execution Tracks")
+                || text.contains("ACTIONABLE"),
+            "empty actionable should render: {text}"
+        );
+
+        // Tree with no issues
+        app.update(key(KeyCode::Char('a')));
+        app.update(key(KeyCode::Char('T')));
+        journey_capture(&app, w, h, "empty_tree", &mut caps);
+
+        // Return to Main
+        app.update(key(KeyCode::Char('T')));
+        journey_capture(&app, w, h, "empty_main_return", &mut caps);
+
+        let artifact = journey_artifact("empty-data-edge-case", w, h, &caps);
+        insta::assert_snapshot!(artifact);
+    }
+
+    #[test]
+    fn e2e_journey_history_deep_dive() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let (w, h) = (120, 35);
+        let mut caps: Vec<(String, String)> = Vec::new();
+
+        // Enter History from Main
+        app.update(key(KeyCode::Char('h')));
+        assert_eq!(app.mode, ViewMode::History);
+        let text = journey_capture(&app, w, h, "history_entry", &mut caps);
+        assert!(!text.is_empty());
+
+        // Navigate bead history
+        app.update(key(KeyCode::Char('j')));
+        journey_capture(&app, w, h, "history_bead_nav", &mut caps);
+
+        // Switch to git mode
+        app.update(key(KeyCode::Char('v')));
+        journey_capture(&app, w, h, "history_git_mode", &mut caps);
+
+        // Search in history
+        app.update(key(KeyCode::Char('/')));
+        for ch in "test".chars() {
+            app.update(key(KeyCode::Char(ch)));
+        }
+        app.update(key(KeyCode::Enter));
+        journey_capture(&app, w, h, "history_search", &mut caps);
+
+        // Switch back to bead mode
+        app.update(key(KeyCode::Char('v')));
+        journey_capture(&app, w, h, "history_bead_return", &mut caps);
+
+        // Navigate focus panes
+        app.update(key(KeyCode::Tab));
+        journey_capture(&app, w, h, "history_middle_focus", &mut caps);
+        app.update(key(KeyCode::Tab));
+        journey_capture(&app, w, h, "history_detail_focus", &mut caps);
+
+        // Return to Main
+        app.update(key(KeyCode::Escape));
+        assert_eq!(app.mode, ViewMode::Main);
+        journey_capture(&app, w, h, "main_after_history", &mut caps);
+
+        let artifact = journey_artifact("history-deep-dive", w, h, &caps);
+        insta::assert_snapshot!(artifact);
+    }
 }

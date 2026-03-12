@@ -1,0 +1,229 @@
+---
+source: src/tui.rs
+expression: artifact
+---
+=== E2E Journey: empty-data-edge-case | 100x30 ===
+
+--- Step 1: empty_main ---
+bvr | mode=Main | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ No issues to display. Create or load a .beads/*.jsonl  │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+b/i/g/h modes | / search | s sort (default) | p hints | C copy | x export | O edit
+
+--- Step 2: empty_board ---
+bvr | mode=Board | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Board Lanes [focus]─────────────────────┐┌Board Focus─────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ No issues to display in board mode.                    │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Board mode: lane counts, queued IDs, and selected issue delivery context | grouping=status (s cycles
+
+--- Step 3: empty_graph ---
+bvr | mode=Graph | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Graph Nodes [focus]─────────────────────┐┌Graph Focus─────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ No graph data available.                               │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Graph mode: h/l nodes | j/k nodes or edges | H/L jump | Tab node/edge focus | / search | Enter open
+
+--- Step 4: empty_insights ---
+bvr | mode=Insights | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Insight Queue [focus]───────────────────┐┌Insight Detail──────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ No insights available.                                 │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Insights [bottlenecks] | s/S panel | e explanations=on | x proof=off
+
+--- Step 5: empty_actionable ---
+bvr | mode=Actionable | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Execution Tracks [focus]────────────────┐┌Track Detail────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ (no track selected)                                    │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Actionable: 0 tracks, 0 items | j/k navigate | Tab focus | a/Esc back
+
+--- Step 6: empty_tree ---
+bvr | mode=Tree | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Dependency Tree [focus]─────────────────┐┌Issue Detail────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ (no node selected)                                     │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+Tree: 0 nodes | j/k navigate | Enter expand/collapse | Tab focus | T/Esc back
+
+--- Step 7: empty_main_return ---
+bvr | mode=Main | focus=list | issues=0/0 | filter=all | sort=default | ? help | Tab focus |
+┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+│                                        ││                                                        │
+│ (no issues loaded)                     ││ No issues to display. Create or load a .beads/*.jsonl  │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
+b/i/g/h modes | / search | s sort (default) | p hints | C copy | x export | O edit
