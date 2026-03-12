@@ -841,8 +841,9 @@ where
                     }
                 }
 
-                // Validate config before proceeding
-                match wizard.config.validate_for_export() {
+                // Saved configs can jump straight here, so validate the full
+                // deploy target payload before we start exporting.
+                match wizard.config.validate_for_deploy() {
                     Ok(()) => {
                         writeln!(writer).ok();
                         write_config_preview(writer, &wizard.config);
@@ -1777,6 +1778,76 @@ mod tests {
         let config = result.unwrap().unwrap();
         assert_eq!(config.output_path, Some(PathBuf::from("./saved-out")));
         assert!(!config.include_history);
+    }
+
+    #[test]
+    fn wizard_interactive_saved_github_config_missing_repo_reprompts_target_settings() {
+        let saved = WizardConfig {
+            deploy_target: Some(DeployTarget::Github),
+            output_path: Some(PathBuf::from("./saved-out")),
+            include_closed: true,
+            include_history: true,
+            ..WizardConfig::default()
+        };
+        let input = "y\nowner/repo\nn\n\n./saved-out\ny\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+        let result = run_wizard_interactive(
+            &mut reader,
+            &mut output,
+            None,
+            Some(saved),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        assert!(
+            result.is_ok(),
+            "output: {}",
+            String::from_utf8_lossy(&output)
+        );
+        let config = result.unwrap().unwrap();
+        assert_eq!(config.deploy_target, Some(DeployTarget::Github));
+        assert_eq!(config.github_repo.as_deref(), Some("owner/repo"));
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("Config validation failed"),
+            "expected validation failure before repair: {text}"
+        );
+    }
+
+    #[test]
+    fn wizard_interactive_saved_cloudflare_config_missing_project_reprompts_target_settings() {
+        let saved = WizardConfig {
+            deploy_target: Some(DeployTarget::Cloudflare),
+            output_path: Some(PathBuf::from("./saved-out")),
+            include_closed: true,
+            include_history: true,
+            ..WizardConfig::default()
+        };
+        let input = "y\nmy-pages\nproduction\n./saved-out\ny\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+        let result = run_wizard_interactive(
+            &mut reader,
+            &mut output,
+            None,
+            Some(saved),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        assert!(
+            result.is_ok(),
+            "output: {}",
+            String::from_utf8_lossy(&output)
+        );
+        let config = result.unwrap().unwrap();
+        assert_eq!(config.deploy_target, Some(DeployTarget::Cloudflare));
+        assert_eq!(config.cloudflare_project.as_deref(), Some("my-pages"));
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("Config validation failed"),
+            "expected validation failure before repair: {text}"
+        );
     }
 
     #[test]
