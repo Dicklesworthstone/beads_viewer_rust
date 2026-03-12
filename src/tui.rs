@@ -15603,6 +15603,84 @@ mod tests {
     }
 
     #[test]
+    fn time_travel_empty_ref_with_existing_diff_stays_in_mode() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.mode = ViewMode::TimeTravelDiff;
+        app.time_travel_input_active = true;
+        app.time_travel_last_ref = Some("HEAD~1".to_string());
+        app.time_travel_diff = Some(crate::analysis::diff::compare_snapshots(
+            &[],
+            &app.analyzer.issues,
+        ));
+
+        app.update(key(KeyCode::Enter));
+
+        assert_eq!(app.mode, ViewMode::TimeTravelDiff);
+        assert!(!app.time_travel_input_active);
+        assert!(app.time_travel_diff.is_some());
+        assert_eq!(app.time_travel_last_ref.as_deref(), Some("HEAD~1"));
+        assert_eq!(app.status_msg, "Time-travel: empty ref, cancelled");
+    }
+
+    #[test]
+    fn time_travel_invalid_ref_sets_error_status_and_keeps_mode() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('t')));
+        for ch in "__definitely_not_a_real_ref__".chars() {
+            app.update(key(KeyCode::Char(ch)));
+        }
+
+        app.update(key(KeyCode::Enter));
+
+        assert_eq!(app.mode, ViewMode::TimeTravelDiff);
+        assert!(!app.time_travel_input_active);
+        assert!(app.time_travel_diff.is_none());
+        assert_eq!(
+            app.time_travel_last_ref.as_deref(),
+            Some("__definitely_not_a_real_ref__")
+        );
+        assert!(
+            app.status_msg
+                .contains("could not resolve '__definitely_not_a_real_ref__'"),
+            "status should explain invalid ref: {}",
+            app.status_msg
+        );
+    }
+
+    #[test]
+    fn time_travel_invalid_ref_preserves_existing_diff() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let existing = crate::analysis::diff::compare_snapshots(&[], &app.analyzer.issues);
+        let existing_new_count = existing.new_issues.as_ref().map_or(0, Vec::len);
+        app.mode = ViewMode::TimeTravelDiff;
+        app.time_travel_input_active = true;
+        app.time_travel_last_ref = Some("HEAD~1".to_string());
+        app.time_travel_diff = Some(existing);
+        app.time_travel_ref_input = "__still_not_a_real_ref__".to_string();
+
+        app.update(key(KeyCode::Enter));
+
+        assert_eq!(app.mode, ViewMode::TimeTravelDiff);
+        assert!(!app.time_travel_input_active);
+        let retained_new_count = app
+            .time_travel_diff
+            .as_ref()
+            .and_then(|diff| diff.new_issues.as_ref())
+            .map_or(0, Vec::len);
+        assert_eq!(retained_new_count, existing_new_count);
+        assert_eq!(
+            app.time_travel_last_ref.as_deref(),
+            Some("__still_not_a_real_ref__")
+        );
+        assert!(
+            app.status_msg
+                .contains("could not resolve '__still_not_a_real_ref__'"),
+            "status should explain invalid ref: {}",
+            app.status_msg
+        );
+    }
+
+    #[test]
     fn time_travel_toggle_off() {
         let mut app = new_app(ViewMode::Main, 0);
         // Enter time-travel, then provide a diff manually
@@ -16669,6 +16747,118 @@ mod tests {
         );
     }
 
+    // -- Tree expanded coverage (bd-7oo.4.5) ---------------------------------
+
+    #[test]
+    fn keyflow_tree_full_journey() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Enter Tree mode
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Tree);
+        assert!(!app.tree_flat_nodes.is_empty(), "tree should build nodes");
+        assert_eq!(app.focus, FocusPane::List);
+
+        // Verify list shows dependency tree header
+        let list = app.list_panel_text();
+        assert!(
+            list.contains("Dependency tree") || list.contains("no dependency tree"),
+            "list should show tree header: {list}"
+        );
+
+        // Navigate down/up
+        let node_count = app.tree_flat_nodes.len();
+        if node_count > 1 {
+            app.update(key(KeyCode::Char('j')));
+            assert_eq!(app.tree_cursor, 1);
+            app.update(key(KeyCode::Char('k')));
+            assert_eq!(app.tree_cursor, 0);
+        }
+
+        // Switch to detail pane
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+        let detail = app.detail_panel_text();
+        assert!(
+            detail.contains("ID:"),
+            "detail should show issue ID: {detail}"
+        );
+
+        // Switch back to list
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::List);
+
+        // Help overlay
+        app.update(key(KeyCode::Char('?')));
+        assert!(app.show_help);
+        let help_text = render_app(&app, 100, 30);
+        assert!(
+            help_text.contains("Help") || help_text.contains("help"),
+            "help overlay should render: {help_text}"
+        );
+        app.update(key(KeyCode::Char('?')));
+        assert!(!app.show_help);
+
+        // Exit back to Main
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn tree_narrow_width_rendering_no_panic() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Tree);
+
+        // 40x20 — narrow but usable
+        let text_40 = render_app(&app, 40, 20);
+        assert!(!text_40.is_empty(), "40x20 render should produce output");
+
+        // 20x10 — extremely narrow
+        let text_20 = render_app(&app, 20, 10);
+        assert!(!text_20.is_empty(), "20x10 render should produce output");
+
+        // Navigate at narrow width — should not panic
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Tab));
+        let text_detail = render_app(&app, 40, 20);
+        assert!(
+            !text_detail.is_empty(),
+            "detail at 40x20 should produce output"
+        );
+    }
+
+    #[test]
+    fn tree_cursor_clamp_at_boundary() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('T')));
+        assert_eq!(app.mode, ViewMode::Tree);
+
+        // k at top should clamp to 0
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(app.tree_cursor, 0, "cursor should clamp at top");
+
+        // Navigate to bottom and try to go past
+        let node_count = app.tree_flat_nodes.len();
+        for _ in 0..node_count + 5 {
+            app.update(key(KeyCode::Char('j')));
+        }
+        assert_eq!(
+            app.tree_cursor,
+            node_count.saturating_sub(1),
+            "cursor should clamp at bottom"
+        );
+
+        // One more j should stay clamped
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(
+            app.tree_cursor,
+            node_count.saturating_sub(1),
+            "cursor should stay clamped at bottom"
+        );
+    }
+
     // -- LabelDashboard expanded coverage (bd-7oo.4.5) ----------------------
 
     #[test]
@@ -16817,6 +17007,170 @@ mod tests {
         // Render at multiple widths should not panic
         for width in [40, 80, 120] {
             let _ = render_app(&app, width, 30);
+        }
+    }
+
+    // -- Actionable expanded coverage (bd-7oo.4.5) ---------------------------
+
+    #[test]
+    fn keyflow_actionable_full_journey() {
+        let mut app = new_app(ViewMode::Main, 0);
+        assert_eq!(app.mode, ViewMode::Main);
+
+        // Enter Actionable mode
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Actionable);
+        assert!(app.actionable_plan.is_some());
+        assert_eq!(app.focus, FocusPane::List);
+
+        // Verify list shows actionable header and recommended start
+        let list = app.list_panel_text();
+        assert!(
+            list.contains("ACTIONABLE ITEMS"),
+            "list should show actionable header: {list}"
+        );
+        assert!(
+            list.contains("TRACK"),
+            "list should show track info: {list}"
+        );
+
+        // Navigate tracks
+        let track_count = app.actionable_plan.as_ref().map_or(0, |p| p.tracks.len());
+        if track_count > 1 {
+            app.update(key(KeyCode::Char('j')));
+            assert_eq!(app.actionable_track_cursor, 1);
+            app.update(key(KeyCode::Char('k')));
+            assert_eq!(app.actionable_track_cursor, 0);
+        }
+
+        // Switch to detail focus — navigates items within track
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
+        let detail = app.detail_panel_text();
+        assert!(
+            detail.contains("TRACK"),
+            "detail should show track info: {detail}"
+        );
+
+        // Item navigation in detail
+        let item_count = app
+            .actionable_plan
+            .as_ref()
+            .and_then(|p| p.tracks.first())
+            .map_or(0, |t| t.items.len());
+        if item_count > 1 {
+            app.update(key(KeyCode::Char('j')));
+            assert_eq!(app.actionable_item_cursor, 1);
+            app.update(key(KeyCode::Char('k')));
+            assert_eq!(app.actionable_item_cursor, 0);
+        }
+
+        // Help overlay
+        app.update(key(KeyCode::Char('?')));
+        assert!(app.show_help);
+        let help_text = render_app(&app, 100, 30);
+        assert!(
+            help_text.contains("Help") || help_text.contains("help"),
+            "help overlay should render"
+        );
+        app.update(key(KeyCode::Char('?')));
+        assert!(!app.show_help);
+
+        // Switch back to list and exit
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::List);
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Main);
+    }
+
+    #[test]
+    fn actionable_narrow_width_rendering_no_panic() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Actionable);
+
+        // 40x20 — narrow but usable
+        let text_40 = render_app(&app, 40, 20);
+        assert!(!text_40.is_empty(), "40x20 render should produce output");
+
+        // 20x10 — extremely narrow
+        let text_20 = render_app(&app, 20, 10);
+        assert!(!text_20.is_empty(), "20x10 render should produce output");
+
+        // Navigate and render at narrow width
+        app.update(key(KeyCode::Char('j')));
+        app.update(key(KeyCode::Tab));
+        let text_detail = render_app(&app, 40, 20);
+        assert!(
+            !text_detail.is_empty(),
+            "detail at 40x20 should produce output"
+        );
+    }
+
+    #[test]
+    fn actionable_track_cursor_clamp_at_boundary() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Actionable);
+
+        // k at top should stay at 0
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(
+            app.actionable_track_cursor, 0,
+            "track cursor should clamp at top"
+        );
+
+        // Navigate past bottom
+        let track_count = app.actionable_plan.as_ref().map_or(0, |p| p.tracks.len());
+        for _ in 0..track_count + 5 {
+            app.update(key(KeyCode::Char('j')));
+        }
+        assert_eq!(
+            app.actionable_track_cursor,
+            track_count.saturating_sub(1),
+            "track cursor should clamp at bottom"
+        );
+    }
+
+    #[test]
+    fn actionable_detail_changes_on_track_navigation() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, ViewMode::Actionable);
+
+        let track_count = app.actionable_plan.as_ref().map_or(0, |p| p.tracks.len());
+        if track_count > 1 {
+            let detail_first = app.detail_panel_text();
+
+            app.update(key(KeyCode::Char('j')));
+            let detail_second = app.detail_panel_text();
+
+            assert_ne!(
+                detail_first, detail_second,
+                "detail should change when navigating to a different track"
+            );
+        }
+    }
+
+    #[test]
+    fn actionable_item_cursor_resets_on_track_change() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('a')));
+
+        // Navigate to detail and move item cursor
+        app.update(key(KeyCode::Tab));
+        app.update(key(KeyCode::Char('j')));
+        let item_pos = app.actionable_item_cursor;
+
+        // Switch back to list and change track
+        app.update(key(KeyCode::Tab));
+        let track_count = app.actionable_plan.as_ref().map_or(0, |p| p.tracks.len());
+        if track_count > 1 && item_pos > 0 {
+            app.update(key(KeyCode::Char('j')));
+            assert_eq!(
+                app.actionable_item_cursor, 0,
+                "item cursor should reset when changing track"
+            );
         }
     }
 
