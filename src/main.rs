@@ -47,6 +47,10 @@ fn analysis_config_for_cli(cli: &Cli) -> AnalysisConfig {
     }
 }
 
+fn actionable_ids_for_recipe_filters(analyzer: &Analyzer) -> Vec<String> {
+    analyzer.graph.actionable_ids()
+}
+
 fn main() -> ExitCode {
     if let Err(error) = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -1569,18 +1573,11 @@ fn main() -> ExitCode {
         // Apply recipe filter if specified
         if let Some(ref recipe_name) = cli.recipe {
             if let Some(recipe) = bvr::analysis::recipe::find_recipe(recipe_name) {
-                let actionable_ids: Vec<String> = triage
-                    .result
-                    .quick_ref
-                    .top_picks
-                    .iter()
-                    .map(|p| p.id.clone())
-                    .collect();
                 recommendations = bvr::analysis::recipe::apply_recipe(
                     &recipe,
                     &recommendations,
                     &issues,
-                    &actionable_ids,
+                    &actionable_ids_for_recipe_filters(&analyzer),
                     &analyzer.metrics.pagerank,
                 );
             } else {
@@ -5420,11 +5417,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BackgroundModeSource, Cli, IssueLoadTarget, build_background_mode_config,
-        compute_related_work_result, discover_workspace_config_from_starts, filter_by_repo,
-        generate_daily_burndown_points, handle_operational_commands, parse_background_mode_bool,
-        parse_scope_git_header_line, resolve_background_mode, resolve_git_toplevel,
-        resolve_issue_load_target, resolve_reference_file_path, resolve_workspace_config_path,
+        BackgroundModeSource, Cli, IssueLoadTarget, actionable_ids_for_recipe_filters,
+        build_background_mode_config, compute_related_work_result,
+        discover_workspace_config_from_starts, filter_by_repo, generate_daily_burndown_points,
+        handle_operational_commands, parse_background_mode_bool, parse_scope_git_header_line,
+        resolve_background_mode, resolve_git_toplevel, resolve_issue_load_target,
+        resolve_reference_file_path, resolve_workspace_config_path,
     };
 
     fn make_history(bead_id: &str, status: &str, files: &[&str]) -> HistoryBeadCompat {
@@ -5860,6 +5858,49 @@ mod tests {
             .collect();
         assert!(ids.contains(&"bd-2"));
         assert!(ids.contains(&"bd-3"));
+    }
+
+    #[test]
+    fn actionable_recipe_filters_use_full_actionable_set_not_top_picks_subset() {
+        let issues = (1..=4)
+            .map(|index| bvr::model::Issue {
+                id: format!("A-{index}"),
+                title: format!("Actionable {index}"),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: index,
+                ..bvr::model::Issue::default()
+            })
+            .collect::<Vec<_>>();
+        let analyzer = bvr::analysis::Analyzer::new_with_config(
+            issues.clone(),
+            &bvr::analysis::graph::AnalysisConfig::triage_runtime(),
+        );
+        let triage = analyzer.triage(bvr::analysis::triage::TriageOptions {
+            max_recommendations: 10,
+            ..bvr::analysis::triage::TriageOptions::default()
+        });
+        assert_eq!(triage.result.quick_ref.top_picks.len(), 3);
+
+        let actionable_recipe =
+            bvr::analysis::recipe::find_recipe("actionable").expect("actionable recipe");
+        let filtered = bvr::analysis::recipe::apply_recipe(
+            &actionable_recipe,
+            &triage.result.recommendations,
+            &issues,
+            &actionable_ids_for_recipe_filters(&analyzer),
+            &analyzer.metrics.pagerank,
+        );
+
+        assert_eq!(filtered.len(), 4);
+        let ids = filtered
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"A-1"));
+        assert!(ids.contains(&"A-2"));
+        assert!(ids.contains(&"A-3"));
+        assert!(ids.contains(&"A-4"));
     }
 
     fn assert_matches_triage_runtime(config: &bvr::analysis::graph::AnalysisConfig) {

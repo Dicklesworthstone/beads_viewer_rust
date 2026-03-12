@@ -487,7 +487,7 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub check_drift: bool,
 
-    /// Accepted for compatibility; related work already includes closed issues by default.
+    /// Include closed issues in related work discovery.
     #[arg(long, action = ArgAction::SetTrue)]
     pub related_include_closed: bool,
 
