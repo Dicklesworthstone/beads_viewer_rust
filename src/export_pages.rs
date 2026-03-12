@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -505,8 +506,7 @@ fn handle_preview_request(
         return Ok(());
     };
 
-    let file_path = bundle_dir.join(&relative);
-    if !file_path.is_file() {
+    let Some(file_path) = resolve_preview_asset_path(bundle_dir, &relative)? else {
         write_http_response(
             &mut stream,
             "404 Not Found",
@@ -515,7 +515,7 @@ fn handle_preview_request(
             head_only,
         )?;
         return Ok(());
-    }
+    };
 
     let mut body = fs::read(&file_path)?;
     let mime = mime_type_for_path(&file_path);
@@ -635,39 +635,133 @@ fn preview_url(port: u16) -> String {
 }
 
 fn latest_modified_token(path: &Path) -> Result<u64> {
-    latest_modified_recursive(path, 0)
+    let bundle_root = fs::canonicalize(path)?;
+    let mut visited_dirs = HashSet::new();
+    latest_modified_recursive(path, &bundle_root, 0, &mut visited_dirs)
 }
 
 fn count_files_recursive(path: &Path) -> Result<usize> {
-    let metadata = fs::metadata(path)?;
-    if metadata.is_file() {
+    let bundle_root = fs::canonicalize(path)?;
+    let mut visited_dirs = HashSet::new();
+    count_files_recursive_inner(path, &bundle_root, &mut visited_dirs)
+}
+
+fn count_files_recursive_inner(
+    path: &Path,
+    bundle_root: &Path,
+    visited_dirs: &mut HashSet<PathBuf>,
+) -> Result<usize> {
+    let link_metadata = fs::symlink_metadata(path)?;
+    let resolved_path = match fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(BvrError::Io(error)),
+    };
+    if !resolved_path.starts_with(bundle_root) {
+        return Ok(0);
+    }
+
+    let target_metadata = match fs::metadata(&resolved_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(BvrError::Io(error)),
+    };
+
+    if target_metadata.is_file() {
         return Ok(1);
+    }
+
+    if !target_metadata.is_dir() {
+        return Ok(0);
+    }
+
+    if !visited_dirs.insert(resolved_path.clone()) {
+        return Ok(0);
     }
 
     let mut total = 0usize;
     for entry in fs::read_dir(path)? {
-        total = total.saturating_add(count_files_recursive(&entry?.path())?);
+        total = total.saturating_add(count_files_recursive_inner(
+            &entry?.path(),
+            bundle_root,
+            visited_dirs,
+        )?);
     }
+
+    let _ = link_metadata;
     Ok(total)
 }
 
-fn latest_modified_recursive(path: &Path, mut latest: u64) -> Result<u64> {
-    let metadata = fs::metadata(path)?;
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |duration| duration.as_secs());
-    latest = latest.max(modified);
+fn latest_modified_recursive(
+    path: &Path,
+    bundle_root: &Path,
+    mut latest: u64,
+    visited_dirs: &mut HashSet<PathBuf>,
+) -> Result<u64> {
+    let link_metadata = fs::symlink_metadata(path)?;
+    latest = latest.max(metadata_modified_token(&link_metadata));
 
-    if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            latest = latest_modified_recursive(&entry.path(), latest)?;
-        }
+    let resolved_path = match fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(latest),
+        Err(error) => return Err(BvrError::Io(error)),
+    };
+    if !resolved_path.starts_with(bundle_root) {
+        return Ok(latest);
+    }
+
+    let target_metadata = match fs::metadata(&resolved_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(latest),
+        Err(error) => return Err(BvrError::Io(error)),
+    };
+    latest = latest.max(metadata_modified_token(&target_metadata));
+
+    if !target_metadata.is_dir() {
+        return Ok(latest);
+    }
+
+    if !visited_dirs.insert(resolved_path) {
+        return Ok(latest);
+    }
+
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        latest = latest_modified_recursive(&entry.path(), bundle_root, latest, visited_dirs)?;
     }
 
     Ok(latest)
+}
+
+fn metadata_modified_token(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis().min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
+        })
+}
+
+fn resolve_preview_asset_path(bundle_dir: &Path, relative: &Path) -> Result<Option<PathBuf>> {
+    let bundle_root = fs::canonicalize(bundle_dir)?;
+    let candidate = bundle_dir.join(relative);
+    let resolved = match fs::canonicalize(&candidate) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(BvrError::Io(error)),
+    };
+
+    if !resolved.starts_with(&bundle_root) {
+        return Ok(None);
+    }
+
+    let metadata = fs::metadata(&resolved)?;
+    if metadata.is_file() {
+        Ok(Some(resolved))
+    } else {
+        Ok(None)
+    }
 }
 
 fn write_text(path: PathBuf, content: &str) -> Result<()> {
@@ -1732,5 +1826,82 @@ mod tests {
 
         let token = latest_modified_token(temp.path()).expect("token");
         assert!(token > 0, "token must be nonzero for non-empty dir");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn count_files_recursive_skips_symlink_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let real = temp.path().join("real");
+        fs::create_dir_all(&real).expect("mkdir real");
+        fs::write(real.join("file.txt"), "hello").expect("write real file");
+        symlink(temp.path(), temp.path().join("loop")).expect("create loop symlink");
+
+        let count = count_files_recursive(temp.path()).expect("count");
+        assert_eq!(count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn latest_modified_token_handles_symlink_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        fs::write(temp.path().join("index.html"), "<html></html>").expect("write index");
+        symlink(temp.path(), temp.path().join("loop")).expect("create loop symlink");
+
+        let token = latest_modified_token(temp.path()).expect("token");
+        assert!(token > 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_preview_asset_path_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let bundle = tempdir().expect("bundle tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, "top secret").expect("write secret");
+        symlink(&secret, bundle.path().join("secret.txt")).expect("symlink secret");
+
+        let resolved =
+            resolve_preview_asset_path(bundle.path(), Path::new("secret.txt")).expect("resolve");
+        assert!(resolved.is_none(), "symlink escape should be rejected");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn count_files_recursive_skips_symlinked_dir_outside_bundle() {
+        use std::os::unix::fs::symlink;
+
+        let bundle = tempdir().expect("bundle tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        fs::write(bundle.path().join("inside.txt"), "inside").expect("write inside");
+        fs::write(outside.path().join("outside.txt"), "outside").expect("write outside");
+        symlink(outside.path(), bundle.path().join("outside-link")).expect("symlink outside dir");
+
+        let count = count_files_recursive(bundle.path()).expect("count");
+        assert_eq!(count, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn latest_modified_token_ignores_symlinked_dir_outside_bundle() {
+        use std::os::unix::fs::symlink;
+
+        let bundle = tempdir().expect("bundle tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        fs::write(bundle.path().join("inside.txt"), "inside").expect("write inside");
+        fs::write(outside.path().join("outside.txt"), "outside").expect("write outside");
+        symlink(outside.path(), bundle.path().join("outside-link")).expect("symlink outside dir");
+
+        let base = latest_modified_token(bundle.path()).expect("base token");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(outside.path().join("outside.txt"), "outside changed").expect("rewrite outside");
+        let after = latest_modified_token(bundle.path()).expect("after token");
+        assert_eq!(after, base, "outside changes must not affect bundle token");
     }
 }
