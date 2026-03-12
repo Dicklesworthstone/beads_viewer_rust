@@ -152,7 +152,7 @@ Legend:
 - ~~Responsive width breakpoints~~ — **Implemented** (Narrow/Medium/Wide breakpoint enum with adaptive split ratios).
 - ~~File tree panel and `o`/`y` hotkeys~~ — **Implemented** (j/k navigation, Enter toggle/filter, Tab focus cycling, o open-in-browser, y copy-to-clipboard).
 - ~~Legacy history-specific search modes~~ — **Implemented** (HistorySearchMode enum with all 5 modes: All/Commit/Sha/Bead/Author; Tab cycles modes in search input).
-- ~~No snapshot-based automated visual regression framework yet.~~ — **Implemented** (21 insta snapshots + 11 keyflow journeys).
+- ~~No snapshot-based automated visual regression framework yet.~~ — **Implemented** (55 insta snapshots + 25 keyflow journeys + 5 e2e multi-mode journey tests with artifact capture).
 - Workspace auto-discovery defaults (Go-style default behavior without explicit `--workspace` flag) not yet implemented.
 
 ## Integrations
@@ -172,11 +172,11 @@ Legend:
 ### How to Rerun the Proof Set
 
 ```bash
-# Full test suite (1,248 tests)
+# Full test suite (1,293 tests)
 cargo test --tests
 
 # Individual suites
-cargo test --lib                           # 872 unit tests
+cargo test --lib                           # 917 unit tests
 cargo test --test conformance              # 75 conformance tests
 cargo test --test schema_validation        # 36 schema tests
 cargo test --test e2e_robot_matrix         # 35 e2e robot matrix
@@ -187,8 +187,11 @@ cargo test --test cli_model_validation     # 25 CLI model tests
 cargo test --test export_pages             # 15 integration export tests
 
 # Snapshot verification
-cargo test --lib snap_                     # 21 insta snapshots
-cargo test --lib keyflow_                  # 11 keyflow journeys
+cargo test --lib snap_                     # 55 insta snapshots
+cargo test --lib keyflow_                  # 25 keyflow journeys
+
+# E2E TUI journeys (multi-mode flows with artifact capture)
+cargo test --lib e2e_journey_              # 5 journey tests
 
 # Benchmarks (not included in test count)
 cargo bench --bench triage                 # 12 benchmark groups
@@ -208,6 +211,7 @@ Artifact locations:
 - Conformance fixtures: `tests/conformance/fixtures/go_outputs/`
 - Stress fixtures: `tests/testdata/` (see `tests/testdata/FIXTURES.md`)
 - Snapshot baselines: `src/snapshots/`
+- E2E journey artifacts: `src/snapshots/bvr__tui__tests__e2e_journey_*.snap` (multi-step screen captures)
 - E2E artifacts: `target/bvr-e2e-artifacts/` (when `BVR_E2E_ARTIFACT_DIR` is set)
 - Shell e2e logs: temp dir printed on failure (preserved by default)
 
@@ -495,11 +499,12 @@ Prerequisites: Wave 3 complete.
 
 | Surface | Evidence | Status | Risk |
 |---|---|---|---|
-| **11 view modes** | `cargo test snap_` (21 snapshots) | PASS | None |
-| **Keyboard interaction** | `cargo test keyflow_` (11 journey tests) | PASS | None |
+| **11 view modes** | `cargo test snap_` (55 snapshots) | PASS | None |
+| **Keyboard interaction** | `cargo test keyflow_` (25 journey tests) | PASS | None |
+| **E2E TUI journeys** | `cargo test e2e_journey_` (5 multi-mode flows with artifacts) | PASS | None |
 | **Debug render** | `cargo test --test e2e_robot_matrix e2e_debug_render` | PASS | None |
 | **Modal/wizard flows** | `cargo test modal` (8 tests) | PASS | None |
-| **History view** | `cargo test history` (27 tests) | PASS | None |
+| **History view** | `cargo test history` (56 tests) | PASS | None |
 
 ### Quality Gates
 
@@ -507,12 +512,14 @@ Prerequisites: Wave 3 complete.
 |---|---|---|
 | **Format clean** | `cargo fmt --check` (CI enforced) | PASS |
 | **Clippy warnings** | `cargo clippy --all-targets` (CI enforced) | PASS (0 warnings) |
-| **872 unit tests** | `cargo test --lib` | PASS |
+| **917 unit tests** | `cargo test --lib` | PASS |
 | **75 conformance tests** | `cargo test --test conformance` | PASS |
 | **36 schema validation** | `cargo test --test schema_validation` | PASS |
 | **82 e2e tests** | 3 e2e test files (robot_matrix, workspace_history, export_pages) | PASS |
 | **148 integration tests** | 11 integration test files (stress, cli_model, export, admin, etc.) | PASS |
-| **21 snapshot baselines** | `cargo test snap_` with insta | PASS |
+| **55 snapshot baselines** | `cargo test snap_` with insta | PASS |
+| **25 keyflow journeys** | `cargo test keyflow_` | PASS |
+| **5 e2e TUI journeys** | `cargo test e2e_journey_` with multi-step artifact capture | PASS |
 | **12 benchmark groups** | `cargo bench --bench triage` | PASS (all sub-15ms at 1000 issues) |
 
 ### Known Risks
@@ -524,7 +531,7 @@ Prerequisites: Wave 3 complete.
 
 ### Go/No-Go Decision
 
-All core robot commands, export surfaces, TUI interactions, pages wizard, and quality gates are passing with 1,248 tests (872 lib + 376 integration/conformance/e2e). The project is ready for release as a functional replacement for the legacy Go `bv` binary for all automated (robot) and interactive (TUI) workflows.
+All core robot commands, export surfaces, TUI interactions, pages wizard, and quality gates are passing with 1,293 tests (917 lib + 376 integration/conformance/e2e). The project is ready for release as a functional replacement for the legacy Go `bv` binary for all automated (robot) and interactive (TUI) workflows.
 
 ## Open Gaps to 100%
 1. ~~Remaining TUI interaction parity (responsive history layout, file tree panel, `o`/`y` keys, search modes)~~ — **Done**.

@@ -167,8 +167,10 @@ cargo test --test conformance stress_fixture_manifest_has_provenance_and_validat
 
 | Suite | Command | Count |
 |---|---|---|
-| Unit tests | `cargo test --lib` | 872 |
-| Snapshots | `cargo test --lib snap_` | 21 |
+| Unit tests | `cargo test --lib` | 917 |
+| Snapshots | `cargo test --lib snap_` | 55 |
+| Keyflow journeys | `cargo test --lib keyflow_` | 25 |
+| E2E TUI journeys | `cargo test --lib e2e_journey_` | 5 |
 | Conformance | `cargo test --test conformance` | 75 |
 | Schema validation | `cargo test --test schema_validation` | 36 |
 | E2E tests | `cargo test --test e2e_robot_matrix --test e2e_workspace_history --test e2e_export_pages` | 82 |
