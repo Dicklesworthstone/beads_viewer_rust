@@ -268,6 +268,14 @@ impl WizardConfig {
     }
 }
 
+fn repair_step_for_saved_config(config: &WizardConfig) -> WizardStep {
+    if config.deploy_target.is_none() {
+        WizardStep::DeployTarget
+    } else {
+        WizardStep::TargetConfig
+    }
+}
+
 // ── Config persistence ─────────────────────────────────────────────
 
 /// Default config directory: `~/.config/bvr/`.
@@ -855,7 +863,7 @@ where
                         wizard
                             .transcript
                             .record(wizard.step, &format!("validation failed: {e}"));
-                        wizard.go_back();
+                        wizard.step = repair_step_for_saved_config(&wizard.config);
                         continue;
                     }
                 }
@@ -1847,6 +1855,44 @@ mod tests {
         assert!(
             text.contains("Config validation failed"),
             "expected validation failure before repair: {text}"
+        );
+    }
+
+    #[test]
+    fn wizard_interactive_saved_local_config_missing_output_reprompts_export_options() {
+        let saved = WizardConfig {
+            deploy_target: Some(DeployTarget::Local),
+            include_closed: true,
+            include_history: false,
+            ..WizardConfig::default()
+        };
+        let input = "y\n./saved-out\nn\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes().to_vec());
+        let mut output = Vec::new();
+        let result = run_wizard_interactive(
+            &mut reader,
+            &mut output,
+            None,
+            Some(saved),
+            |_| Ok(()),
+            |_| Ok(()),
+        );
+        assert!(
+            result.is_ok(),
+            "output: {}",
+            String::from_utf8_lossy(&output)
+        );
+        let config = result.unwrap().unwrap();
+        assert_eq!(config.deploy_target, Some(DeployTarget::Local));
+        assert_eq!(config.output_path, Some(PathBuf::from("./saved-out")));
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains("Config validation failed"),
+            "expected validation failure before repair: {text}"
+        );
+        assert!(
+            text.contains("Step 4/9: Target settings"),
+            "expected repair to return to target settings: {text}"
         );
     }
 
