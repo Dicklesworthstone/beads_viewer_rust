@@ -55,6 +55,18 @@ fn feedback_project_dir(cli: &Cli) -> PathBuf {
     cli.repo_path
         .clone()
         .or_else(|| cli.workspace.clone())
+        .or_else(|| {
+            cli.beads_file.as_ref().map(|path| {
+                let parent = path.parent().unwrap_or(path);
+                if parent.file_name().is_some_and(|name| name == ".beads") {
+                    parent
+                        .parent()
+                        .map_or_else(|| parent.to_path_buf(), Path::to_path_buf)
+                } else {
+                    parent.to_path_buf()
+                }
+            })
+        })
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 

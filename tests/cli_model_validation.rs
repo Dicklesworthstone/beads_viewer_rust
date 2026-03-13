@@ -196,6 +196,60 @@ fn feedback_show_reads_saved_feedback_from_repo_path_when_invoked_elsewhere() {
     assert_eq!(json["stats"]["total_ignored"], 0);
 }
 
+#[test]
+fn feedback_show_reads_saved_feedback_from_beads_file_project_when_invoked_elsewhere() {
+    let tmp = tempfile::tempdir_in(repo_root()).expect("temp dir");
+    let repo_dir = tmp.path().join("repo");
+    let caller_dir = tmp.path().join("caller");
+    let beads_dir = repo_dir.join(".beads");
+    fs::create_dir_all(repo_dir.join(".bv")).expect("create repo .bv");
+    fs::create_dir_all(&beads_dir).expect("create beads dir");
+    fs::create_dir_all(&caller_dir).expect("create caller dir");
+    fs::write(
+        beads_dir.join("beads.jsonl"),
+        "{\"id\":\"BD-1\",\"title\":\"Ship export\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\"}\n",
+    )
+    .expect("write beads file");
+    fs::write(
+        repo_dir.join(".bv/feedback.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": "1.0",
+            "events": [
+                {
+                    "issue_id": "BD-1",
+                    "action": "ignore",
+                    "score": 0.2,
+                    "timestamp": "2026-03-12T00:00:00Z",
+                    "by": "cli",
+                    "reason": ""
+                }
+            ],
+            "adjustments": []
+        }))
+        .expect("serialize feedback"),
+    )
+    .expect("write feedback");
+
+    let output = bvr()
+        .current_dir(&caller_dir)
+        .args([
+            "--feedback-show",
+            "--format",
+            "json",
+            "--beads-file",
+            beads_dir.join("beads.jsonl").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).expect("valid JSON");
+    assert_eq!(json["stats"]["total_accepted"], 0);
+    assert_eq!(json["stats"]["total_ignored"], 1);
+}
+
 // ============================================================================
 // Related work flags (--related-min-relevance, --related-max-results)
 // ============================================================================

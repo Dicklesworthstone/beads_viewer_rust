@@ -786,4 +786,302 @@ mod tests {
         let ctx = HookContext::new(Path::new("/tmp/report.md"), "markdown", 5);
         assert_eq!(ctx.export_path, "/tmp/report.md");
     }
+
+    #[test]
+    fn parse_on_error_defaults_by_phase() {
+        assert_eq!(parse_on_error("", HookPhase::PreExport), HookOnError::Fail);
+        assert_eq!(
+            parse_on_error("", HookPhase::PostExport),
+            HookOnError::Continue
+        );
+        assert_eq!(
+            parse_on_error("unknown", HookPhase::PreExport),
+            HookOnError::Fail
+        );
+    }
+
+    #[test]
+    fn parse_on_error_recognizes_explicit_values() {
+        assert_eq!(
+            parse_on_error("fail", HookPhase::PostExport),
+            HookOnError::Fail
+        );
+        assert_eq!(
+            parse_on_error("continue", HookPhase::PreExport),
+            HookOnError::Continue
+        );
+        assert_eq!(
+            parse_on_error("  FAIL  ", HookPhase::PostExport),
+            HookOnError::Fail
+        );
+    }
+
+    #[test]
+    fn parse_hook_timeout_handles_all_variants() {
+        assert_eq!(
+            parse_hook_timeout(Some(&HookTimeoutValue::Unsigned(10))),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            parse_hook_timeout(Some(&HookTimeoutValue::Signed(5))),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            parse_hook_timeout(Some(&HookTimeoutValue::Signed(-1))),
+            None
+        );
+        assert!(parse_hook_timeout(Some(&HookTimeoutValue::Float(2.5))).is_some());
+        assert_eq!(
+            parse_hook_timeout(Some(&HookTimeoutValue::Float(-1.0))),
+            None
+        );
+        assert_eq!(
+            parse_hook_timeout(Some(&HookTimeoutValue::Text("5s".to_string()))),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(parse_hook_timeout(None), None);
+    }
+
+    #[test]
+    fn parse_timeout_text_supports_all_units() {
+        assert_eq!(
+            parse_timeout_text("100ms"),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(parse_timeout_text("30s"), Some(Duration::from_secs(30)));
+        assert_eq!(parse_timeout_text("2m"), Some(Duration::from_secs(120)));
+        assert_eq!(parse_timeout_text("1h"), Some(Duration::from_secs(3600)));
+        assert_eq!(parse_timeout_text("0s"), None);
+        assert_eq!(parse_timeout_text("abc"), None);
+    }
+
+    #[test]
+    fn normalize_hooks_skips_empty_commands() {
+        let specs = vec![
+            HookSpec {
+                name: "empty".to_string(),
+                command: "   ".to_string(),
+                ..HookSpec::default()
+            },
+            HookSpec {
+                name: "valid".to_string(),
+                command: "echo ok".to_string(),
+                ..HookSpec::default()
+            },
+        ];
+
+        let normalized = normalize_hooks(&specs, HookPhase::PreExport);
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized[0].name, "valid");
+    }
+
+    #[test]
+    fn normalize_hooks_auto_generates_names() {
+        let specs = vec![
+            HookSpec {
+                command: "echo a".to_string(),
+                ..HookSpec::default()
+            },
+            HookSpec {
+                command: "echo b".to_string(),
+                ..HookSpec::default()
+            },
+        ];
+
+        let normalized = normalize_hooks(&specs, HookPhase::PostExport);
+        assert_eq!(normalized[0].name, "post-export-1");
+        assert_eq!(normalized[1].name, "post-export-2");
+    }
+
+    #[test]
+    fn is_closed_like_status_matches_closed_and_tombstone() {
+        assert!(is_closed_like_status("closed"));
+        assert!(is_closed_like_status("tombstone"));
+        assert!(!is_closed_like_status("open"));
+        assert!(!is_closed_like_status("in_progress"));
+        assert!(!is_closed_like_status("blocked"));
+    }
+
+    #[test]
+    fn truncate_runes_handles_edge_cases() {
+        assert_eq!(truncate_runes("hello", 10), "hello");
+        assert_eq!(truncate_runes("hello world", 8), "hello...");
+        assert_eq!(truncate_runes("abc", 3), "abc");
+        assert_eq!(truncate_runes("abcdef", 3), "abc");
+        assert_eq!(truncate_runes("anything", 0), "");
+    }
+
+    #[test]
+    fn format_hook_summary_reports_empty_hooks() {
+        assert_eq!(format_hook_summary(&[]), "No hooks executed");
+    }
+
+    #[test]
+    fn format_hook_summary_reports_success_and_failure() {
+        let results = vec![
+            HookRunResult {
+                name: "lint".to_string(),
+                success: true,
+                duration: Duration::from_millis(100),
+                error: None,
+                stderr: String::new(),
+            },
+            HookRunResult {
+                name: "deploy".to_string(),
+                success: false,
+                duration: Duration::from_millis(50),
+                error: Some("exit status 1".to_string()),
+                stderr: "connection refused".to_string(),
+            },
+        ];
+
+        let summary = format_hook_summary(&results);
+        assert!(summary.contains("1 succeeded, 1 failed"));
+        assert!(summary.contains("[OK] lint"));
+        assert!(summary.contains("[FAIL] deploy: exit status 1"));
+        assert!(summary.contains("stderr: connection refused"));
+    }
+
+    #[test]
+    fn generate_markdown_report_produces_expected_structure() {
+        let issues = vec![
+            Issue {
+                id: "BD-1".to_string(),
+                title: "Open task".to_string(),
+                status: "open".to_string(),
+                priority: 1,
+                issue_type: "task".to_string(),
+                description: "Do something".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "BD-2".to_string(),
+                title: "Closed task".to_string(),
+                status: "closed".to_string(),
+                priority: 2,
+                issue_type: "bug".to_string(),
+                ..Issue::default()
+            },
+        ];
+
+        let report = generate_markdown_report(&issues);
+        assert!(report.contains("# Beads Export"));
+        assert!(report.contains("| Total | 2 |"));
+        assert!(report.contains("| Open | 1 |"));
+        assert!(report.contains("| Closed | 1 |"));
+        assert!(report.contains("## BD-1 Open task"));
+        assert!(report.contains("## BD-2 Closed task"));
+        assert!(report.contains("### Description"));
+        assert!(report.contains("Do something"));
+    }
+
+    #[test]
+    fn generate_markdown_report_sorts_open_before_closed() {
+        let issues = vec![
+            Issue {
+                id: "CLOSED-1".to_string(),
+                title: "Done".to_string(),
+                status: "closed".to_string(),
+                priority: 1,
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+            Issue {
+                id: "OPEN-1".to_string(),
+                title: "Active".to_string(),
+                status: "open".to_string(),
+                priority: 2,
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+        ];
+
+        let report = generate_markdown_report(&issues);
+        let open_pos = report.find("OPEN-1").expect("should contain OPEN-1");
+        let closed_pos = report.find("CLOSED-1").expect("should contain CLOSED-1");
+        assert!(
+            open_pos < closed_pos,
+            "open issues should appear before closed"
+        );
+    }
+
+    #[test]
+    fn generate_markdown_report_handles_empty_issues() {
+        let report = generate_markdown_report(&[]);
+        assert!(report.contains("# Beads Export"));
+        assert!(report.contains("| Total | 0 |"));
+    }
+
+    #[test]
+    fn load_hooks_returns_default_for_missing_file() {
+        let result = load_hooks(Path::new("/nonexistent/hooks.yaml")).unwrap();
+        assert!(result.pre_export.is_empty());
+        assert!(result.post_export.is_empty());
+    }
+
+    #[test]
+    fn load_hooks_parses_valid_yaml() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hooks_path = temp.path().join("hooks.yaml");
+        std::fs::write(
+            &hooks_path,
+            r#"
+hooks:
+  pre-export:
+    - name: lint
+      command: echo lint
+      on_error: fail
+  post-export:
+    - command: echo done
+"#,
+        )
+        .expect("write hooks file");
+
+        let result = load_hooks(&hooks_path).unwrap();
+        assert_eq!(result.pre_export.len(), 1);
+        assert_eq!(result.pre_export[0].name, "lint");
+        assert_eq!(result.post_export.len(), 1);
+    }
+
+    #[test]
+    fn expand_env_handles_trailing_dollar_sign() {
+        let env = BTreeMap::new();
+        assert_eq!(expand_env_like_shell("price$", &env), "price$");
+        assert_eq!(expand_env_like_shell("$", &env), "$");
+    }
+
+    #[test]
+    fn expand_env_handles_dollar_followed_by_non_var_char() {
+        let env = BTreeMap::new();
+        assert_eq!(expand_env_like_shell("$1 $2", &env), "$1 $2");
+    }
+
+    #[test]
+    fn hook_phase_labels_match_yaml_keys() {
+        assert_eq!(HookPhase::PreExport.label(), "pre-export");
+        assert_eq!(HookPhase::PostExport.label(), "post-export");
+    }
+
+    #[test]
+    fn compare_issues_sorts_by_priority_within_same_status() {
+        let high = Issue {
+            id: "A".to_string(),
+            title: "A".to_string(),
+            status: "open".to_string(),
+            priority: 1,
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        };
+        let low = Issue {
+            id: "B".to_string(),
+            title: "B".to_string(),
+            status: "open".to_string(),
+            priority: 3,
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        };
+
+        assert_eq!(compare_issues_for_markdown(&high, &low), Ordering::Less);
+        assert_eq!(compare_issues_for_markdown(&low, &high), Ordering::Greater);
+    }
 }

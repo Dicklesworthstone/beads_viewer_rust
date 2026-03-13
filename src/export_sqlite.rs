@@ -1542,6 +1542,396 @@ mod tests {
         assert_eq!(total_chunk_size, config.total_size);
     }
 
+    #[test]
+    fn collect_dependency_rows_filters_out_unknown_targets() {
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                title: "A".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "A".to_string(),
+                    depends_on_id: "B".to_string(),
+                    dep_type: "blocks".to_string(),
+                    created_by: "tester".to_string(),
+                    created_at: None,
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "B".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "B".to_string(),
+                    depends_on_id: "MISSING".to_string(),
+                    dep_type: "blocks".to_string(),
+                    created_by: "tester".to_string(),
+                    created_at: None,
+                }],
+                ..Issue::default()
+            },
+        ];
+
+        let rows = collect_dependency_rows(&issues);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].issue_id, "A");
+        assert_eq!(rows[0].depends_on_id, "B");
+    }
+
+    #[test]
+    fn collect_dependency_rows_skips_empty_depends_on_id() {
+        let issues = vec![Issue {
+            id: "X".to_string(),
+            title: "X".to_string(),
+            issue_type: "task".to_string(),
+            dependencies: vec![Dependency {
+                issue_id: "X".to_string(),
+                depends_on_id: "  ".to_string(),
+                dep_type: "blocks".to_string(),
+                created_by: "tester".to_string(),
+                created_at: None,
+            }],
+            ..Issue::default()
+        }];
+
+        let rows = collect_dependency_rows(&issues);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn collect_dependency_rows_deduplicates_identical_entries() {
+        let dep = Dependency {
+            issue_id: "A".to_string(),
+            depends_on_id: "B".to_string(),
+            dep_type: "blocks".to_string(),
+            created_by: "tester".to_string(),
+            created_at: None,
+        };
+        let issues = vec![
+            Issue {
+                id: "A".to_string(),
+                title: "A".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![dep.clone(), dep],
+                ..Issue::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                title: "B".to_string(),
+                issue_type: "task".to_string(),
+                ..Issue::default()
+            },
+        ];
+
+        let rows = collect_dependency_rows(&issues);
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn collect_dependency_rows_sorts_deterministically() {
+        let issues = vec![
+            Issue {
+                id: "C".to_string(),
+                title: "C".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "C".to_string(),
+                    depends_on_id: "A".to_string(),
+                    dep_type: "blocks".to_string(),
+                    created_by: "z".to_string(),
+                    created_at: None,
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "A".to_string(),
+                title: "A".to_string(),
+                issue_type: "task".to_string(),
+                dependencies: vec![Dependency {
+                    issue_id: "A".to_string(),
+                    depends_on_id: "C".to_string(),
+                    dep_type: "blocks".to_string(),
+                    created_by: "a".to_string(),
+                    created_at: None,
+                }],
+                ..Issue::default()
+            },
+        ];
+
+        let rows = collect_dependency_rows(&issues);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].issue_id, "A");
+        assert_eq!(rows[1].issue_id, "C");
+    }
+
+    #[test]
+    fn collect_comment_rows_formats_composite_id() {
+        let issues = vec![Issue {
+            id: "ISSUE-1".to_string(),
+            title: "Test".to_string(),
+            issue_type: "task".to_string(),
+            comments: vec![
+                Comment {
+                    id: 5,
+                    issue_id: "ISSUE-1".to_string(),
+                    author: "alice".to_string(),
+                    text: "First".to_string(),
+                    created_at: None,
+                },
+                Comment {
+                    id: 10,
+                    issue_id: "ISSUE-1".to_string(),
+                    author: "bob".to_string(),
+                    text: "Second".to_string(),
+                    created_at: None,
+                },
+            ],
+            ..Issue::default()
+        }];
+
+        let rows = collect_comment_rows(&issues);
+        assert_eq!(rows.len(), 2);
+        // Sorted by (issue_id, composite id) — lexicographic: "ISSUE-1:10" < "ISSUE-1:5"
+        assert_eq!(rows[0].id, "ISSUE-1:10");
+        assert_eq!(rows[1].id, "ISSUE-1:5");
+        assert_eq!(rows[0].author, "bob");
+        assert_eq!(rows[1].author, "alice");
+    }
+
+    #[test]
+    fn collect_comment_rows_sorts_across_issues() {
+        let issues = vec![
+            Issue {
+                id: "Z".to_string(),
+                title: "Z".to_string(),
+                issue_type: "task".to_string(),
+                comments: vec![Comment {
+                    id: 1,
+                    issue_id: "Z".to_string(),
+                    author: "a".to_string(),
+                    text: "z-comment".to_string(),
+                    created_at: None,
+                }],
+                ..Issue::default()
+            },
+            Issue {
+                id: "A".to_string(),
+                title: "A".to_string(),
+                issue_type: "task".to_string(),
+                comments: vec![Comment {
+                    id: 2,
+                    issue_id: "A".to_string(),
+                    author: "b".to_string(),
+                    text: "a-comment".to_string(),
+                    created_at: None,
+                }],
+                ..Issue::default()
+            },
+        ];
+
+        let rows = collect_comment_rows(&issues);
+        assert_eq!(rows[0].issue_id, "A");
+        assert_eq!(rows[1].issue_id, "Z");
+    }
+
+    #[test]
+    fn normalized_source_repo_returns_dot_for_empty_or_whitespace() {
+        let empty = Issue {
+            id: "X".to_string(),
+            title: "X".to_string(),
+            issue_type: "task".to_string(),
+            source_repo: String::new(),
+            ..Issue::default()
+        };
+        assert_eq!(normalized_source_repo(&empty), ".");
+
+        let whitespace = Issue {
+            source_repo: "   ".to_string(),
+            ..empty.clone()
+        };
+        assert_eq!(normalized_source_repo(&whitespace), ".");
+
+        let normal = Issue {
+            source_repo: "services/api".to_string(),
+            ..empty
+        };
+        assert_eq!(normalized_source_repo(&normal), "services/api");
+    }
+
+    #[test]
+    fn emit_bootstrap_config_rejects_zero_chunk_size() {
+        let temp = tempdir().expect("tempdir");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap");
+
+        let err = emit_bootstrap_config(
+            temp.path(),
+            &SqliteBundleOptions {
+                chunk_threshold_bytes: 1,
+                chunk_size_bytes: 0,
+            },
+        )
+        .expect_err("zero chunk size should fail");
+
+        assert!(
+            err.to_string().contains("greater than zero"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn populate_export_database_handles_empty_issue_list() {
+        let temp = tempdir().expect("tempdir");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap");
+
+        let issues: Vec<Issue> = vec![];
+        let analyzer = Analyzer::new(issues.clone());
+        let triage = analyzer.triage(TriageOptions::default());
+
+        populate_export_database(temp.path(), Some("Empty"), &issues, &analyzer, &triage)
+            .expect("populate with empty issues");
+
+        let connection =
+            Connection::open(export_database_path(temp.path())).expect("open database");
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))
+            .expect("count issues");
+        assert_eq!(count, 0);
+
+        let meta = export_meta(&connection);
+        assert_eq!(meta.get("issue_count"), Some(&"0".to_string()));
+        assert_eq!(meta.get("title"), Some(&"Empty".to_string()));
+    }
+
+    #[test]
+    fn populate_export_database_is_idempotent() {
+        let temp = tempdir().expect("tempdir");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap");
+
+        let issues = vec![Issue {
+            id: "ONLY-1".to_string(),
+            title: "Only issue".to_string(),
+            status: "open".to_string(),
+            priority: 1,
+            issue_type: "task".to_string(),
+            ..Issue::default()
+        }];
+
+        let analyzer = Analyzer::new(issues.clone());
+        let triage = analyzer.triage(TriageOptions::default());
+
+        populate_export_database(temp.path(), Some("First"), &issues, &analyzer, &triage)
+            .expect("first populate");
+        populate_export_database(temp.path(), Some("Second"), &issues, &analyzer, &triage)
+            .expect("second populate");
+
+        let connection =
+            Connection::open(export_database_path(temp.path())).expect("open database");
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM issues", [], |row| row.get(0))
+            .expect("count issues");
+        assert_eq!(count, 1);
+
+        let meta = export_meta(&connection);
+        assert_eq!(meta.get("title"), Some(&"Second".to_string()));
+    }
+
+    #[test]
+    fn populate_export_database_omits_title_when_none() {
+        let temp = tempdir().expect("tempdir");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap");
+
+        let issues: Vec<Issue> = vec![];
+        let analyzer = Analyzer::new(issues.clone());
+        let triage = analyzer.triage(TriageOptions::default());
+
+        populate_export_database(temp.path(), None, &issues, &analyzer, &triage)
+            .expect("populate without title");
+
+        let connection =
+            Connection::open(export_database_path(temp.path())).expect("open database");
+        let meta = export_meta(&connection);
+        assert!(meta.get("title").is_none());
+    }
+
+    #[test]
+    fn populate_export_database_omits_blank_title() {
+        let temp = tempdir().expect("tempdir");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap");
+
+        let issues: Vec<Issue> = vec![];
+        let analyzer = Analyzer::new(issues.clone());
+        let triage = analyzer.triage(TriageOptions::default());
+
+        populate_export_database(temp.path(), Some("   "), &issues, &analyzer, &triage)
+            .expect("populate with blank title");
+
+        let connection =
+            Connection::open(export_database_path(temp.path())).expect("open database");
+        let meta = export_meta(&connection);
+        assert!(meta.get("title").is_none());
+    }
+
+    #[test]
+    fn hash_file_produces_consistent_sha256() {
+        let temp = tempdir().expect("tempdir");
+        let file_path = temp.path().join("test.bin");
+        std::fs::write(&file_path, b"hello world").expect("write test file");
+
+        let hash1 = hash_file(&file_path).expect("first hash");
+        let hash2 = hash_file(&file_path).expect("second hash");
+
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64);
+        assert!(hash1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn export_database_path_joins_filename() {
+        let path = export_database_path(Path::new("/tmp/out"));
+        assert_eq!(path, PathBuf::from("/tmp/out/beads.sqlite3"));
+    }
+
+    #[test]
+    fn export_config_path_joins_filename() {
+        let path = export_config_path(Path::new("/tmp/out"));
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/out/beads.sqlite3.config.json")
+        );
+    }
+
+    #[test]
+    fn write_database_chunks_produces_correct_reassembly() {
+        let temp = tempdir().expect("tempdir");
+        let db_path = temp.path().join("test.db");
+        let content = vec![0xAA_u8; 1000];
+        std::fs::write(&db_path, &content).expect("write test db");
+
+        let chunks =
+            write_database_chunks(temp.path(), &db_path, 300).expect("write chunks");
+
+        assert_eq!(chunks.len(), 4);
+        let total_size: u64 = chunks.iter().map(|c| c.size).sum();
+        assert_eq!(total_size, 1000);
+
+        let mut reassembled = Vec::new();
+        for chunk in &chunks {
+            let chunk_path = temp.path().join(&chunk.path);
+            let data = std::fs::read(&chunk_path).expect("read chunk");
+            assert_eq!(data.len() as u64, chunk.size);
+            reassembled.extend_from_slice(&data);
+        }
+        assert_eq!(reassembled, content);
+    }
+
     fn sqlite_object_inventory(connection: &Connection) -> BTreeSet<String> {
         let mut stmt = connection
             .prepare(
