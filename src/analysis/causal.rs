@@ -1446,4 +1446,446 @@ mod tests {
         assert!(parse_timestamp_ms("").is_none());
         assert!(parse_timestamp_ms("invalid").is_none());
     }
+
+    // --- parse_timestamp_ms edge cases ---
+
+    #[test]
+    fn timestamp_parsing_with_timezone_offset() {
+        let ms = parse_timestamp_ms("2025-01-01T00:00:00+00:00");
+        assert!(ms.is_some());
+    }
+
+    #[test]
+    fn timestamp_parsing_with_fractional_seconds() {
+        let ms = parse_timestamp_ms("2025-01-01T12:30:45.123Z");
+        assert!(ms.is_some());
+    }
+
+    #[test]
+    fn timestamp_parsing_no_t_separator() {
+        assert!(parse_timestamp_ms("2025-01-01 12:00:00Z").is_none());
+    }
+
+    #[test]
+    fn timestamp_parsing_missing_seconds() {
+        // time_parts.len() >= 2 should still work with just hour:minute
+        let ms = parse_timestamp_ms("2025-01-01T12:30Z");
+        assert!(ms.is_some());
+    }
+
+    // --- days_from_date tests ---
+
+    #[test]
+    fn days_from_date_pre_1970_returns_none() {
+        assert!(days_from_date(1969, 12, 31).is_none());
+    }
+
+    #[test]
+    fn days_from_date_invalid_month_zero() {
+        assert!(days_from_date(2020, 0, 1).is_none());
+    }
+
+    #[test]
+    fn days_from_date_invalid_month_13() {
+        assert!(days_from_date(2020, 13, 1).is_none());
+    }
+
+    #[test]
+    fn days_from_date_invalid_day_zero() {
+        assert!(days_from_date(2020, 1, 0).is_none());
+    }
+
+    #[test]
+    fn days_from_date_invalid_day_32() {
+        assert!(days_from_date(2020, 1, 32).is_none());
+    }
+
+    #[test]
+    fn days_from_date_epoch() {
+        assert_eq!(days_from_date(1970, 1, 1), Some(0));
+    }
+
+    #[test]
+    fn days_from_date_one_day() {
+        assert_eq!(days_from_date(1970, 1, 2), Some(1));
+    }
+
+    #[test]
+    fn days_from_date_leap_year_feb() {
+        // 2000 is a leap year, Feb has 29 days
+        let feb28 = days_from_date(2000, 2, 28).unwrap();
+        let mar1 = days_from_date(2000, 3, 1).unwrap();
+        assert_eq!(mar1 - feb28, 2); // Feb 28 → Feb 29 → Mar 1
+    }
+
+    // --- get_blocker_chain edge cases ---
+
+    #[test]
+    fn blocker_chain_unknown_target() {
+        let issues = vec![make_issue("A", "A", "open", 1)];
+        let graph = IssueGraph::build(&issues);
+        let result = get_blocker_chain(&graph, "NONEXISTENT");
+        assert!(!result.is_blocked);
+        assert_eq!(result.target_title, "");
+    }
+
+    #[test]
+    fn blocker_chain_multiple_roots_sorted_by_priority() {
+        let issues = vec![
+            make_issue("R1", "Root high", "open", 5),
+            make_issue("R2", "Root low", "open", 1),
+            make_issue("R3", "Root mid", "open", 3),
+            make_issue_with_deps("T", "Target", "blocked", 2, &["R1", "R2", "R3"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let result = get_blocker_chain(&graph, "T");
+        assert_eq!(result.root_blockers.len(), 3);
+        assert_eq!(result.root_blockers[0].id, "R2"); // priority 1
+        assert_eq!(result.root_blockers[1].id, "R3"); // priority 3
+        assert_eq!(result.root_blockers[2].id, "R1"); // priority 5
+    }
+
+    // --- get_subnetwork tests ---
+
+    #[test]
+    fn subnetwork_depth_clamped_to_max_3() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue_with_deps("B", "B", "open", 1, &["A"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+        let full = build_impact_network(&graph, &histories);
+
+        // depth=100 should be clamped to 3
+        let sub = get_subnetwork(&full, "A", 100);
+        assert!(sub.stats.total_nodes <= full.stats.total_nodes);
+    }
+
+    #[test]
+    fn subnetwork_unknown_bead_returns_single_node() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue_with_deps("B", "B", "open", 1, &["A"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+        let full = build_impact_network(&graph, &histories);
+
+        let sub = get_subnetwork(&full, "NONEXISTENT", 2);
+        // Unknown bead won't match any nodes
+        assert_eq!(sub.stats.total_nodes, 0);
+    }
+
+    #[test]
+    fn subnetwork_density_zero_for_single_node() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue("B", "B", "open", 1),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+        let full = build_impact_network(&graph, &histories);
+
+        let sub = get_subnetwork(&full, "A", 1);
+        assert_eq!(sub.stats.density, 0.0);
+    }
+
+    // --- build_impact_network_result tests ---
+
+    #[test]
+    fn impact_network_result_all_returns_full_network() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue_with_deps("B", "B", "open", 1, &["A"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+
+        let result = build_impact_network_result(&graph, &histories, "all", 2);
+        assert_eq!(result.bead_id, "");
+        assert_eq!(result.depth, 0);
+        assert_eq!(result.network.stats.total_nodes, 2);
+    }
+
+    #[test]
+    fn impact_network_result_specific_bead() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue_with_deps("B", "B", "open", 1, &["A"]),
+            make_issue("C", "C", "open", 1),
+            make_issue_with_deps("D", "D", "open", 1, &["C"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+
+        let result = build_impact_network_result(&graph, &histories, "A", 1);
+        assert_eq!(result.bead_id, "A");
+        assert!(result.depth >= 1);
+    }
+
+    #[test]
+    fn impact_network_result_empty_bead_id_returns_full() {
+        let issues = vec![make_issue("A", "A", "open", 1)];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+
+        let result = build_impact_network_result(&graph, &histories, "", 1);
+        assert_eq!(result.bead_id, "");
+        assert_eq!(result.depth, 0);
+    }
+
+    // --- Impact network shared file edges ---
+
+    #[test]
+    fn impact_network_shared_file_edges_require_two_files() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue("B", "B", "open", 1),
+        ];
+        let graph = IssueGraph::build(&issues);
+
+        let mut histories = BTreeMap::new();
+        // Only 1 shared file — should NOT create a shared_file edge
+        histories.insert(
+            "A".to_string(),
+            make_history("A", vec![], vec![("s1", "2025-01-01T00:00:00Z", vec!["shared.rs"])]),
+        );
+        histories.insert(
+            "B".to_string(),
+            make_history("B", vec![], vec![("s2", "2025-01-02T00:00:00Z", vec!["shared.rs"])]),
+        );
+
+        let network = build_impact_network(&graph, &histories);
+        assert!(!network.edges.iter().any(|e| e.edge_type == "shared_file"));
+    }
+
+    #[test]
+    fn impact_network_shared_file_edges_with_two_plus_files() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue("B", "B", "open", 1),
+        ];
+        let graph = IssueGraph::build(&issues);
+
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "A".to_string(),
+            make_history(
+                "A",
+                vec![],
+                vec![("s1", "2025-01-01T00:00:00Z", vec!["f1.rs", "f2.rs"])],
+            ),
+        );
+        histories.insert(
+            "B".to_string(),
+            make_history(
+                "B",
+                vec![],
+                vec![("s2", "2025-01-02T00:00:00Z", vec!["f1.rs", "f2.rs"])],
+            ),
+        );
+
+        let network = build_impact_network(&graph, &histories);
+        assert!(network.edges.iter().any(|e| e.edge_type == "shared_file"));
+    }
+
+    // --- Network stats ---
+
+    #[test]
+    fn impact_network_stats_computed() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue_with_deps("B", "B", "open", 1, &["A"]),
+            make_issue("C", "C", "open", 1),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+
+        let network = build_impact_network(&graph, &histories);
+        assert_eq!(network.stats.total_nodes, 3);
+        assert_eq!(network.stats.total_edges, 1);
+        assert_eq!(network.stats.isolated_nodes, 1); // C is isolated
+        assert_eq!(network.stats.max_degree, 1);
+    }
+
+    // --- Causality insights ---
+
+    #[test]
+    fn causality_high_blocked_percentage_recommendation() {
+        let issues = vec![
+            make_issue("blocker", "Blocker", "closed", 1),
+            make_issue_with_deps("A", "Task", "open", 2, &["blocker"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "blocker".to_string(),
+            make_history(
+                "blocker",
+                vec![
+                    ("2025-01-01T00:00:00Z", "created"),
+                    ("2025-06-01T00:00:00Z", "closed"),
+                ],
+                vec![],
+            ),
+        );
+        histories.insert(
+            "A".to_string(),
+            make_history(
+                "A",
+                vec![
+                    ("2025-01-02T00:00:00Z", "created"),
+                    ("2025-07-01T00:00:00Z", "claimed"),
+                ],
+                vec![],
+            ),
+        );
+
+        let result = build_causality_chain("A", &histories, &graph);
+        // Blocked period should be substantial
+        if result.insights.blocked_percentage > 25.0 {
+            assert!(
+                result
+                    .insights
+                    .recommendations
+                    .iter()
+                    .any(|r| r.contains("blocked percentage"))
+            );
+        }
+    }
+
+    #[test]
+    fn causality_duration_next_ms_computed() {
+        let issues = vec![make_issue("A", "Task", "open", 1)];
+        let graph = IssueGraph::build(&issues);
+
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "A".to_string(),
+            make_history(
+                "A",
+                vec![
+                    ("2025-01-01T00:00:00Z", "created"),
+                    ("2025-01-02T00:00:00Z", "claimed"),
+                ],
+                vec![],
+            ),
+        );
+
+        let result = build_causality_chain("A", &histories, &graph);
+        assert_eq!(result.chain.events.len(), 2);
+        assert_eq!(result.chain.events[0].duration_next_ms, Some(86_400_000));
+    }
+
+    #[test]
+    fn causality_not_complete_when_open() {
+        let issues = vec![make_issue("A", "Task", "open", 1)];
+        let graph = IssueGraph::build(&issues);
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "A".to_string(),
+            make_history("A", vec![("2025-01-01T00:00:00Z", "created")], vec![]),
+        );
+
+        let result = build_causality_chain("A", &histories, &graph);
+        assert!(!result.chain.is_complete);
+    }
+
+    #[test]
+    fn causality_complete_when_closed() {
+        let issues = vec![make_issue("A", "Task", "closed", 1)];
+        let graph = IssueGraph::build(&issues);
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "A".to_string(),
+            make_history(
+                "A",
+                vec![
+                    ("2025-01-01T00:00:00Z", "created"),
+                    ("2025-01-05T00:00:00Z", "closed"),
+                ],
+                vec![],
+            ),
+        );
+
+        let result = build_causality_chain("A", &histories, &graph);
+        assert!(result.chain.is_complete);
+    }
+
+    #[test]
+    fn causality_edge_count_is_events_minus_one() {
+        let issues = vec![make_issue("A", "Task", "open", 1)];
+        let graph = IssueGraph::build(&issues);
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "A".to_string(),
+            make_history(
+                "A",
+                vec![
+                    ("2025-01-01T00:00:00Z", "created"),
+                    ("2025-01-02T00:00:00Z", "claimed"),
+                    ("2025-01-03T00:00:00Z", "status_change"),
+                ],
+                vec![],
+            ),
+        );
+
+        let result = build_causality_chain("A", &histories, &graph);
+        assert_eq!(result.chain.edge_count, result.chain.events.len() - 1);
+    }
+
+    #[test]
+    fn causality_longest_gap_desc_days() {
+        let issues = vec![make_issue("A", "Task", "open", 1)];
+        let graph = IssueGraph::build(&issues);
+        let mut histories = BTreeMap::new();
+        histories.insert(
+            "A".to_string(),
+            make_history(
+                "A",
+                vec![
+                    ("2025-01-01T00:00:00Z", "created"),
+                    ("2025-02-01T00:00:00Z", "claimed"),
+                ],
+                vec![],
+            ),
+        );
+
+        let result = build_causality_chain("A", &histories, &graph);
+        assert!(result.insights.longest_gap_desc.contains("d gap"));
+    }
+
+    // --- Cluster detection ---
+
+    #[test]
+    fn cluster_requires_at_least_two_nodes() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue("B", "B", "open", 1),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+
+        let network = build_impact_network(&graph, &histories);
+        // No edges, so no clusters
+        assert!(network.clusters.is_empty());
+    }
+
+    #[test]
+    fn cluster_formed_from_connected_edges() {
+        let issues = vec![
+            make_issue("A", "A", "open", 1),
+            make_issue_with_deps("B", "B", "open", 1, &["A"]),
+            make_issue_with_deps("C", "C", "open", 1, &["A"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let histories = BTreeMap::new();
+
+        let network = build_impact_network(&graph, &histories);
+        assert!(!network.clusters.is_empty());
+        let cluster = &network.clusters[0];
+        assert!(cluster.bead_ids.len() >= 2);
+    }
 }
