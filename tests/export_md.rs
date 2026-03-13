@@ -134,7 +134,9 @@ fn export_md_hooks_receive_context_env_vars() {
         .success();
 
     let line = fs::read_to_string(repo_dir.join("env-line.txt")).expect("read env-line.txt");
-    assert_eq!(line.trim(), "report.md|1");
+    // BV_EXPORT_PATH is now always absolute (resolved against cwd).
+    let expected = format!("{}|1", repo_dir.join("report.md").display());
+    assert_eq!(line.trim(), expected);
 }
 
 #[test]

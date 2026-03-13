@@ -172,11 +172,11 @@ Legend:
 ### How to Rerun the Proof Set
 
 ```bash
-# Full test suite (1,293 tests; 2 flaky e2e_watch may fail under load)
+# Full test suite (1,318 tests; 2 flaky e2e_watch may fail under load)
 cargo test --tests
 
 # Individual suites
-cargo test --lib                           # 917 unit tests
+cargo test --lib                           # 936 unit tests
 cargo test --test conformance              # 75 conformance tests
 cargo test --test schema_validation        # 50 schema tests
 cargo test --test e2e_robot_matrix         # 49 e2e robot matrix
@@ -512,7 +512,7 @@ Prerequisites: Wave 3 complete.
 |---|---|---|
 | **Format clean** | `cargo fmt --check` (CI enforced) | PASS |
 | **Clippy warnings** | `cargo clippy --all-targets` (CI enforced) | PASS (0 warnings) |
-| **917 unit tests** | `cargo test --lib` | PASS |
+| **936 unit tests** | `cargo test --lib` | PASS |
 | **75 conformance tests** | `cargo test --test conformance` | PASS |
 | **50 schema validation** | `cargo test --test schema_validation` | PASS |
 | **82 e2e tests** | 3 e2e test files (robot_matrix, workspace_history, export_pages) | PASS |
@@ -530,7 +530,7 @@ Prerequisites: Wave 3 complete.
 
 ### Go/No-Go Decision
 
-All core robot commands, export surfaces, TUI interactions, pages wizard, and quality gates are passing with 1,306 tests (930 lib + 376 integration/conformance/e2e). The project is ready for release as a functional replacement for the legacy Go `bv` binary for all automated (robot) and interactive (TUI) workflows.
+All core robot commands, export surfaces, TUI interactions, pages wizard, and quality gates are passing with 1,318 tests (936 lib + 382 integration/conformance/e2e). The project is ready for release as a functional replacement for the legacy Go `bv` binary for all automated (robot) and interactive (TUI) workflows.
 
 ## Open Gaps to 100%
 1. ~~Remaining TUI interaction parity (responsive history layout, file tree panel, `o`/`y` keys, search modes)~~ — **Done**.

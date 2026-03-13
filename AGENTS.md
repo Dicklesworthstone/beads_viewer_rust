@@ -154,14 +154,14 @@ Every module includes inline `#[cfg(test)]` unit tests alongside the implementat
 - Edge cases (empty input, max values, boundary conditions)
 - Error conditions
 
-### Test Suite (1,248 tests)
+### Test Suite (1,318 tests)
 
 ```bash
 # Full suite via rch
 export TMPDIR=/data/tmp && rch exec -- cargo test --tests
 
 # Individual suites
-export TMPDIR=/data/tmp && rch exec -- cargo test --lib                        # 872 unit tests
+export TMPDIR=/data/tmp && rch exec -- cargo test --lib                        # 936 unit tests
 export TMPDIR=/data/tmp && rch exec -- cargo test --test conformance           # 75 conformance
 export TMPDIR=/data/tmp && rch exec -- cargo test --test schema_validation     # 36 schema
 export TMPDIR=/data/tmp && rch exec -- cargo test --test e2e_robot_matrix      # 35 e2e robot
@@ -177,7 +177,7 @@ export TMPDIR=/data/tmp && rch exec -- cargo bench --bench triage              #
 
 | Suite | Count | Purpose |
 |-------|-------|---------|
-| Unit tests (`--lib`) | 872 | Module-level with inline `#[cfg(test)]` |
+| Unit tests (`--lib`) | 936 | Module-level with inline `#[cfg(test)]` |
 | Conformance (`--test conformance`) | 75 | Go reference fixture parity |
 | Schema validation | 36 | JSON schema compliance |
 | E2E robot matrix | 35 | Full robot command integration |
