@@ -262,6 +262,50 @@ struct CmdDoc {
     needs_issues: bool,
 }
 
+fn implemented_robot_command_names() -> &'static [&'static str] {
+    &[
+        "robot-triage",
+        "robot-next",
+        "robot-plan",
+        "robot-insights",
+        "robot-priority",
+        "robot-triage-by-track",
+        "robot-triage-by-label",
+        "robot-alerts",
+        "robot-suggest",
+        "robot-schema",
+        "robot-docs",
+        "robot-history",
+        "robot-diff",
+        "robot-graph",
+        "robot-forecast",
+        "robot-capacity",
+        "robot-burndown",
+        "robot-sprint-list",
+        "robot-sprint-show",
+        "robot-metrics",
+        "robot-label-health",
+        "robot-label-flow",
+        "robot-label-attention",
+        "robot-explain-correlation",
+        "robot-confirm-correlation",
+        "robot-reject-correlation",
+        "robot-correlation-stats",
+        "robot-orphans",
+        "robot-file-beads",
+        "robot-file-hotspots",
+        "robot-impact",
+        "robot-file-relations",
+        "robot-related",
+        "robot-blocker-chain",
+        "robot-impact-network",
+        "robot-causality",
+        "robot-drift",
+        "robot-search",
+        "robot-recipes",
+    ]
+}
+
 fn robot_command_docs() -> BTreeMap<&'static str, CmdDoc> {
     BTreeMap::from([
         (
@@ -476,6 +520,236 @@ fn robot_command_docs() -> BTreeMap<&'static str, CmdDoc> {
                 needs_issues: true,
             },
         ),
+        (
+            "robot-sprint-list",
+            CmdDoc {
+                flag: "--robot-sprint-list",
+                description: "List all discovered sprints.",
+                key_fields: vec!["sprint_count", "sprints"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-sprint-show",
+            CmdDoc {
+                flag: "--robot-sprint-show <id>",
+                description: "Show a single sprint payload.",
+                key_fields: vec!["sprint"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-metrics",
+            CmdDoc {
+                flag: "--robot-metrics",
+                description: "Emit timing, cache, and memory telemetry.",
+                key_fields: vec!["timing", "cache", "memory"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-label-health",
+            CmdDoc {
+                flag: "--robot-label-health",
+                description: "Per-label health, staleness, and blocked-work summary.",
+                key_fields: vec!["result"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-label-flow",
+            CmdDoc {
+                flag: "--robot-label-flow",
+                description: "Cross-label dependency flow and bottlenecks.",
+                key_fields: vec!["flow"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-label-attention",
+            CmdDoc {
+                flag: "--robot-label-attention",
+                description: "Attention-ranked labels using graph and freshness signals.",
+                key_fields: vec!["limit", "result"],
+                params: vec!["--attention-limit <n>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-explain-correlation",
+            CmdDoc {
+                flag: "--robot-explain-correlation <sha:bead>",
+                description: "Explain a git-history correlation candidate.",
+                key_fields: vec!["explanation"],
+                params: vec!["--correlation-by <actor>", "--correlation-reason <text>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-confirm-correlation",
+            CmdDoc {
+                flag: "--robot-confirm-correlation <sha:bead>",
+                description: "Persist positive feedback for a history correlation candidate.",
+                key_fields: vec!["status", "commit", "bead", "by", "reason", "orig_conf"],
+                params: vec!["--correlation-by <actor>", "--correlation-reason <text>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-reject-correlation",
+            CmdDoc {
+                flag: "--robot-reject-correlation <sha:bead>",
+                description: "Persist rejection feedback for a history correlation candidate.",
+                key_fields: vec!["status", "commit", "bead", "by", "reason", "orig_conf"],
+                params: vec!["--correlation-by <actor>", "--correlation-reason <text>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-correlation-stats",
+            CmdDoc {
+                flag: "--robot-correlation-stats",
+                description: "Summarize stored correlation feedback.",
+                key_fields: vec!["stats"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-orphans",
+            CmdDoc {
+                flag: "--robot-orphans",
+                description: "Detect high-signal repository files that are not covered by bead history.",
+                key_fields: vec!["report"],
+                params: vec!["--orphans-min-score <n>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-file-beads",
+            CmdDoc {
+                flag: "--robot-file-beads <path>",
+                description: "Look up beads correlated with a file path.",
+                key_fields: vec!["result"],
+                params: vec!["--file-beads-limit <n>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-file-hotspots",
+            CmdDoc {
+                flag: "--robot-file-hotspots",
+                description: "Rank file hotspots from bead-history evidence.",
+                key_fields: vec!["hotspots", "stats"],
+                params: vec!["--hotspots-limit <n>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-impact",
+            CmdDoc {
+                flag: "--robot-impact <path[,path...]>",
+                description: "Estimate issue impact for one or more file paths.",
+                key_fields: vec!["result"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-file-relations",
+            CmdDoc {
+                flag: "--robot-file-relations <path>",
+                description: "Find related files using shared bead-history evidence.",
+                key_fields: vec!["result"],
+                params: vec!["--relations-threshold <n>", "--relations-limit <n>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-related",
+            CmdDoc {
+                flag: "--robot-related <bead-id>",
+                description: "Find related work from file and history overlap.",
+                key_fields: vec!["result"],
+                params: vec![
+                    "--related-min-relevance <n>",
+                    "--related-max-results <n>",
+                    "--related-include-closed",
+                ],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-blocker-chain",
+            CmdDoc {
+                flag: "--robot-blocker-chain <bead-id>",
+                description: "Show upstream blockers for a target bead.",
+                key_fields: vec!["result"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-impact-network",
+            CmdDoc {
+                flag: "--robot-impact-network <bead-id>",
+                description: "Build a causal impact network around a target bead.",
+                key_fields: vec!["result"],
+                params: vec!["--network-depth <n>"],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-causality",
+            CmdDoc {
+                flag: "--robot-causality <bead-id>",
+                description: "Build a causality chain using graph and history evidence.",
+                key_fields: vec!["result"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-drift",
+            CmdDoc {
+                flag: "--robot-drift",
+                description: "Compare current state to a saved baseline and emit structured drift alerts.",
+                key_fields: vec!["result"],
+                params: vec![],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-search",
+            CmdDoc {
+                flag: "--robot-search",
+                description: "Run text or hybrid ranking over beads.",
+                key_fields: vec!["query", "limit", "mode", "preset", "weights", "results"],
+                params: vec![
+                    "--search <query>",
+                    "--search-mode text|hybrid",
+                    "--search-preset <name>",
+                    "--search-weights <json>",
+                    "--search-limit <n>",
+                ],
+                needs_issues: true,
+            },
+        ),
+        (
+            "robot-recipes",
+            CmdDoc {
+                flag: "--robot-recipes",
+                description: "List named pre-filter recipes used by triage and scripting flows.",
+                key_fields: vec!["recipes"],
+                params: vec![],
+                needs_issues: false,
+            },
+        ),
     ])
 }
 
@@ -591,6 +865,16 @@ fn schema_prop(type_str: &str) -> Value {
 
 fn schema_prop_dt() -> Value {
     serde_json::json!({"type": "string", "format": "date-time"})
+}
+
+fn simple_command_schema(title: &str, description: &str, properties: Value) -> Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": title,
+        "description": description,
+        "type": "object",
+        "properties": properties,
+    })
 }
 
 #[must_use]
@@ -918,6 +1202,350 @@ pub fn generate_robot_schemas() -> RobotSchemas {
         }),
     );
 
+    commands.insert(
+        "robot-triage-by-track".to_string(),
+        simple_command_schema(
+            "Robot Triage By Track Output",
+            "Triage grouped by parallel execution track",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "triage": {"type": "object"},
+                "feedback": {"type": "object"},
+                "usage_hints": {"type": "array"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-triage-by-label".to_string(),
+        simple_command_schema(
+            "Robot Triage By Label Output",
+            "Triage grouped by label/domain",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "triage": {"type": "object"},
+                "feedback": {"type": "object"},
+                "usage_hints": {"type": "array"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-schema".to_string(),
+        simple_command_schema(
+            "Robot Schema Output",
+            "JSON Schema definitions for robot commands",
+            serde_json::json!({
+                "schema_version": schema_prop("string"),
+                "generated_at": schema_prop_dt(),
+                "command": schema_prop("string"),
+                "schema": {"type": "object"},
+                "envelope": {"type": "object"},
+                "commands": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-docs".to_string(),
+        simple_command_schema(
+            "Robot Docs Output",
+            "Machine-readable documentation for robot command usage",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "output_format": schema_prop("string"),
+                "version": schema_prop("string"),
+                "topic": schema_prop("string"),
+                "guide": {"type": "object"},
+                "commands": {"type": "object"},
+                "examples": {"type": "array"},
+                "environment_variables": {"type": "object"},
+                "exit_codes": {"type": "object"},
+                "error": schema_prop("string"),
+                "available_topics": {"type": "array"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-sprint-list".to_string(),
+        simple_command_schema(
+            "Robot Sprint List Output",
+            "List of available sprints",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "sprint_count": schema_prop("integer"),
+                "sprints": {"type": "array"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-sprint-show".to_string(),
+        simple_command_schema(
+            "Robot Sprint Show Output",
+            "Single sprint detail payload",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "sprint": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-metrics".to_string(),
+        simple_command_schema(
+            "Robot Metrics Output",
+            "Timing, cache, and memory telemetry",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "timing": {"type": "array"},
+                "cache": {"type": "array"},
+                "memory": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-label-health".to_string(),
+        simple_command_schema(
+            "Robot Label Health Output",
+            "Per-label health summary",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-label-flow".to_string(),
+        simple_command_schema(
+            "Robot Label Flow Output",
+            "Cross-label flow summary",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "flow": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-label-attention".to_string(),
+        simple_command_schema(
+            "Robot Label Attention Output",
+            "Attention-ranked labels",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "limit": schema_prop("integer"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-explain-correlation".to_string(),
+        simple_command_schema(
+            "Robot Explain Correlation Output",
+            "Explanation for a commit-to-bead correlation",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "explanation": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-confirm-correlation".to_string(),
+        simple_command_schema(
+            "Robot Confirm Correlation Output",
+            "Confirmation feedback result for a correlation candidate",
+            serde_json::json!({
+                "status": schema_prop("string"),
+                "commit": schema_prop("string"),
+                "bead": schema_prop("string"),
+                "by": schema_prop("string"),
+                "reason": schema_prop("string"),
+                "orig_conf": schema_prop("number"),
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-reject-correlation".to_string(),
+        simple_command_schema(
+            "Robot Reject Correlation Output",
+            "Rejection feedback result for a correlation candidate",
+            serde_json::json!({
+                "status": schema_prop("string"),
+                "commit": schema_prop("string"),
+                "bead": schema_prop("string"),
+                "by": schema_prop("string"),
+                "reason": schema_prop("string"),
+                "orig_conf": schema_prop("number"),
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-correlation-stats".to_string(),
+        simple_command_schema(
+            "Robot Correlation Stats Output",
+            "Stored correlation feedback statistics",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "stats": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-orphans".to_string(),
+        simple_command_schema(
+            "Robot Orphans Output",
+            "Repository orphan-file report",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "report": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-file-beads".to_string(),
+        simple_command_schema(
+            "Robot File Beads Output",
+            "Beads related to a file path",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-file-hotspots".to_string(),
+        simple_command_schema(
+            "Robot File Hotspots Output",
+            "Hotspot ranking derived from file history",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "hotspots": {"type": "array"},
+                "stats": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-impact".to_string(),
+        simple_command_schema(
+            "Robot Impact Output",
+            "Impact analysis for one or more file paths",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-file-relations".to_string(),
+        simple_command_schema(
+            "Robot File Relations Output",
+            "Related files derived from bead/file co-occurrence",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-related".to_string(),
+        simple_command_schema(
+            "Robot Related Output",
+            "Related work recommendations for a bead",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-blocker-chain".to_string(),
+        simple_command_schema(
+            "Robot Blocker Chain Output",
+            "Upstream blocker chain for a bead",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-impact-network".to_string(),
+        simple_command_schema(
+            "Robot Impact Network Output",
+            "Impact network around a bead",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-causality".to_string(),
+        simple_command_schema(
+            "Robot Causality Output",
+            "Causality chain around a bead",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-drift".to_string(),
+        simple_command_schema(
+            "Robot Drift Output",
+            "Structured baseline drift result",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "result": {"type": "object"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-search".to_string(),
+        simple_command_schema(
+            "Robot Search Output",
+            "Search results over beads",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "query": schema_prop("string"),
+                "limit": schema_prop("integer"),
+                "mode": schema_prop("string"),
+                "preset": schema_prop("string"),
+                "weights": {"type": "object"},
+                "results": {"type": "array"},
+            }),
+        ),
+    );
+    commands.insert(
+        "robot-recipes".to_string(),
+        simple_command_schema(
+            "Robot Recipes Output",
+            "Available named triage recipes",
+            serde_json::json!({
+                "generated_at": schema_prop_dt(),
+                "data_hash": schema_prop("string"),
+                "recipes": {"type": "array"},
+            }),
+        ),
+    );
+
     RobotSchemas {
         schema_version: "1.0.0".to_string(),
         generated_at: now,
@@ -981,15 +1609,17 @@ mod tests {
     fn robot_docs_commands_lists_all_robot_commands() {
         let docs = generate_robot_docs("commands");
         let commands = docs["commands"].as_object().unwrap();
-        assert!(
-            commands.len() >= 15,
-            "expected 15+ commands, got {}",
+        let expected = implemented_robot_command_names();
+        assert_eq!(
+            commands.len(),
+            expected.len(),
+            "expected {} commands, got {}",
+            expected.len(),
             commands.len()
         );
-        assert!(commands.contains_key("robot-triage"));
-        assert!(commands.contains_key("robot-next"));
-        assert!(commands.contains_key("robot-schema"));
-        assert!(commands.contains_key("robot-docs"));
+        for cmd in expected {
+            assert!(commands.contains_key(*cmd), "missing docs entry for {cmd}");
+        }
     }
 
     #[test]
@@ -1068,26 +1698,23 @@ mod tests {
     #[test]
     fn robot_schema_covers_all_implemented_commands() {
         let schemas = generate_robot_schemas();
-        let expected = [
-            "robot-triage",
-            "robot-next",
-            "robot-plan",
-            "robot-insights",
-            "robot-priority",
-            "robot-graph",
-            "robot-diff",
-            "robot-alerts",
-            "robot-suggest",
-            "robot-burndown",
-            "robot-forecast",
-            "robot-history",
-            "robot-capacity",
-        ];
-        for cmd in &expected {
+        for cmd in implemented_robot_command_names() {
             assert!(
                 schemas.commands.contains_key(*cmd),
                 "missing schema for {cmd}"
             );
+        }
+    }
+
+    #[test]
+    fn robot_docs_and_schema_command_sets_match() {
+        let docs = generate_robot_docs("commands");
+        let docs_commands = docs["commands"].as_object().unwrap();
+        let schemas = generate_robot_schemas();
+
+        for cmd in implemented_robot_command_names() {
+            assert!(docs_commands.contains_key(*cmd), "docs missing {cmd}");
+            assert!(schemas.commands.contains_key(*cmd), "schema missing {cmd}");
         }
     }
 

@@ -468,9 +468,9 @@ fn resolve_worktree_common_dir(gitdir: &Path) -> Option<PathBuf> {
 
     let common_dir = PathBuf::from(trimmed);
     if common_dir.is_absolute() {
-        Some(common_dir)
+        std::fs::canonicalize(common_dir).ok()
     } else {
-        Some(gitdir.join(common_dir))
+        std::fs::canonicalize(gitdir.join(common_dir)).ok()
     }
 }
 
