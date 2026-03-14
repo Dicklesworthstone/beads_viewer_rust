@@ -161,9 +161,9 @@ impl Issue {
 
     #[must_use]
     pub fn priority_normalized(&self) -> f64 {
-        let p = self.priority.clamp(1, 5);
-        // Priority 1 => 1.0, Priority 5 => 0.2
-        (6_i32.saturating_sub(p)) as f64 / 5.0
+        let p = self.priority.clamp(0, 4);
+        // Priority 0 => 1.0, Priority 4 => 0.2
+        (5_i32.saturating_sub(p)) as f64 / 5.0
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -405,18 +405,33 @@ mod tests {
     // -- Priority normalization --
 
     #[test]
-    fn priority_normalized_maps_1_to_1_and_5_to_low() {
+    fn priority_normalized_maps_p0_to_highest_and_p4_to_lowest() {
+        let p0 = Issue {
+            priority: 0,
+            ..Default::default()
+        };
+        assert!((p0.priority_normalized() - 1.0).abs() < f64::EPSILON);
+
+        let p4 = Issue {
+            priority: 4,
+            ..Default::default()
+        };
+        assert!((p4.priority_normalized() - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn priority_normalized_distinguishes_p0_from_p1() {
+        let p0 = Issue {
+            priority: 0,
+            ..Default::default()
+        };
         let p1 = Issue {
             priority: 1,
             ..Default::default()
         };
-        assert!((p1.priority_normalized() - 1.0).abs() < f64::EPSILON);
 
-        let p5 = Issue {
-            priority: 5,
-            ..Default::default()
-        };
-        assert!((p5.priority_normalized() - 0.2).abs() < f64::EPSILON);
+        assert!(p0.priority_normalized() > p1.priority_normalized());
+        assert!((p1.priority_normalized() - 0.8).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -425,21 +440,20 @@ mod tests {
             priority: -10,
             ..Default::default()
         };
-        // clamp(1, 5) => 1 => (6-1)/5 = 1.0
+        // clamp(0, 4) => 0 => (5-0)/5 = 1.0
         assert!((too_low.priority_normalized() - 1.0).abs() < f64::EPSILON);
 
         let too_high = Issue {
             priority: 100,
             ..Default::default()
         };
-        // clamp(1, 5) => 5 => (6-5)/5 = 0.2
+        // clamp(0, 4) => 4 => (5-4)/5 = 0.2
         assert!((too_high.priority_normalized() - 0.2).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn priority_normalized_default_clamps_zero_to_one() {
-        // Issue::default() has priority=0 (Rust default), but serde default is 3.
-        // priority_normalized clamps to [1,5], so 0 => clamped to 1 => (6-1)/5 = 1.0
+    fn priority_normalized_default_treats_zero_as_p0() {
+        // Issue::default() has priority=0 (Rust default), which is also the valid P0 value.
         let issue = Issue::default();
         assert_eq!(issue.priority, 0);
         assert!((issue.priority_normalized() - 1.0).abs() < f64::EPSILON);
@@ -450,8 +464,8 @@ mod tests {
         let json = r#"{"id":"X","title":"T"}"#;
         let issue: Issue = serde_json::from_str(json).unwrap();
         assert_eq!(issue.priority, 3);
-        // (6-3)/5 = 0.6
-        assert!((issue.priority_normalized() - 0.6).abs() < f64::EPSILON);
+        // (5-3)/5 = 0.4
+        assert!((issue.priority_normalized() - 0.4).abs() < f64::EPSILON);
     }
 
     // -- Validation --

@@ -299,6 +299,8 @@ pub fn export_pages_bundle(
     write_text(output_dir.join("_headers"), STATIC_HOST_HEADERS)?;
     files.push("_headers".to_string());
 
+    files.push("data/export_summary.json".to_string());
+
     let summary = ExportPagesSummary {
         export_path: output_dir.to_string_lossy().to_string(),
         generated_at,
@@ -554,10 +556,18 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         "css" => "text/css; charset=utf-8",
         "js" => "application/javascript; charset=utf-8",
         "json" => "application/json; charset=utf-8",
+        "wasm" => "application/wasm",
         "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "woff2" => "font/woff2",
+        _ if path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.eq_ignore_ascii_case(SQLITE_EXPORT_FILENAME)) =>
+        {
+            "application/x-sqlite3"
+        }
         _ => "application/octet-stream",
     }
 }
@@ -975,6 +985,11 @@ mod tests {
         assert!(out.join("data/export_summary.json").is_file());
         assert!(out.join("beads.sqlite3").is_file());
         assert!(out.join("beads.sqlite3.config.json").is_file());
+        assert!(
+            summary
+                .files
+                .contains(&"data/export_summary.json".to_string())
+        );
         assert!(summary.files.contains(&"beads.sqlite3".to_string()));
         assert!(
             summary
@@ -1134,7 +1149,7 @@ mod tests {
     fn mime_type_for_wasm_returns_correct_type() {
         assert_eq!(
             mime_type_for_path(Path::new("vendor/sql-wasm.wasm")),
-            "application/octet-stream"
+            "application/wasm"
         );
         assert_eq!(
             mime_type_for_path(Path::new("vendor/inter.woff2")),
@@ -1147,6 +1162,10 @@ mod tests {
         assert_eq!(
             mime_type_for_path(Path::new("styles.css")),
             "text/css; charset=utf-8"
+        );
+        assert_eq!(
+            mime_type_for_path(Path::new("beads.sqlite3")),
+            "application/x-sqlite3"
         );
     }
 
@@ -1534,6 +1553,7 @@ mod tests {
             "data/meta.json",
             "data/triage.json",
             "data/insights.json",
+            "data/export_summary.json",
             "beads.sqlite3",
             "beads.sqlite3.config.json",
             "assets/style.css",
