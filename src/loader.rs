@@ -443,6 +443,56 @@ fn find_beads_dir_from(start: &Path) -> Option<PathBuf> {
     None
 }
 
+fn resolve_gitdir_pointer(git_file: &Path) -> Option<PathBuf> {
+    let contents = std::fs::read_to_string(git_file).ok()?;
+    let raw = contents.strip_prefix("gitdir:")?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let pointed = PathBuf::from(raw);
+    if pointed.is_absolute() {
+        Some(pointed)
+    } else {
+        git_file.parent().map(|parent| parent.join(pointed))
+    }
+}
+
+fn resolve_worktree_common_dir(gitdir: &Path) -> Option<PathBuf> {
+    let commondir_path = gitdir.join("commondir");
+    let raw = std::fs::read_to_string(commondir_path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let common_dir = PathBuf::from(trimmed);
+    if common_dir.is_absolute() {
+        Some(common_dir)
+    } else {
+        Some(gitdir.join(common_dir))
+    }
+}
+
+fn find_worktree_main_repo_beads_dir_from(start: &Path) -> Option<PathBuf> {
+    for ancestor in start.ancestors() {
+        let git_file = ancestor.join(".git");
+        if !git_file.is_file() {
+            continue;
+        }
+
+        let gitdir = resolve_gitdir_pointer(&git_file)?;
+        let common_dir = resolve_worktree_common_dir(&gitdir)?;
+        let repo_root = common_dir.parent()?;
+        let beads_dir = repo_root.join(".beads");
+        if beads_dir.is_dir() {
+            return Some(beads_dir);
+        }
+    }
+
+    None
+}
+
 pub fn find_workspace_config_from(start: &Path) -> Option<PathBuf> {
     for ancestor in start.ancestors() {
         let candidate = ancestor.join(WORKSPACE_CONFIG_PATH);
@@ -472,8 +522,15 @@ pub fn get_beads_dir(repo_path: Option<&Path>) -> Result<PathBuf> {
         std::env::current_dir()?
     };
 
-    find_beads_dir_from(&root)
-        .map_or_else(|| Err(BvrError::MissingBeadsDir(root.join(".beads"))), Ok)
+    if let Some(beads_dir) = find_beads_dir_from(&root) {
+        return Ok(beads_dir);
+    }
+
+    if let Some(beads_dir) = find_worktree_main_repo_beads_dir_from(&root) {
+        return Ok(beads_dir);
+    }
+
+    Err(BvrError::MissingBeadsDir(root.join(".beads")))
 }
 
 pub fn find_jsonl_path(beads_dir: &Path) -> Result<PathBuf> {
@@ -892,6 +949,29 @@ mod tests {
 
         let beads_dir = get_beads_dir(Some(&nested)).expect("find parent .beads");
         assert_eq!(beads_dir, root.join(".beads"));
+    }
+
+    #[test]
+    fn get_beads_dir_falls_back_to_main_repo_for_git_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let main_repo = root.join("main-repo");
+        let worktree = root.join("worktree");
+        let gitdir = main_repo.join(".git/worktrees/feature");
+
+        std::fs::create_dir_all(main_repo.join(".beads")).expect("create main .beads");
+        std::fs::create_dir_all(&gitdir).expect("create worktree gitdir");
+        std::fs::create_dir_all(worktree.join("nested/path")).expect("create nested worktree");
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .expect("write worktree .git file");
+        std::fs::write(gitdir.join("commondir"), "../../\n").expect("write commondir");
+
+        let beads_dir =
+            get_beads_dir(Some(&worktree.join("nested/path"))).expect("find main repo .beads");
+        assert_eq!(beads_dir, main_repo.join(".beads"));
     }
 
     #[test]
