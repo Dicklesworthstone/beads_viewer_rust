@@ -97,7 +97,11 @@ fn project_dir_for_load_target(cli: &Cli) -> bvr::Result<PathBuf> {
         }
         IssueLoadTarget::WorkspaceConfig(path) => {
             let project_dir = path.parent().and_then(Path::parent).map_or_else(
-                || path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
+                || {
+                    path.parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .to_path_buf()
+                },
                 Path::to_path_buf,
             );
             Ok(absolute_from_current_dir(&project_dir))
@@ -123,6 +127,7 @@ fn main() -> ExitCode {
     }
 
     let mut cli = Cli::parse();
+    bvr::loader::set_robot_warning_suppression(cli.is_robot_command());
 
     cli.format = match cli.resolve_output_format() {
         Ok(format) => format,
@@ -5518,8 +5523,8 @@ mod tests {
     use super::{
         BackgroundModeSource, Cli, IssueLoadTarget, actionable_ids_for_recipe_filters,
         build_background_mode_config, compute_related_work_result,
-        discover_workspace_config_from_starts, filter_by_repo, generate_daily_burndown_points,
-        feedback_project_dir, handle_operational_commands, parse_background_mode_bool,
+        discover_workspace_config_from_starts, feedback_project_dir, filter_by_repo,
+        generate_daily_burndown_points, handle_operational_commands, parse_background_mode_bool,
         parse_scope_git_header_line, project_dir_for_export_hooks, resolve_background_mode,
         resolve_git_toplevel, resolve_issue_load_target, resolve_reference_file_path,
         resolve_workspace_config_path,

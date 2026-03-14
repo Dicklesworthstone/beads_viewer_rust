@@ -699,6 +699,43 @@ fn robot_triage_and_plan_both_succeed_independently() {
     assert!(plan.get("plan").is_some());
 }
 
+#[test]
+fn robot_triage_suppresses_loader_warnings_without_bv_robot_env() {
+    let tmp = tempfile::tempdir_in(repo_root()).expect("temp dir");
+    let beads_path = tmp.path().join("malformed.jsonl");
+    fs::write(
+        &beads_path,
+        "not json\n{\"id\":\"A\",\"title\":\"Valid\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\"}\n",
+    )
+    .expect("write malformed fixture");
+
+    let output = bvr()
+        .args([
+            "--robot-triage",
+            "--beads-file",
+            beads_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run bvr");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "robot triage should succeed on mixed malformed input\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Warning:"),
+        "robot mode should suppress loader warnings without requiring BV_ROBOT env\nstderr: {stderr}"
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(
+        json.get("triage").is_some(),
+        "triage payload should be present"
+    );
+}
+
 // ============================================================================
 // Large fixture stress
 // ============================================================================

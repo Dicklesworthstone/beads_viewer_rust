@@ -3,12 +3,14 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::{Issue, Sprint};
 use crate::{BvrError, Result};
 use serde::Deserialize;
 
 pub const BEADS_DIR_ENV: &str = "BEADS_DIR";
+static ROBOT_WARNING_SUPPRESSION: AtomicBool = AtomicBool::new(false);
 
 const PREFERRED_JSONL_NAMES: &[&str] = &["beads.jsonl", "issues.jsonl", "beads.base.jsonl"];
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
@@ -28,7 +30,12 @@ const DEFAULT_WORKSPACE_DISCOVERY_MAX_DEPTH: usize = 2;
 
 #[must_use]
 pub fn is_robot_mode() -> bool {
-    std::env::var("BV_ROBOT").is_ok_and(|value| value == "1")
+    ROBOT_WARNING_SUPPRESSION.load(Ordering::Relaxed)
+        || std::env::var("BV_ROBOT").is_ok_and(|value| value == "1")
+}
+
+pub fn set_robot_warning_suppression(enabled: bool) {
+    ROBOT_WARNING_SUPPRESSION.store(enabled, Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

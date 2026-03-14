@@ -2896,9 +2896,7 @@ impl BvrApp {
                 self.toggle_history_mode();
             }
             KeyCode::Char('c') if matches!(self.mode, ViewMode::History) => {
-                if matches!(self.history_view_mode, HistoryViewMode::Bead) {
-                    self.cycle_history_confidence();
-                }
+                self.cycle_history_confidence();
             }
             KeyCode::Char('v') if matches!(self.mode, ViewMode::History) => {
                 self.toggle_history_view_mode();
@@ -3246,6 +3244,15 @@ impl BvrApp {
         self.history_event_cursor = 0;
         self.history_related_bead_cursor = 0;
         self.history_bead_commit_cursor = 0;
+        self.history_search_active = false;
+        self.history_search_query.clear();
+        self.history_search_match_cursor = 0;
+        self.history_search_mode = HistorySearchMode::All;
+        self.history_show_file_tree = false;
+        self.history_file_tree_cursor = 0;
+        self.history_file_tree_filter = None;
+        self.history_file_tree_focus = false;
+        self.history_status_msg.clear();
         self.focus = FocusPane::List;
         self.ensure_git_history_loaded();
     }
@@ -3253,6 +3260,28 @@ impl BvrApp {
     fn cycle_history_confidence(&mut self) {
         self.history_confidence_index =
             (self.history_confidence_index + 1) % HISTORY_CONFIDENCE_STEPS.len();
+        self.history_related_bead_cursor = 0;
+        self.history_bead_commit_cursor = 0;
+
+        if matches!(self.history_view_mode, HistoryViewMode::Git) {
+            let visible = self.history_git_visible_commit_indices();
+            self.history_event_cursor = self
+                .history_event_cursor
+                .min(visible.len().saturating_sub(1));
+        } else {
+            let visible = self.history_visible_issue_indices();
+            if !visible.contains(&self.selected)
+                && let Some(&first_visible) = visible.first()
+            {
+                self.set_selected_index(first_visible);
+            }
+        }
+
+        let flat = self.history_flat_file_list();
+        self.history_file_tree_cursor = self
+            .history_file_tree_cursor
+            .min(flat.len().saturating_sub(1));
+        self.refresh_history_search_selection();
     }
 
     fn history_min_confidence(&self) -> f64 {
@@ -3404,6 +3433,12 @@ impl BvrApp {
 
         let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
         for commit in &cache.commits {
+            if self
+                .history_git_related_beads_for_commit(&commit.sha)
+                .is_empty()
+            {
+                continue;
+            }
             for file in &commit.files {
                 *file_counts.entry(file.path.clone()).or_default() += 1;
             }
@@ -11422,6 +11457,25 @@ mod tests {
     }
 
     #[test]
+    fn history_git_mode_c_cycles_confidence_and_clamps_cursor() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Git, 0);
+        app.mode = ViewMode::History;
+        app.history_view_mode = HistoryViewMode::Git;
+        app.history_event_cursor = 3;
+        app.history_file_tree_cursor = 99;
+
+        app.update(key(KeyCode::Char('c')));
+        app.update(key(KeyCode::Char('c')));
+        app.update(key(KeyCode::Char('c')));
+
+        assert_eq!(app.history_confidence_index, 3);
+        assert_eq!(app.history_git_visible_commit_indices(), vec![0, 2]);
+        assert_eq!(app.history_event_cursor, 1);
+        assert!(app.history_flat_file_list().len() < 99);
+        assert_eq!(app.history_file_tree_cursor, 4);
+    }
+
+    #[test]
     fn history_v_toggles_git_mode_and_enter_jumps_to_related_issue() {
         let mut app = new_app(ViewMode::Main, 0);
         app.update(key(KeyCode::Char('h')));
@@ -11442,13 +11496,48 @@ mod tests {
         assert!(matches!(app.history_view_mode, HistoryViewMode::Git));
 
         app.update(key(KeyCode::Char('c')));
-        assert_eq!(app.history_confidence_index, 0);
+        assert_eq!(app.history_confidence_index, 1);
 
         let cmd = app.update(key(KeyCode::Enter));
         assert!(matches!(cmd, Cmd::None));
         assert!(matches!(app.mode, ViewMode::Main));
         assert_eq!(app.focus, FocusPane::Detail);
         assert_eq!(selected_issue_id(&app), first_issue_id);
+    }
+
+    #[test]
+    fn history_reentry_resets_search_and_file_tree_state() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Git, 0);
+        app.mode = ViewMode::History;
+        app.mode_before_history = ViewMode::Main;
+        app.history_view_mode = HistoryViewMode::Git;
+        app.history_search_active = false;
+        app.history_search_query = "graph".to_string();
+        app.history_search_match_cursor = 2;
+        app.history_search_mode = HistorySearchMode::Author;
+        app.history_show_file_tree = true;
+        app.history_file_tree_cursor = 3;
+        app.history_file_tree_filter = Some("src/ui".to_string());
+        app.history_file_tree_focus = true;
+        app.history_status_msg = "Filtered to: src/ui".to_string();
+        app.focus = FocusPane::Detail;
+
+        app.update(key(KeyCode::Char('q')));
+        assert!(matches!(app.mode, ViewMode::Main));
+
+        app.update(key(KeyCode::Char('h')));
+        assert!(matches!(app.mode, ViewMode::History));
+        assert!(matches!(app.history_view_mode, HistoryViewMode::Bead));
+        assert!(!app.history_search_active);
+        assert!(app.history_search_query.is_empty());
+        assert_eq!(app.history_search_match_cursor, 0);
+        assert_eq!(app.history_search_mode, HistorySearchMode::All);
+        assert!(!app.history_show_file_tree);
+        assert_eq!(app.history_file_tree_cursor, 0);
+        assert!(app.history_file_tree_filter.is_none());
+        assert!(!app.history_file_tree_focus);
+        assert!(app.history_status_msg.is_empty());
+        assert_eq!(app.focus, FocusPane::List);
     }
 
     #[test]
@@ -13623,6 +13712,25 @@ mod tests {
                 .map(|commit| commit.short_sha),
             Some("aaaa111".to_string())
         );
+    }
+
+    #[test]
+    fn history_file_tree_respects_confidence_threshold() {
+        let mut app = history_app_with_git_cache(HistoryViewMode::Git, 0);
+        app.history_confidence_index = 3;
+
+        let paths = app
+            .history_flat_file_list()
+            .into_iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+
+        assert!(paths.contains(&"src/ui/app.rs".to_string()));
+        assert!(paths.contains(&"src/ui/detail.rs".to_string()));
+        assert!(paths.contains(&"README.md".to_string()));
+        assert!(!paths.contains(&"src/core/graph.rs".to_string()));
+        assert!(!paths.contains(&"Cargo.toml".to_string()));
     }
 
     #[test]
