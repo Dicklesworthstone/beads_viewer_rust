@@ -513,6 +513,53 @@ fn e2e_robot_metrics() {
 }
 
 #[test]
+fn e2e_robot_search() {
+    let json = run_robot(
+        &["--robot-search", "--search", "parity", "--search-limit", "5"],
+        COMPLEX_FIXTURE,
+    );
+    assert_valid_envelope(&json);
+    assert!(
+        validate_fields(&json, &["query", "limit", "mode", "results"], "").is_empty()
+    );
+    assert!(validate_type_at(&json, "results", JsonType::Array).is_empty());
+}
+
+#[test]
+fn e2e_robot_label_health() {
+    let json = run_robot(&["--robot-label-health"], COMPLEX_FIXTURE);
+    assert_valid_envelope(&json);
+    assert!(validate_fields(&json, &["result"], "").is_empty());
+}
+
+#[test]
+fn e2e_robot_label_flow() {
+    let json = run_robot(&["--robot-label-flow"], COMPLEX_FIXTURE);
+    assert_valid_envelope(&json);
+    assert!(validate_fields(&json, &["flow"], "").is_empty());
+}
+
+#[test]
+fn e2e_robot_label_attention() {
+    let json = run_robot(
+        &["--robot-label-attention", "--attention-limit", "3"],
+        COMPLEX_FIXTURE,
+    );
+    assert_valid_envelope(&json);
+    assert!(validate_fields(&json, &["limit", "result"], "").is_empty());
+}
+
+#[test]
+fn e2e_robot_recipes() {
+    let json = run_robot(&["--robot-recipes"], FIXTURE);
+    assert!(
+        validate_fields(&json, &["generated_at", "output_format", "version"], "").is_empty()
+    );
+    assert!(validate_fields(&json, &["recipes"], "").is_empty());
+    assert!(validate_type_at(&json, "recipes", JsonType::Array).is_empty());
+}
+
+#[test]
 fn e2e_profile_startup_human() {
     let output = bvr()
         .args(["--profile-startup"])
