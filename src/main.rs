@@ -385,7 +385,13 @@ fn main() -> ExitCode {
 
     // --baseline-info doesn't need issues loaded — just reads the saved baseline file.
     if cli.baseline_info {
-        let project_dir = cli.repo_path.clone().unwrap_or_else(|| PathBuf::from("."));
+        let project_dir = match project_dir_for_load_target(&cli) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        };
         match bvr::analysis::drift::Baseline::load(&project_dir) {
             Ok(bl) => {
                 println!("Baseline info:");
@@ -1465,7 +1471,13 @@ fn main() -> ExitCode {
 
     // ---- Drift commands (save-baseline, robot-drift) ----
     if let Some(ref description) = cli.save_baseline {
-        let project_dir = cli.repo_path.clone().unwrap_or_else(|| PathBuf::from("."));
+        let project_dir = match project_dir_for_load_target(&cli) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        };
         let baseline = bvr::analysis::drift::Baseline::from_current(
             &issues,
             &analyzer.graph,
@@ -1485,7 +1497,14 @@ fn main() -> ExitCode {
     }
 
     if cli.check_drift {
-        let project_dir = cli.repo_path.clone().unwrap_or_else(|| PathBuf::from("."));
+        let project_dir = match project_dir_for_load_target(&cli) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("error: {error}");
+                eprintln!("hint: run --save-baseline first to create a baseline");
+                return ExitCode::from(1);
+            }
+        };
         let baseline = match bvr::analysis::drift::Baseline::load(&project_dir) {
             Ok(b) => b,
             Err(e) => {
@@ -1520,7 +1539,14 @@ fn main() -> ExitCode {
     }
 
     if cli.robot_drift {
-        let project_dir = cli.repo_path.clone().unwrap_or_else(|| PathBuf::from("."));
+        let project_dir = match project_dir_for_load_target(&cli) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("error: {error}");
+                eprintln!("hint: run --save-baseline first to create a baseline");
+                return ExitCode::from(1);
+            }
+        };
         let baseline = match bvr::analysis::drift::Baseline::load(&project_dir) {
             Ok(b) => b,
             Err(e) => {
@@ -2161,10 +2187,18 @@ fn build_background_mode_config(
 
 fn workspace_discovery_start_points(cli: &Cli) -> Vec<PathBuf> {
     let mut starts = Vec::<PathBuf>::new();
+    let current_dir = std::env::current_dir().ok();
     if let Some(path) = cli.repo_path.clone() {
+        let path = if path.is_absolute() {
+            path
+        } else if let Some(current_dir) = &current_dir {
+            current_dir.join(path)
+        } else {
+            path
+        };
         starts.push(path);
     }
-    if let Ok(path) = std::env::current_dir()
+    if let Some(path) = current_dir
         && !starts.iter().any(|existing| existing == &path)
     {
         starts.push(path);
@@ -5525,6 +5559,7 @@ fn print_profile_report(profile: &StartupProfile, recommendations: &[String]) {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    use std::path::{Path, PathBuf};
     use std::process::ExitCode;
 
     use bvr::analysis::git_history::{
@@ -5543,6 +5578,22 @@ mod tests {
         resolve_git_toplevel, resolve_issue_load_target, resolve_reference_file_path,
         resolve_workspace_config_path,
     };
+
+    struct CurrentDirGuard(PathBuf);
+
+    impl CurrentDirGuard {
+        fn set(path: &Path) -> Self {
+            let original = std::env::current_dir().expect("current dir");
+            std::env::set_current_dir(path).expect("set current dir");
+            Self(original)
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.0).expect("restore current dir");
+        }
+    }
 
     fn make_history(bead_id: &str, status: &str, files: &[&str]) -> HistoryBeadCompat {
         let commits = vec![HistoryCommitCompat {
@@ -5746,6 +5797,25 @@ mod tests {
         let cli = Cli::parse_from(["bvr", "--repo-path", &nested_arg]);
 
         let target = resolve_issue_load_target(&cli).expect("resolve issue load target");
+        assert_eq!(target, IssueLoadTarget::WorkspaceConfig(config_path));
+    }
+
+    #[test]
+    fn resolve_issue_load_target_discovers_workspace_from_relative_repo_path_without_ambiguity() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let workspace_dir = root.join(".bv");
+        let nested = root.join("services/api/src");
+        fs::create_dir_all(&workspace_dir).expect("create .bv");
+        fs::create_dir_all(&nested).expect("create nested");
+        let config_path = workspace_dir.join("workspace.yaml");
+        fs::write(&config_path, "repos:\n  - path: services/api\n").expect("write workspace");
+
+        let cli = Cli::parse_from(["bvr", "--repo-path", "services/api/src"]);
+
+        let _guard = CurrentDirGuard::set(root);
+        let target = resolve_issue_load_target(&cli).expect("resolve issue load target");
+
         assert_eq!(target, IssueLoadTarget::WorkspaceConfig(config_path));
     }
 

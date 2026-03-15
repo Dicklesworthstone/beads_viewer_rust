@@ -5,6 +5,11 @@ Legend:
 - `partial`: subset implemented.
 - `planned`: not implemented yet.
 
+Important reading note:
+- Robot/CLI parity claims below are generally backed by fixture and integration evidence.
+- Interactive TUI entries are intentionally stricter: current Rust screens are functional and heavily tested for stability, but the major operator-facing modes remain under an active FrankenTUI-first redesign program (`bd-2bpl.3.6.*`).
+- Snapshot/keyflow stability is not, by itself, enough to claim product-quality TUI parity.
+
 ## Robot / CLI
 | Legacy Capability | Status | Notes |
 |---|---|---|
@@ -26,12 +31,12 @@ Legend:
 | Legacy Capability | Status | Notes |
 |---|---|---|
 | Bare command launches TUI | complete | `bvr` launches frankentui app. |
-| Main list/detail split | complete | 42%/58% split, FocusPane::List/Detail toggle, Tab switching, full navigation in all 11 view modes. |
-| Board view (`b`) | complete | Lane-aware grouping with counts/bar charts, h/l/H/L/1-4/0/$ lane navigation, j/k within-lane paging, s grouping cycle (status/priority/type), e empty-lane toggle, / search with n/N, J/K dep nav in detail, box-drawn card rendering. |
-| Insights view (`i`) | complete | 10 cycling panels (s/S), bottleneck/critical-path/cycle/flow/hotspot metrics, e explanation toggle, x calculation proof, h/l pane focus, / search with n/N, J/K dep nav. |
-| Graph view (`g`) | complete | 3-section metrics panel (Importance/Flow & Connectivity/Connections) with 8 metrics, mini-bars, rank badges, in-degree/out-degree, cycle membership; ego-node ASCII art, BLOCKED BY / BLOCKS sections, Top PageRank list; h/l/H/L navigation, / search with n/N, J/K dep nav. |
-| History view (`h`) | complete | Lifecycle timeline pane with box-drawing tree connectors and lifecycle icons; milestones section shows created/claimed/closed/reopened with author; commit detail with type icons, author initials badges, file change breakdown with action icons and +/- stats; git-mode detail with COMMIT DETAILS/RELATED BEADS sections; keybinding hints in detail footer; responsive width breakpoints (Narrow/Medium/Wide split ratios); file tree panel with j/k navigation, Enter toggle/filter, Tab 3-way focus cycling; `o` open-in-browser, `y` copy-to-clipboard; `/` search with n/N match cycling in both bead and git modes. |
-| Full keybinding parity | complete | All keybindings from the matrix below are implemented with unit coverage: global (`?/Tab/Esc/q/Ctrl+C/j/k/Ctrl+d/u/Page/Home/End/G/o/c/r/a`), main (`s/b/i/g/h`), board (`h/l/H/L/1-4/0/$/j/k/Ctrl+d/u/s/e/J/K//`), graph (`h/l/H/L/Ctrl+d/u/J/K//`), insights (`h/l/s/S/e/x/J/K//`), history (`v/c/g/J/K/Enter//` with 5 search modes: all/commit/SHA/bead/author). Additional Rust-only modes: Actionable (`a`), Attention (`!`), Tree (`T`), LabelDashboard (`[`), FlowMatrix (`]`), TimeTravelDiff (`t`), Sprint (`S`). |
+| Main list/detail split | partial | Functional split-pane triage surface exists with navigation and focus switching, but the current main screen is still more report-like than cockpit-grade. Active redesign: `bd-2bpl.3.6.6`, `bd-2bpl.3.6.6.1`, `bd-2bpl.3.6.6.2`, `bd-2bpl.3.6.6.3`. |
+| Board view (`b`) | partial | Board mode exists with grouping, navigation, search, and detail behavior, but the current presentation and interaction model are not yet at credible kanban-workspace parity. Active redesign: `bd-2bpl.3.6.7`, `bd-2bpl.3.6.7.1`, `bd-2bpl.3.6.7.2`. |
+| Insights view (`i`) | partial | Insights mode exposes real analytics and explanation toggles, but current information density and visual hierarchy still read more like rotating text panels than a high-confidence analytics console. Active redesign: `bd-2bpl.3.6.9`, `bd-2bpl.3.6.9.1`, `bd-2bpl.3.6.9.2`. |
+| Graph view (`g`) | partial | Graph mode has meaningful metrics and traversal, but it still behaves more like a metric report plus ego box than a true topology-exploration surface. Active redesign: `bd-2bpl.3.6.8`, `bd-2bpl.3.6.8.1`, `bd-2bpl.3.6.8.2`. |
+| History view (`h`) | partial | History mode is one of the stronger current screens and includes timeline/file-tree/search/jump workflows, but it still falls short of the intended investigation-workspace quality bar. Active redesign: `bd-2bpl.3.6.10`, `bd-2bpl.3.6.10.1`, `bd-2bpl.3.6.10.2`. |
+| Full keybinding parity | partial | The current Rust TUI implements a very large keybinding set with extensive tests, but key availability alone is not sufficient evidence of workflow-quality parity while the major mode redesign beads remain open. |
 
 ## TUI Fidelity Contract
 
@@ -148,11 +153,11 @@ Legend:
 5. **Confirm dialog**: `ModalOverlay::Confirm` → title+message overlay → `Y` accepts, `N`/`Esc` rejects.
 6. **Pages wizard**: `ModalOverlay::PagesWizard` → 4-step flow (export dir → title → options → review) → `Enter` advances, `Esc` cancels, `Backspace` goes back, `c`/`h` toggle options.
 
-### Remaining Fidelity Gaps
-- ~~Responsive width breakpoints~~ — **Implemented** (Narrow/Medium/Wide breakpoint enum with adaptive split ratios).
-- ~~File tree panel and `o`/`y` hotkeys~~ — **Implemented** (j/k navigation, Enter toggle/filter, Tab focus cycling, o open-in-browser, y copy-to-clipboard).
-- ~~Legacy history-specific search modes~~ — **Implemented** (HistorySearchMode enum with all 5 modes: All/Commit/Sha/Bead/Author; Tab cycles modes in search input).
-- ~~No snapshot-based automated visual regression framework yet.~~ — **Implemented** (55 insta snapshots + 25 keyflow journeys + 5 e2e multi-mode journey tests with artifact capture).
+### Active TUI Product Gaps
+- The current TUI is still architecturally closer to a string-heavy report renderer than to the intended FrankenTUI-driven operator console.
+- Main, board, graph, insights, and history all need mode-specific redesign work before product-quality parity should be claimed.
+- Current snapshot/keyflow coverage proves stability of the present implementation; it does not by itself prove the redesigned product bar.
+- Mouse/hit-region behavior, realistic scenario datasets, and richer E2E artifact logging are now tracked explicitly under `bd-2bpl.3.6.12.*` because they were previously too easy to under-prove.
 - Workspace auto-discovery defaults (Go-style implicit `.bv/workspace.yaml` discovery from workspace root, nested subdirs, and `--repo-path`) are implemented and covered by resolver + e2e tests.
 
 ## Integrations
@@ -168,6 +173,11 @@ Legend:
 | Conformance harness scaffold | complete | Go reference harness + fixture + Rust test skeleton in repo. |
 | Fixture-driven parity tests | complete | Legacy fixture-backed conformance checks for diff/history/forecast/triage/plan/priority/burndown with adversarial coverage; edge-case fixtures; 89-issue `stress_complex_89.jsonl` stress fixture; **large-dataset stress fixtures**: `stress_large_500.jsonl` (500 issues, 7 topologies), `pathological_deps.jsonl` (233 issues, extreme dep patterns: deep chain, convergence/divergence, overlapping cycles, self-dep, bidirectional, long cycle, dangling), `malformed_metadata.jsonl` (24 issues, edge-case metadata); 49 stress tests in `tests/stress_fixtures.rs`; fixture catalog at `tests/testdata/FIXTURES.md`. |
 | Bench harness | complete | Criterion benchmark for triage path added. |
+
+TUI verification reality:
+- Current Rust TUI snapshots, keyflow tests, and journeys are valuable stability checks for the current implementation.
+- They should not be read as proof that major TUI modes have already reached legacy-quality operator parity.
+- The active redesign proof contract lives under `bd-2bpl.3.6.12.*` and requires screen-family proof, hit-region proof, realistic scenario datasets, structured artifact bundles, and replayable shell-level journeys before final TUI parity claims should return to `complete`.
 
 ### How to Rerun the Proof Set
 
@@ -393,6 +403,11 @@ Previously listed as excluded but now implemented:
 
 ## Phased Implementation Plan
 
+Historical note:
+- The wave table below records what landed in Rust, not the current product-quality verdict for the interactive TUI.
+- For robot/CLI and export surfaces, these gates are still a useful completion history.
+- For TUI-facing gates, implementation history must now be read alongside the active redesign subtree (`bd-2bpl.3.6.*`) and the stricter verification contract above.
+
 ### Wave 0: Spec Contract (COMPLETE)
 | Gate | Bead | Verification | Status |
 |---|---|---|---|
@@ -418,7 +433,7 @@ Prerequisites: Wave 1 complete.
 | Graph export parity (json/dot/mermaid + static) | bd-33w.4.3 | `cargo test graph_export` with all 3 formats |
 | TUI visual token baseline + breakpoint layout | bd-33w.3.1 | Width-aware layout test at 100/140/180 cols |
 | Main/board/insights/graph interaction gap closure | bd-33w.3.2 | Keybinding matrix rows all `yes` |
-| ~~History view full parity (responsive, file tree, search, o/y)~~ | bd-33w.3.3 | **Implemented** — responsive breakpoints, file tree j/k+filter, n/N search cycling, o/y hotkeys; 27 TUI history tests pass |
+| History view implementation milestone (responsive, file tree, search, o/y) | bd-33w.3.3 | Implemented features exist in Rust, but product-quality history parity is now tracked as `partial` pending `bd-2bpl.3.6.10.*` |
 | ~~Recipe/script workflow (`--robot-recipes`, `--emit-script`, feedback)~~ | bd-33w.2.2 | **Implemented** — `cargo test recipe` passes (9 tests), CLI flags wired |
 | Label intelligence + drift baseline | bd-33w.2.3 | `cargo test label_health` + `cargo test drift` pass |
 | Semantic search + ranking | bd-33w.2.4 | `cargo test search` passes |
@@ -445,8 +460,8 @@ Prerequisites: Wave 3 complete.
 |---|---|---|
 | ~~Static pages pipeline (export/preview/watch/wizard)~~ | bd-33w.4.4 | **Implemented** — Full pages export (HTML+SQLite+JSON), preview server with live reload, watch-export with debounce, 9-step interactive wizard with config persistence; 75 wizard + 20 e2e + 5 shell e2e tests |
 | ~~Brief-generation surfaces~~ | bd-33w.4.5 | **Implemented** — `--priority-brief PATH` and `--agent-brief DIR` + `analysis::brief` module (5 tests) |
-| ~~Modal/wizard parity~~ | bd-33w.3.4 | **Implemented** — ModalOverlay enum (Tutorial, Confirm, PagesWizard), 4-step pages wizard, generic confirm dialog; `cargo test modal` passes (8 tests) |
-| ~~TUI regression harness (snapshots + keyflow)~~ | bd-33w.3.5 | **Implemented** — 21 insta snapshot tests (5 modes × 3 breakpoints + 6 post-interaction) + 11 keyflow journey tests; `cargo test snap_` and `cargo test keyflow_` pass |
+| Modal/wizard implementation milestone | bd-33w.3.4 | Implemented overlays/modals exist in Rust; TUI product parity still depends on the redesign contract where those flows appear inside a stronger shell |
+| TUI regression harness (snapshots + keyflow) | bd-33w.3.5 | Implemented and useful for stability, but not sufficient evidence of full TUI parity without the redesign proof contract in `bd-2bpl.3.6.12.*` |
 | Debug-render parity flags | bd-33w.3.6 | `cargo test debug_render` passes |
 | ~~Operational/admin CLI (update/rollback + agents blurb)~~ | bd-33w.2.6 | **Implemented** — `--agents-check/add/update/remove/dry-run/force` + `--check-update/update/rollback/yes` stubs |
 | ~~Docs hardened, roadmap self-contained~~ | bd-33w.8.1 | **Implemented** — README.md updated with full command surface (50+ commands), TUI key map table (11 view modes), test suite table (1,248 tests across 7 suites), CI workflow docs, benchmark docs; PROPOSED_ARCHITECTURE.md updated with all 19 analysis modules, conformance/bench design, TUI fidelity status |
@@ -499,12 +514,12 @@ Prerequisites: Wave 3 complete.
 
 | Surface | Evidence | Status | Risk |
 |---|---|---|---|
-| **11 view modes** | `cargo test snap_` (55 snapshots) | PASS | None |
-| **Keyboard interaction** | `cargo test keyflow_` (25 journey tests) | PASS | None |
-| **E2E TUI journeys** | `cargo test e2e_journey_` (5 multi-mode flows with artifacts) | PASS | None |
+| **11 current view modes render and snapshot stably** | `cargo test snap_` (55 snapshots) | PASS | Stability evidence only; not a product-parity verdict |
+| **Keyboard interaction stays regression-tested** | `cargo test keyflow_` (25 journey tests) | PASS | Interaction stability only; major modes still under redesign |
+| **E2E TUI journeys run on the current implementation** | `cargo test e2e_journey_` (5 multi-mode flows with artifacts) | PASS | Current-implementation evidence only; redesign proof contract is stricter |
 | **Debug render** | `cargo test --test e2e_robot_matrix e2e_debug_render` | PASS | None |
-| **Modal/wizard flows** | `cargo test modal` (8 tests) | PASS | None |
-| **History view** | `cargo test history` (56 tests) | PASS | None |
+| **Modal/wizard flows** | `cargo test modal` (8 tests) | PASS | Modal infrastructure exists; broader shell/TUI product parity still open |
+| **History view current implementation stays tested** | `cargo test history` (56 tests) | PASS | Strongest current TUI slice, but still partial pending redesign |
 
 ### Quality Gates
 
@@ -530,10 +545,12 @@ Prerequisites: Wave 3 complete.
 
 ### Go/No-Go Decision
 
-All core robot commands, export surfaces, TUI interactions, pages wizard, and quality gates are passing with 1,318 tests (936 lib + 382 integration/conformance/e2e). The project is ready for release as a functional replacement for the legacy Go `bv` binary for all automated (robot) and interactive (TUI) workflows.
+All core robot commands, export surfaces, pages workflows, and quality gates are passing with 1,318 tests (936 lib + 382 integration/conformance/e2e). The project is in strong shape for automated/robot workflows and related export surfaces.
+
+The interactive TUI should not currently be described as a finished product-quality replacement for the legacy Go `bv` TUI. It is functional and test-stable, but the major operator-facing modes remain under the active FrankenTUI-first redesign and proof program (`bd-2bpl.3.6.*`).
 
 ## Open Gaps to 100%
-1. ~~Remaining TUI interaction parity (responsive history layout, file tree panel, `o`/`y` keys, search modes)~~ — **Done**.
-2. ~~54 missing CLI flags across correlation/impact, file analysis, label analytics, search, export, script, baseline, feedback, workflow, and metadata categories.~~ — **Done** (all surfaces implemented).
-3. ~~Interactive pages wizard, preview server, watch-export~~ — **Done** (9-step wizard with config persistence, preview with live reload, watch with debounce; 75 wizard + 20 e2e tests).
-4. No outstanding workspace auto-discovery gap — implicit `.bv/workspace.yaml` discovery is implemented and covered by resolver + e2e tests.
+1. Active TUI redesign across main, board, graph, insights, and history so the product reaches legacy-quality operator confidence before parity returns to `complete`.
+2. Active redesign proof contract: screen-family proof, hit-region proof, realistic scenario datasets, structured artifact bundles, and replayable shell-level journeys under `bd-2bpl.3.6.12.*`.
+3. Remaining repo-facing parity language should continue to be audited against the redesign contract so docs do not drift back into overclaiming.
+4. Robot/CLI, pages, and workspace surfaces are substantially implemented and remain governed by their existing regression suites.

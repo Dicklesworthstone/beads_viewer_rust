@@ -24,7 +24,7 @@
   - `drift.rs`: baseline save/load and drift detection.
   - `file_intel.rs`: file-to-bead mapping and hotspot analysis.
 - `src/robot.rs`: output envelopes, data hashing, and robot payload types.
-- `src/tui.rs`: interactive app model powered by `frankentui` (5 view modes: Main, Board, Insights, Graph, History).
+- `src/tui.rs`: interactive app model powered by `frankentui` (current Rust implementation has 11 view modes, but the major operator-facing modes remain under active redesign to reach credible product-quality parity).
 - `src/cli.rs`: clap flags and dispatch.
 - `src/main.rs`: runtime entry and command routing.
 
@@ -65,7 +65,12 @@ Current async needs are met with standard library primitives:
 **Post-parity path:** `asupersync` is declared as an optional Cargo dependency (`asupersync-runtime` feature gate) for future structured async orchestration (watcher pipelines, background index builds, bounded cleanup/cancellation). This is not a Go parity requirement — Go's `bv` has no equivalent async framework.
 
 ## 7. TUI Fidelity Roadmap (`frankentui`)
-- Wave 1: split list/detail, keyboard navigation, status line. (done)
-- Wave 2: board/graph/insights/history dedicated views. (done)
-- Wave 3: rendering parity polish, snapshot-level visual checks, modal/wizard flows. (done)
-- Regression harness: 21 insta snapshots + 11 keyflow journey tests.
+- Current reality: the Rust TUI is functional and heavily regression-tested, but the repo should not currently describe it as a finished legacy-quality replacement for the Go `bv` TUI.
+- Active redesign contract: `bd-2bpl.3.6.*` is the canonical FrankenTUI-first redesign program for the interactive product surface.
+- Current redesign order:
+  - contract and truthfulness reset
+  - shared shell/layout/visual/text infrastructure
+  - flagship main-screen rebuild
+  - board/graph/insights/history rebuilds
+  - redesign proof package with screen-family tests, hit-region tests, realistic scenario datasets, and replayable shell-level journeys
+- Regression harness status: current snapshots/keyflows/journeys are valuable stability checks for the present implementation, but they are not by themselves proof that the redesign is complete.
