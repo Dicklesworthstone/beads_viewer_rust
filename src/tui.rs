@@ -5188,7 +5188,7 @@ impl BvrApp {
                     line.push_str(" | ");
                 }
                 let cell_trunc = truncate_display(cell, actual_col_width);
-                line.push_str(cell_trunc);
+                line.push_str(&cell_trunc);
                 // Pad to column width for alignment (except last column).
                 if ci + 1 < columns.len() {
                     let padding = actual_col_width.saturating_sub(display_width(&cell_trunc));
@@ -7043,19 +7043,21 @@ impl BvrApp {
         lines.push(String::new());
 
         // Compute column width (label name + padding)
-        let max_label_len = labels.iter().map(|l| l.len()).max().unwrap_or(4);
-        let col_w = max_label_len.max(4);
+        let max_label_width = labels.iter().map(|l| display_width(l)).max().unwrap_or(4);
+        let col_w = max_label_width.max(4);
 
         // Column headers
         let row_label_w = col_w + 2;
-        let mut header = format!("{:row_label_w$}", "");
+        let mut header = " ".repeat(row_label_w);
         for (ci, label) in labels.iter().enumerate() {
             let marker = if ci == self.flow_matrix_col_cursor {
                 "v"
             } else {
                 " "
             };
-            header.push_str(&format!(" {marker}{:<width$}", label, width = col_w));
+            header.push(' ');
+            header.push_str(marker);
+            header.push_str(&fit_display(label, col_w));
         }
         lines.push(header);
 
@@ -7070,7 +7072,7 @@ impl BvrApp {
             } else {
                 " "
             };
-            let mut row = format!("{cursor} {:<width$}", label, width = col_w);
+            let mut row = format!("{cursor} {}", fit_display(label, col_w));
             for (ci, val) in matrix[ri].iter().enumerate() {
                 let cell = if ri == ci {
                     " .".to_string()
@@ -7083,9 +7085,12 @@ impl BvrApp {
                     && ci == self.flow_matrix_col_cursor
                     && ri != ci;
                 if highlight {
-                    row.push_str(&format!("[{:>width$}]", cell.trim(), width = col_w - 1));
+                    row.push('[');
+                    row.push_str(&fit_display(cell.trim(), col_w - 1));
+                    row.push(']');
                 } else {
-                    row.push_str(&format!(" {:>width$}", cell.trim(), width = col_w));
+                    row.push(' ');
+                    row.push_str(&fit_display(cell.trim(), col_w));
                 }
             }
             lines.push(row);
@@ -10178,6 +10183,7 @@ mod tests {
     use crate::analysis::git_history::{
         HistoryCycleCompat, HistoryEventCompat, HistoryFileChangeCompat,
     };
+    use crate::analysis::label_intel::CrossLabelFlow;
     use crate::model::{Comment, Dependency, Issue, Sprint, ts};
     use chrono::Utc;
     use ftui::core::event::{KeyCode, Modifiers};
@@ -10741,7 +10747,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .all(|line| line.chars().count() <= usize::from(width)),
+                .all(|line| display_width(line) <= usize::from(width)),
             "every rendered line should fit within the requested width"
         );
     }
@@ -10969,7 +10975,7 @@ mod tests {
         assert!(text.contains("▼ BLOCKS (waiting on this) ▼"));
         assert!(text.contains("[o] B"));
         assert!(text.contains("Dependent"));
-        assert!(text.lines().all(|line| line.chars().count() <= 58));
+        assert!(text.lines().all(|line| display_width(line) <= 58));
     }
 
     #[test]
@@ -10987,7 +10993,7 @@ mod tests {
         assert!(text.contains("+5 more"));
         assert!(!text.contains("BLK-05"));
         assert!(!text.contains("Blocker 05"));
-        assert!(text.lines().all(|line| line.chars().count() <= 120));
+        assert!(text.lines().all(|line| display_width(line) <= 120));
     }
 
     #[test]
@@ -11005,7 +11011,7 @@ mod tests {
         assert!(text.contains("+5 more"));
         assert!(!text.contains("DEP-05"));
         assert!(!text.contains("Dependent 05"));
-        assert!(text.lines().all(|line| line.chars().count() <= 120));
+        assert!(text.lines().all(|line| display_width(line) <= 120));
     }
 
     #[test]
@@ -14752,6 +14758,29 @@ mod tests {
         let detail = app.flow_matrix_detail_text();
         // Detail should have some content
         assert!(!detail.is_empty(), "detail should not be empty");
+    }
+
+    #[test]
+    fn flow_matrix_list_handles_wide_unicode_labels_without_overflow() {
+        let mut app = new_app(ViewMode::FlowMatrix, 0);
+        app.mode = ViewMode::FlowMatrix;
+        app.flow_matrix = Some(CrossLabelFlow {
+            labels: vec!["界面".to_string(), "🚀-launch".to_string()],
+            flow_matrix: vec![vec![0, 3], vec![1, 0]],
+            dependencies: Vec::new(),
+            bottleneck_labels: vec!["界面".to_string()],
+            total_cross_label_deps: 4,
+        });
+        app.flow_matrix_row_cursor = 0;
+        app.flow_matrix_col_cursor = 1;
+
+        let list = app.flow_matrix_list_text();
+        assert!(list.contains("界面"));
+        assert!(list.contains("🚀-launch"));
+        assert!(
+            list.lines().all(|line| display_width(line) <= 80),
+            "every flow-matrix line should remain width-safe: {list}"
+        );
     }
 
     #[test]
