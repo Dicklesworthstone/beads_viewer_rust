@@ -124,6 +124,8 @@ Baselines, diffs, history correlation, and export/watch flows exist because tria
 
 The loader and analyzer feed everything else. Robot output, TUI screens, markdown briefs, and pages export all work from the same issue graph instead of reimplementing their own logic.
 
+> **Substrate caveat:** `bvr` does not introduce drift between the surfaces it renders, but it inherits whatever state the substrate (the `br` CLI writing `.beads/beads.db` and `.beads/issues.jsonl`) hands it. The two beads stores can themselves diverge under specific failure modes — close-path persistence races ([beads_rust#285](https://github.com/Dicklesworthstone/beads_rust/issues/285)) and id-set divergence visible only through `br doctor` ([beads_rust#286](https://github.com/Dicklesworthstone/beads_rust/issues/286)) are the two known classes. `bvr` reads `issues.jsonl` preferentially when both stores exist, so the screens you see are correct against the JSONL stream even when SQLite is behind; `br sync --rebuild` reconciles the SQLite side. Run `br doctor` periodically if you need substrate-level drift signals — `bvr` itself does not surface them.
+
 ### 2. Graph structure matters more than raw counts
 
 Priority is only one field on an issue. `bvr` also looks at blockers, centrality, flow, and path structure so it can distinguish a noisy task from a true bottleneck.
