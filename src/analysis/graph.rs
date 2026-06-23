@@ -568,9 +568,45 @@ impl IssueGraph {
         }
 
         // Phase 4: Collect actionable issues (open, not blocked).
+        //
+        // NOTE: a standalone open parent with open children remains actionable
+        // here. parent-child is a rollup edge that never gates the parent's own
+        // readiness (the inverse — withholding the parent from the actionable
+        // *count* — would diverge from the Go viewer's beads_viewer#158
+        // contract). The separate "don't surface a parent-with-open-children as
+        // a *claimable top pick*" rule (issue #17, parity with the Go viewer) is
+        // enforced via `parents_with_open_children` at the recommendation
+        // chokepoint, not here.
         let mut ids = self.issue_ids_sorted();
         ids.retain(|id| self.issue(id).is_some_and(Issue::is_open_like) && !blocked.contains(id));
         ids
+    }
+
+    /// Returns the set of issue IDs that are a parent (via a `parent-child`
+    /// dependency) of at least one open-like child.
+    ///
+    /// Such a parent is a planning container, not directly claimable work while
+    /// its children are open, so it must not be surfaced as a robot claimable
+    /// top pick (issue #17, parity with the Go viewer). This is type-agnostic:
+    /// it catches any parent with open children, not only `issue_type=="epic"`,
+    /// so it also covers non-epic parents the epic-type claimability gate alone
+    /// would miss, while never withholding a genuinely-leaf epic. The parent
+    /// re-becomes claimable once all of its children are closed.
+    #[must_use]
+    pub fn parents_with_open_children(&self) -> HashSet<String> {
+        let mut result = HashSet::<String>::new();
+        for issue in &self.issues {
+            for dep in &issue.dependencies {
+                if dep.is_parent_child()
+                    && !dep.depends_on_id.trim().is_empty()
+                    && self.id_to_index.contains_key(&dep.depends_on_id)
+                    && issue.is_open_like()
+                {
+                    result.insert(dep.depends_on_id.clone());
+                }
+            }
+        }
+        result
     }
 
     #[must_use]
@@ -1675,9 +1711,13 @@ mod tests {
 
     #[test]
     fn actionable_includes_children_of_unblocked_parent() {
-        // Parent epic E has no blockers.
-        // Child task C has a parent-child dep on E.
-        // Both should be actionable.
+        // Parent epic E has no blockers. Child task C has a parent-child dep on
+        // E. Both stay in the ACTIONABLE set: parent-child is a rollup edge that
+        // never gates the parent's own readiness, and the actionable count must
+        // not diverge from the Go viewer's beads_viewer#158 contract. The
+        // separate "E is not a *claimable top pick* while C is open" rule lives
+        // at the recommendation chokepoint and is fenced by
+        // `parents_with_open_children` (see below) + the triage tests.
         let issues = vec![
             Issue {
                 id: "E".to_string(),
@@ -1707,6 +1747,83 @@ mod tests {
         let actionable = graph.actionable_ids();
 
         assert_eq!(actionable, vec!["C".to_string(), "E".to_string()]);
+    }
+
+    #[test]
+    fn parents_with_open_children_identifies_parent_until_children_close() {
+        // Regression fence for bvr #17: E is a parent (via parent-child) of the
+        // OPEN child C, so it must be reported as a parent-with-open-children
+        // (and thus withheld from claimable top picks). Once C closes, E is no
+        // longer a parent-with-open-children and re-becomes claimable.
+        let open_child = vec![
+            Issue {
+                id: "E".to_string(),
+                title: "Epic".to_string(),
+                status: "open".to_string(),
+                issue_type: "epic".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "C".to_string(),
+                title: "Child task".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![Dependency {
+                    issue_id: "C".to_string(),
+                    depends_on_id: "E".to_string(),
+                    dep_type: "parent-child".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+        let graph = IssueGraph::build(&open_child);
+        let parents = graph.parents_with_open_children();
+        assert!(parents.contains("E"), "E has an open child -> withheld");
+        assert!(!parents.contains("C"), "C is a leaf, not a parent");
+
+        // Close the child: E is now a leaf and claimable again.
+        let mut closed_child = open_child;
+        closed_child[1].status = "closed".to_string();
+        let graph = IssueGraph::build(&closed_child);
+        assert!(
+            graph.parents_with_open_children().is_empty(),
+            "no open children remain -> E claimable"
+        );
+    }
+
+    #[test]
+    fn parents_with_open_children_is_type_agnostic() {
+        // The check catches a NON-epic parent with open children too (the bug
+        // the Go viewer's epic-only claimability gate misses).
+        let issues = vec![
+            Issue {
+                id: "P".to_string(),
+                title: "Non-epic parent".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "P.1".to_string(),
+                title: "Open child".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![Dependency {
+                    issue_id: "P.1".to_string(),
+                    depends_on_id: "P".to_string(),
+                    dep_type: "parent-child".to_string(),
+                    ..Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+        let graph = IssueGraph::build(&issues);
+        assert!(graph.parents_with_open_children().contains("P"));
     }
 
     #[test]

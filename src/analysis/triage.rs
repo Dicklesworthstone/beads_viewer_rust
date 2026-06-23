@@ -770,15 +770,26 @@ pub fn compute_triage(
     });
     recommendations.truncate(max_recommendations);
 
+    // Parents with open children are excluded from claimable picks (issue #17):
+    // a parent/epic with still-open child work is a planning container, not
+    // directly claimable work, so it must never be surfaced as a robot top pick
+    // (--robot-next / --robot-triage) even when it is unblocked and non-epic.
+    // It re-becomes claimable once its children are all closed. It stays in the
+    // `recommendations` list (still scored work) and in `actionable_count`
+    // (parity with the Go viewer's beads_viewer#158 contract).
+    let parents_with_open_children = graph.parents_with_open_children();
+
     // Top picks exclude in_progress issues (already being worked) to match
-    // legacy behavior: recommendations should surface NEW work to pick up.
+    // legacy behavior: recommendations should surface NEW work to pick up, and
+    // exclude parents that still have open child work (issue #17).
     let top_picks: Vec<QuickPick> = recommendations
         .iter()
         .filter(|rec| {
-            lookups
-                .issue_by_id
-                .get(rec.id.as_str())
-                .is_none_or(|issue| issue.normalized_status() != "in_progress")
+            !parents_with_open_children.contains(&rec.id)
+                && lookups
+                    .issue_by_id
+                    .get(rec.id.as_str())
+                    .is_none_or(|issue| issue.normalized_status() != "in_progress")
         })
         .take(3)
         .map(|rec| QuickPick {
@@ -808,13 +819,13 @@ pub fn compute_triage(
     let blockers_to_clear = compute_blockers_to_clear(issues, metrics, &actionable, &lookups);
 
     let recommendations_by_track = if options.group_by_track {
-        compute_recommendations_by_track(graph, &recommendations)
+        compute_recommendations_by_track(graph, &recommendations, &parents_with_open_children)
     } else {
         Vec::new()
     };
 
     let recommendations_by_label = if options.group_by_label {
-        compute_recommendations_by_label(&recommendations)
+        compute_recommendations_by_label(&recommendations, &parents_with_open_children)
     } else {
         Vec::new()
     };
@@ -1064,6 +1075,7 @@ fn compute_blockers_to_clear(
 fn compute_recommendations_by_track(
     graph: &IssueGraph,
     recommendations: &[Recommendation],
+    parents_with_open_children: &HashSet<String>,
 ) -> Vec<RecommendationsByTrack> {
     let component_lookup = graph.connected_open_components();
     let rec_by_id: HashMap<&str, &Recommendation> = recommendations
@@ -1090,9 +1102,16 @@ fn compute_recommendations_by_track(
             continue;
         }
 
+        // The claimable top pick skips parents that still have open children
+        // (issue #17); they remain listed in item_ids as track members.
+        let top_pick = items
+            .iter()
+            .find(|item| !parents_with_open_children.contains(&item.id))
+            .map(|item| (**item).clone());
+
         by_track.push(RecommendationsByTrack {
             track_id: format!("track-{}", index + 1),
-            top_pick: items.first().map(|item| (*item).clone()),
+            top_pick,
             item_ids: items.into_iter().map(|item| item.id.clone()).collect(),
         });
     }
@@ -1102,6 +1121,7 @@ fn compute_recommendations_by_track(
 
 fn compute_recommendations_by_label(
     recommendations: &[Recommendation],
+    parents_with_open_children: &HashSet<String>,
 ) -> Vec<RecommendationsByLabel> {
     let mut groups: BTreeMap<String, Vec<Recommendation>> = BTreeMap::new();
 
@@ -1120,9 +1140,16 @@ fn compute_recommendations_by_label(
                 .then_with(|| left.id.cmp(&right.id))
         });
 
+        // The claimable top pick skips parents that still have open children
+        // (issue #17); they remain listed in item_ids under their label.
+        let top_pick = recs
+            .iter()
+            .find(|rec| !parents_with_open_children.contains(&rec.id))
+            .cloned();
+
         out.push(RecommendationsByLabel {
             label,
-            top_pick: recs.first().cloned(),
+            top_pick,
             item_ids: recs.into_iter().map(|rec| rec.id).collect(),
         });
     }
@@ -1202,6 +1229,90 @@ mod tests {
         assert_eq!(triage.result.project_health.graph.node_count, 2);
         assert_eq!(triage.result.project_health.graph.edge_count, 1);
         assert!(triage.result.project_health.graph.phase2_ready);
+    }
+
+    #[test]
+    fn robot_next_skips_parent_with_open_children() {
+        // Regression for bvr #17: an open, unblocked parent epic with an OPEN
+        // child must NOT be the claimable top pick; the leaf child is. The
+        // parent stays in `recommendations` and in `actionable_count` (parity
+        // with the Go viewer's #158 contract), but is excluded from top_picks
+        // (what --robot-next reads).
+        let issues = vec![
+            Issue {
+                id: "epic-1".to_string(),
+                title: "Parent epic with open child work".to_string(),
+                status: "open".to_string(),
+                issue_type: "epic".to_string(),
+                priority: 1,
+                ..Issue::default()
+            },
+            Issue {
+                id: "epic-1.1".to_string(),
+                title: "Claimable child task".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 2,
+                dependencies: vec![crate::model::Dependency {
+                    issue_id: "epic-1.1".to_string(),
+                    depends_on_id: "epic-1".to_string(),
+                    dep_type: "parent-child".to_string(),
+                    ..crate::model::Dependency::default()
+                }],
+                ..Issue::default()
+            },
+        ];
+
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                group_by_track: true,
+                group_by_label: true,
+                max_recommendations: 10,
+                ..TriageOptions::default()
+            },
+        );
+
+        // Both stay actionable (rollup edge doesn't gate parent readiness).
+        assert_eq!(triage.result.quick_ref.total_actionable, 2);
+
+        // The claimable top pick is the leaf child, never the parent epic.
+        let top_ids: Vec<&str> = triage
+            .result
+            .quick_ref
+            .top_picks
+            .iter()
+            .map(|pick| pick.id.as_str())
+            .collect();
+        assert!(
+            !top_ids.contains(&"epic-1"),
+            "parent epic with open children must not be a claimable top pick, got {top_ids:?}"
+        );
+        assert_eq!(
+            triage.result.quick_ref.top_picks.first().map(|p| p.id.as_str()),
+            Some("epic-1.1"),
+            "the open child is the claimable pick"
+        );
+
+        // Per-track and per-label claimable top picks also skip the parent.
+        for track in &triage.result.recommendations_by_track {
+            assert_ne!(
+                track.top_pick.as_ref().map(|p| p.id.as_str()),
+                Some("epic-1"),
+                "track top pick must not be the parent epic"
+            );
+        }
+        for label in &triage.result.recommendations_by_label {
+            assert_ne!(
+                label.top_pick.as_ref().map(|p| p.id.as_str()),
+                Some("epic-1"),
+                "label top pick must not be the parent epic"
+            );
+        }
     }
 
     #[test]
