@@ -26,7 +26,7 @@ JSONL / workspace config / git history
 ## Quick Install
 
 ```bash
-cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git bvr
+cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git beads_viewer_rust
 ```
 
 ## TL;DR
@@ -262,8 +262,10 @@ If you have ever asked "why is this weird-looking issue ranked so high?", the an
 ### 1. Install from GitHub with Cargo
 
 ```bash
-cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git bvr
+cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git beads_viewer_rust
 ```
+
+The crate is named `beads_viewer_rust` (the short `bvr` name was already taken on crates.io by an unrelated crate), but it installs a binary named `bvr`. The same crate is also published to crates.io, so `cargo install beads_viewer_rust` works too.
 
 ### 2. Build from a local checkout
 
