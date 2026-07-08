@@ -15049,8 +15049,21 @@ pub fn run_tui_with_background(
         ViewMode::Attention => model.compute_attention(),
         _ => {}
     }
+    // The default 16ms frame budget is tuned for warm, steady-state
+    // rendering. A cold first frame (large issue counts, uncached layout
+    // computation) routinely exceeds that, and ftui silently drops the
+    // present step for any frame that overruns its budget rather than
+    // showing it late — so without a larger budget the very first frame
+    // never reaches the terminal, leaving a blank screen until the next
+    // event happens to render within budget.
+    let budget = ftui::render::budget::FrameBudgetConfig {
+        total: std::time::Duration::from_millis(500),
+        allow_frame_skip: false,
+        ..ftui::render::budget::FrameBudgetConfig::default()
+    };
     App::new(model)
         .screen_mode(ScreenMode::AltScreen)
+        .with_budget(budget)
         .run()
         .map_err(|error| BvrError::Tui(error.to_string()))
 }
