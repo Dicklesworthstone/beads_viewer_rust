@@ -1393,7 +1393,7 @@ mod tests {
         assert!(readme.contains("## Contents"));
         assert!(readme.contains("## Generation info"));
         assert!(readme.contains("Issues**: 42"));
-        assert!(readme.contains("v0.1.0"));
+        assert!(readme.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]

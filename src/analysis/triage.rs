@@ -1293,7 +1293,12 @@ mod tests {
             "parent epic with open children must not be a claimable top pick, got {top_ids:?}"
         );
         assert_eq!(
-            triage.result.quick_ref.top_picks.first().map(|p| p.id.as_str()),
+            triage
+                .result
+                .quick_ref
+                .top_picks
+                .first()
+                .map(|p| p.id.as_str()),
             Some("epic-1.1"),
             "the open child is the claimable pick"
         );

@@ -1222,7 +1222,7 @@ mod tests {
         assert!(!result.risk_level.is_empty());
         assert!(result.risk_score > 0.0);
         // in_progress bead should have higher relevance
-        assert!(result.affected_beads[0].bead_id == "bd-1");
+        assert_eq!(result.affected_beads[0].bead_id, "bd-1");
     }
 
     #[test]

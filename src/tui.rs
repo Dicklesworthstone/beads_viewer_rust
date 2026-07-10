@@ -15025,6 +15025,32 @@ pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
     run_tui_with_background(issues, None, None, None)
 }
 
+/// Frame budget for the interactive TUI.
+///
+/// ftui's default budget (16ms total, frame skipping allowed) is tuned for
+/// animation-heavy apps that would rather drop a frame than fall behind.
+/// bvr is event-driven: frames render only when state changes, and every
+/// rendered frame is the response to a user action, so a late frame is
+/// always better than a mutilated or dropped one.
+///
+/// On large datasets (hundreds of issues) a full view render can exceed the
+/// 16ms default. Each over-budget frame ratchets ftui's degradation ladder
+/// one step (Full -> SimpleBorders -> NoStyling -> EssentialOnly -> Skeleton
+/// -> SkipFrame). The user experiences this as vanishing colours, skeleton
+/// boxes, and finally a blank, seemingly locked screen: at SkipFrame the
+/// runtime drops the frame before presenting and clears its dirty flag, so
+/// nothing is redrawn until the next input event. Skipped frames also record
+/// a zero frame time, which trips the upgrade path a few frames later, so
+/// the level oscillates and the screen flickers between states.
+///
+/// `strict()` disables frame skipping outright, and the generous deadline
+/// keeps the degradation ladder from ever engaging for realistic datasets.
+/// This is a deadline, not a delay: the runtime stays event-driven and
+/// presents each frame as soon as it is rendered.
+fn interactive_frame_budget() -> ftui::render::budget::FrameBudgetConfig {
+    ftui::render::budget::FrameBudgetConfig::strict(std::time::Duration::from_secs(1))
+}
+
 pub fn run_tui_with_background(
     issues: Vec<Issue>,
     background_config: Option<BackgroundModeConfig>,
@@ -15051,6 +15077,7 @@ pub fn run_tui_with_background(
     }
     App::new(model)
         .screen_mode(ScreenMode::AltScreen)
+        .with_budget(interactive_frame_budget())
         .run()
         .map_err(|error| BvrError::Tui(error.to_string()))
 }
@@ -15375,6 +15402,64 @@ mod tests {
     use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
+
+    #[test]
+    fn interactive_frame_budget_never_skips_frames() {
+        let budget = super::interactive_frame_budget();
+        assert!(
+            !budget.allow_frame_skip,
+            "bvr must never drop a rendered frame: ftui's skipped-frame path \
+             clears the runtime dirty flag, leaving the terminal blank until \
+             the next input event (reported in beads_viewer_rust PR #19)"
+        );
+    }
+
+    #[test]
+    fn interactive_frame_budget_leaves_cold_frame_headroom() {
+        let budget = super::interactive_frame_budget();
+        assert!(
+            budget.total >= std::time::Duration::from_millis(500),
+            "frame deadline must stay far above worst-case cold render times \
+             so ftui's degradation ladder (SimpleBorders -> NoStyling -> \
+             Skeleton -> SkipFrame) never engages on large datasets; got {:?}",
+            budget.total
+        );
+    }
+
+    #[test]
+    fn cold_first_frame_fits_interactive_budget_on_large_dataset() {
+        // The cold first frame on a large dataset is the exact scenario from
+        // PR #19: ~800 issues, uncached layout, first render after entering
+        // the alt screen. Render each debug-supported view from a cold app
+        // and require it to finish within the configured frame deadline. If
+        // view rendering ever regresses past the deadline, ftui would start
+        // degrading/skipping frames again and this test should fail.
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/testdata/stress_large_500.jsonl"
+        );
+        let issues = crate::loader::load_issues_from_file(std::path::Path::new(fixture))
+            .expect("stress fixture loads");
+        assert!(issues.len() >= 400, "fixture should be a large dataset");
+        let budget = super::interactive_frame_budget();
+        for view in ["main", "board", "insights", "graph", "history"] {
+            let start = std::time::Instant::now();
+            let output = render_debug_view(issues.clone(), view, 220, 60)
+                .unwrap_or_else(|e| panic!("cold {view} render failed: {e}"));
+            let elapsed = start.elapsed();
+            assert!(
+                !output.trim().is_empty(),
+                "cold {view} render produced empty output"
+            );
+            assert!(
+                elapsed < budget.total,
+                "cold {view} frame took {elapsed:?}, exceeding the {:?} \
+                 interactive frame deadline; ftui would degrade or skip \
+                 frames (blank screen / lost colours from PR #19)",
+                budget.total
+            );
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct DebugReplayCapture {
