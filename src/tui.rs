@@ -14925,10 +14925,44 @@ fn new_app_with_background(
     };
     let slow_metrics_pending = use_two_phase;
 
+    // Compute the first visible issue index using the same filtering and sorting
+    // logic that will be applied in visible_issue_indices(). By default, this
+    // filters by open status and sorts by priority, then by ID.
+    let temp_app_selected = {
+        let mut visible = analyzer
+            .issues
+            .iter()
+            .enumerate()
+            .filter_map(|(index, issue)| {
+                if issue.normalized_status().eq_ignore_ascii_case("closed") {
+                    None
+                } else {
+                    Some(index)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Use the default sort: open status, then priority, then ID.
+        // This matches ListSort::Default in the main list.
+        visible.sort_by(|left_index, right_index| {
+            let left_issue = &analyzer.issues[*left_index];
+            let right_issue = &analyzer.issues[*right_index];
+
+            let l_open = left_issue.is_open_like();
+            let r_open = right_issue.is_open_like();
+            r_open
+                .cmp(&l_open)
+                .then_with(|| left_issue.priority.cmp(&right_issue.priority))
+                .then_with(|| left_issue.id.cmp(&right_issue.id))
+        });
+
+        visible.first().copied().unwrap_or(0)
+    };
+
     BvrApp {
         analyzer,
         repo_root,
-        selected: 0,
+        selected: temp_app_selected,
         list_filter: ListFilter::All,
         list_sort: ListSort::Default,
         board_grouping: BoardGrouping::Status,
