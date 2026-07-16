@@ -8,9 +8,9 @@ bvr 1 Main b Board i In g Graph h Hist  | 3/3 | all
 │scope=all | label=a││ ─────────────────────────────────── │
 │Guide: / search-as-││ Summary  ready to execute           │
 │                   ││ T A  Root  (C copy id)              │
-│▸│#01 │ready│P│││││││ Status: open | Priority: p0 | Type: │
-│ │#02 │block│P│││││││ Action: Pull now | Downstream impac │
-│ │#03 │close│P│││││││ Assignee: alice | Repo: viewer | Es │
+│▸│#01 │ready ││││││││ Status: open | Priority: p0 | Type: │
+│ │#02 │blocke││││││││ Action: Pull now | Downstream impac │
+│ │#03 │closed││││││││ Assignee: alice | Repo: viewer | Es │
 │                   ││ Closed: n/a | Labels: [core] [parit │
 │                   ││ Created: 2026-01-01 | Updated: 2026 │
 │                   ││                                     │

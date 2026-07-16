@@ -1540,12 +1540,12 @@ fn narrow_columns() -> Vec<ColumnDef> {
     vec![
         ColumnDef { id: ColumnId::Marker, header: "", width: ColumnWidth::Fixed(1) },
         ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
-        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
-        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::Min(8) },
+        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
         ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(8) },
     ]
 }
@@ -1554,12 +1554,13 @@ fn medium_columns() -> Vec<ColumnDef> {
     vec![
         ColumnDef { id: ColumnId::Marker, header: "", width: ColumnWidth::Fixed(1) },
         ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
-        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
-        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::Min(8) },
-        ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },        ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
+        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
         ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Comments, header: "", width: ColumnWidth::Fixed(5) },
         ColumnDef { id: ColumnId::Timestamp, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(8) },
@@ -1570,15 +1571,15 @@ fn wide_columns() -> Vec<ColumnDef> {
     vec![
         ColumnDef { id: ColumnId::Marker, header: "", width: ColumnWidth::Fixed(1) },
         ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
-        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
-        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::Min(8) },
+        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },
         ColumnDef { id: ColumnId::StatusBadge, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Sparkline, header: "", width: ColumnWidth::Fixed(5) },
         ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
         ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Comments, header: "", width: ColumnWidth::Fixed(5) },
         ColumnDef { id: ColumnId::Timestamp, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(10) },
@@ -1887,8 +1888,8 @@ fn issue_to_table_row(
                 }
             }
             ColumnId::Timestamp => {
-                // Simplified — no exact timestamp formatting here
-                (String::new(), ftui::Style::default())
+                let ts = format_compact_timestamp(issue.updated_at.or(issue.created_at));
+                (format!("↻{ts}"), tokens::dim())
             }
             ColumnId::Search => {
                 if let Some(pos) = context.search_match_position {
@@ -3420,9 +3421,6 @@ impl Model for BvrApp {
                 };
                 table_state.offset = self.list_scroll_offset.get();
 
-                // Sync scroll offset from TableState back to BvrApp
-                self.list_scroll_offset.set(table_state.offset);
-
                 // Render panel border first
                 let block = semantic_panel_block(&list_title, list_focused, SemanticTone::Accent);
                 let inner_area = block_inner_rect(panes[0]);
@@ -3445,6 +3443,9 @@ impl Model for BvrApp {
                         .column_spacing(1);
                     StatefulWidget::render(&table, table_rect, frame, &mut table_state);
                 }
+
+                // Sync scroll offset from TableState back to BvrApp (AFTER render)
+                self.list_scroll_offset.set(table_state.offset);
             } else {
                 // Auto-scroll: find the line with the '>' cursor marker and
                 // ensure it is within the visible viewport.

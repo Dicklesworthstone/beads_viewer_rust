@@ -8,9 +8,9 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all
 │scope=all | label=any | repo=any | pos=1││ ────────────────────────────────────────────────       │
 │Guide: / search-as-you-type | o/c/r/B/I ││ Summary  ready to execute                              │
 │                                        ││ T A  Root  (C copy id)                                 │
-│▸│#01 │ready│P0│A       ││  │@alic│     ││ Status: open | Priority: p0 | Type: task | State: read │
-│ │#02 │block│P0│B       ││⊘1│     │     ││ Action: Pull now | Downstream impact: 1 | Critical dep │
-│ │#03 │close│P0│C       ││  │     │     ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w rep │
+│▸│#01 │ready  │P0│A│R│  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: read │
+│ │#02 │blocked│P0│B│D│⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical dep │
+│ │#03 │closed │P0│C│C│  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w rep │
 │                                        ││ Closed: n/a | Labels: [core] [parity]  (L label filter │
 │                                        ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a   │
 │                                        ││                                                        │

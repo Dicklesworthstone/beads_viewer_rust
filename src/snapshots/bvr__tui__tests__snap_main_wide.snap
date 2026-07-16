@@ -8,9 +8,9 @@ bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | m
 │scope=all | label=any | repo=any | pos=1/3 | search││ ────────────────────────────────────────────────                                    │
 │Guide: / search-as-you-type | o/c/r/B/I quick filte││ Summary  ready to execute                                                           │
 │                                                   ││ T A  Root  (C copy id)                                                              │
-│▸│#01 │ready  │P0│A         │Ro│  │@alice │        ││ Status: open | Priority: p0 | Type: task | State: ready                             │
-│ │#02 │blocked│P0│B         │De│⊘1│       │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2                         │
-│ │#03 │closed │P0│C         │Cl│  │       │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)                     │
+│▸│#01 │ready  │P0│A│Root        │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                             │
+│ │#02 │blocked│P0│B│Dependent   │⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2                         │
+│ │#03 │closed │P0│C│Closed      │  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)                     │
 │                                                   ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                             │
 │                                                   ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)               │
 │                                                   ││                                                                                     │

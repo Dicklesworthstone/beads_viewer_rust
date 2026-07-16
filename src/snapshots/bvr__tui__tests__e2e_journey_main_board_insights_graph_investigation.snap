@@ -11,9 +11,9 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
 │                                            ││ T A  Root  (C copy id)                                                 │
-│▸│#01 │ready│P0│A       ││  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
-│ │#02 │block│P0│B       ││⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
-│ │#03 │close│P0│C       ││  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
+│▸│#01 │ready  │P0│A│Root │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
+│ │#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
+│ │#03 │closed │P0│C│Close│  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
 │                                            ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │
@@ -48,9 +48,9 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=detail | iss
 │scope=all | label=any | repo=any | pos=2/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  waiting on blockers                                           │
 │                                            ││ T B  Dependent  (C copy id)                                            │
-│ │#01 │ready│P0│A       ││  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: blocked              │
-│▸│#02 │block│P0│B       ││⊘1│      │        ││ Action: Unblock first via A | Open blockers: 1 | Downstream impact: 0  │
-│ │#03 │close│P0│C       ││  │      │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
+│ │#01 │ready  │P0│A│Root │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: blocked              │
+│▸│#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Unblock first via A | Open blockers: 1 | Downstream impact: 0  │
+│ │#03 │closed │P0│C│Close│  │      │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
 │                                            ││ Closed: n/a | Labels: none  (L label filter)                           │
 │                                            ││ Created: 2026-01-03 | Updated: 2026-01-04 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │
@@ -307,9 +307,9 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │scope=all | label=any | repo=any | pos=3/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  reference state                                               │
 │                                            ││ T C  Closed  (C copy id)                                               │
-│ │#01 │ready│P0│A       ││  │@alice│        ││ Status: closed | Priority: p0 | Type: task | State: closed             │
-│ │#02 │block│P0│B       ││⊘1│      │        ││ Action: Closed work item | Downstream still watching: 0                │
-│▸│#03 │close│P0│C       ││  │      │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
+│ │#01 │ready  │P0│A│Root │  │@alice│        ││ Status: closed | Priority: p0 | Type: task | State: closed             │
+│ │#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Closed work item | Downstream still watching: 0                │
+│▸│#03 │closed │P0│C│Close│  │      │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
 │                                            ││ Closed: 2026-01-06 | Labels: none  (L label filter)                    │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-06 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │

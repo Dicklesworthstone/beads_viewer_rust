@@ -270,9 +270,9 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
 │                                            ││ T A  Root  (C copy id)                                                 │
-│▸│#01 │ready│P0│A       ││  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
-│ │#02 │block│P0│B       ││⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
-│ │#03 │close│P0│C       ││  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
+│▸│#01 │ready  │P0│A│Root │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
+│ │#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
+│ │#03 │closed │P0│C│Close│  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
 │                                            ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │
