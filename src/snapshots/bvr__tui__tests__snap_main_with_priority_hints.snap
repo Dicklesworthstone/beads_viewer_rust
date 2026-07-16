@@ -4,14 +4,14 @@ expression: text
 ---
 bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all |
 ┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
-│                                        ││                                                        │
-│ Focus: list owns selection, / s…       ││ ────────────────────────────────────────────────       │
-│ scope=all | label=any | repo=any | pos ││ Summary  ready to execute                              │
-│ Guide: / search-as-you-type | o/c/r/B/ ││ F A  Feature work  (C copy id)                         │
-│                                        ││ Status: open | Priority: p1 | Type: feature | State: r │
-│ ▸ #01 ready P1 A Feature work          ││ Action: Pull now | Downstream impact: 0 | Critical dep │
-│   #02 ready P2 B Bug fix               ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w │
-│   #03 ready P3 C UI polish             ││ Closed: n/a | Labels: [backend] [urgent]  (L label fil │
+│Focus: list owns selection, / s…        ││                                                        │
+│scope=all | label=any | repo=any | pos=1││ ────────────────────────────────────────────────       │
+│Guide: / search-as-you-type | o/c/r/B/I ││ Summary  ready to execute                              │
+│                                        ││ F A  Feature work  (C copy id)                         │
+│▸│#01 │ready│P1│A       ││ │     │      ││ Status: open | Priority: p1 | Type: feature | State: r │
+│ │#02 │ready│P2│B       ││ │     │      ││ Action: Pull now | Downstream impact: 0 | Critical dep │
+│ │#03 │ready│P3│C       ││ │     │      ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w │
+│                                        ││ Closed: n/a | Labels: [backend] [urgent]  (L label fil │
 │                                        ││ Created: n/a | Updated: n/a | Due: n/a  (t time-travel │
 │                                        ││                                                        │
 │                                        ││ ────────────────────────────────────────────────       │

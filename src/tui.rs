@@ -36,6 +36,8 @@ use ftui::text::{
 use ftui::widgets::Widget;
 use ftui::widgets::block::Block;
 use ftui::widgets::paragraph::Paragraph;
+use ftui::widgets::table::{Row as TableRow, Table, TableState};
+use ftui::widgets::StatefulWidget;
 
 #[cfg(not(test))]
 use std::sync::{
@@ -1477,6 +1479,438 @@ fn issue_label_summary(issue: &crate::model::Issue) -> Option<String> {
 
 /// Issue scan line: dense single-line summary for list views.
 /// Format adapts by width to surface rank, state, ownership, freshness, and scope.
+// ============================================================================
+// Column Schema for ftui Table widget
+// ============================================================================
+
+/// Identifies a column in the issue list table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ColumnId {
+    Marker,
+    Rank,
+    ActionState,
+    Priority,
+    Id,
+    Type,
+    StatusBadge,
+    Sparkline,
+    Title,
+    Deps,
+    Assignee,
+    Comments,
+    Timestamp,
+    Search,
+}
+
+/// Width behavior for a table column.
+#[derive(Debug, Clone)]
+enum ColumnWidth {
+    /// Exact width in cells.
+    Fixed(u16),
+    /// Minimum width in cells; grows if space allows.
+    Min(u16),
+    /// Fills remaining space (stretch).
+    Fill,
+    /// Fits content width, with optional min/max bounds.
+    FitContent,
+    /// Fits content but clamped to [min, max].
+    FitContentBounded { min: u16, max: u16 },
+}
+
+/// A column definition in the issue table schema.
+#[derive(Debug, Clone)]
+struct ColumnDef {
+    id: ColumnId,
+    /// Short header label (empty for no header).
+    header: &'static str,
+    /// Width constraint for this column.
+    width: ColumnWidth,
+}
+
+/// Returns the column definitions for a given scan line variant.
+fn columns_for_variant(variant: ScanLineVariant) -> Vec<ColumnDef> {
+    match variant {
+        ScanLineVariant::Narrow => narrow_columns(),
+        ScanLineVariant::Medium => medium_columns(),
+        ScanLineVariant::Wide => wide_columns(),
+    }
+}
+
+fn narrow_columns() -> Vec<ColumnDef> {
+    vec![
+        ColumnDef { id: ColumnId::Marker, header: "", width: ColumnWidth::Fixed(1) },
+        ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
+        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::Min(8) },
+        ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
+        ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(8) },
+    ]
+}
+
+fn medium_columns() -> Vec<ColumnDef> {
+    vec![
+        ColumnDef { id: ColumnId::Marker, header: "", width: ColumnWidth::Fixed(1) },
+        ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
+        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::Min(8) },
+        ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },        ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
+        ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Comments, header: "", width: ColumnWidth::Fixed(5) },
+        ColumnDef { id: ColumnId::Timestamp, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(8) },
+    ]
+}
+
+fn wide_columns() -> Vec<ColumnDef> {
+    vec![
+        ColumnDef { id: ColumnId::Marker, header: "", width: ColumnWidth::Fixed(1) },
+        ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
+        ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::Min(8) },
+        ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::StatusBadge, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Sparkline, header: "", width: ColumnWidth::Fixed(5) },
+        ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
+        ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::Min(5) },
+        ColumnDef { id: ColumnId::Comments, header: "", width: ColumnWidth::Fixed(5) },
+        ColumnDef { id: ColumnId::Timestamp, header: "", width: ColumnWidth::FitContent },
+        ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(10) },
+    ]
+}
+
+/// Converts `ColumnWidth` to ftui's `Constraint`.
+fn column_width_to_constraint(w: &ColumnWidth) -> Constraint {
+    match *w {
+        ColumnWidth::Fixed(n) => Constraint::Fixed(n),
+        ColumnWidth::Min(n) => Constraint::Min(n),
+        ColumnWidth::Fill => Constraint::Fill,
+        ColumnWidth::FitContent => Constraint::FitContent,
+        ColumnWidth::FitContentBounded { min, max } => {
+            Constraint::FitContentBounded { min, max }
+        }
+    }
+}
+
+/// Computed width info for a single column.
+#[derive(Debug, Clone)]
+struct ColumnWidthResult {
+    id: ColumnId,
+    /// Maximum display width across all rows.
+    max_content_width: u16,
+    /// The ftui constraint to use.
+    constraint: Constraint,
+}
+
+// Pre-scan visible issues and compute optimal column widths.
+// These functions are reserved for future tight-width negotiation.
+#[allow(dead_code)]
+fn compute_column_widths(
+    visible: &[(usize, &crate::model::Issue)],
+    variant: ScanLineVariant,
+    available_width: usize,
+) -> Vec<(ColumnId, Constraint)> {
+    let columns = columns_for_variant(variant);
+    let mut results: Vec<ColumnWidthResult> = Vec::with_capacity(columns.len());
+
+    // First pass: compute max content width per column
+    let mut header_widths: Vec<u16> = columns.iter().map(|c| display_width(c.header) as u16).collect();
+
+    for (col_idx, col) in columns.iter().enumerate() {
+        let mut max_width: u16 = 0;
+
+        for &(_slot, issue) in visible {
+            let content_width = estimate_column_content_width(col.id, issue);
+            max_width = max_width.max(content_width);
+        }
+
+        results.push(ColumnWidthResult {
+            id: col.id,
+            max_content_width: max_width.max(header_widths[col_idx]),
+            constraint: column_width_to_constraint(&col.width),
+        });
+    }
+
+    // Second pass: check if all fixed/min columns fit; if not, tighten.
+    let total_available = available_width as u16;
+    negotiate_tight_widths(&mut results, total_available, variant);
+
+    results.into_iter().map(|r| (r.id, r.constraint)).collect()
+}
+
+/// Estimate the display width of a column's content for an issue.
+///
+/// This is approximate — the actual rendered width may differ slightly due to
+/// styled spans, but it's accurate enough for width negotiation.
+#[allow(dead_code)]
+fn estimate_column_content_width(col: ColumnId, issue: &crate::model::Issue) -> u16 {
+    match col {
+        ColumnId::Marker => 1,
+        ColumnId::Rank => 4,              // "#01"
+        ColumnId::ActionState => {
+            // Check dependencies where this issue is the dependent (someone blocks this issue)
+            let is_blocked = issue.dependencies.iter().any(|d| d.dep_type == "blocks");
+            if is_blocked { 7 } else { 5 }   // "blocked" vs "ready"
+        }
+        ColumnId::Priority => 2,          // "P0".."P4"
+        ColumnId::Id => {
+            let id_len = display_width(&issue.id);
+            id_len.min(14) as u16         // truncated to 14
+        }
+        ColumnId::Type => 2,              // icon width
+        ColumnId::StatusBadge => {
+            display_width(&issue.status) as u16 + 2  // badge padding
+        }
+        ColumnId::Sparkline => {
+            // Only rendered when graph_score > 0
+            let score = 0.5; // approximation
+            if score > 0.0 { 5 } else { 0 }
+        }
+        ColumnId::Title => display_width(&issue.title) as u16,
+        ColumnId::Deps => {
+            let blocker_count = issue.dependencies.iter().filter(|d| d.dep_type == "blocks").count();
+            // We don't have a direct "blocks_count" on Issue; it's from graph metrics.
+            if blocker_count > 0 {
+                8 // approximate
+            } else {
+                0
+            }
+        }
+        ColumnId::Assignee => {
+            let a = issue.assignee.trim();
+            if a.is_empty() {
+                0 // no unassigned label in narrow/medium
+            } else {
+                (display_width(a) + 1).min(13) as u16 // @name
+            }
+        }
+        ColumnId::Comments => {
+            if issue.comments.is_empty() {
+                0
+            } else {
+                5 // "💬99" max
+            }
+        }
+        ColumnId::Timestamp => 6,         // approximate "2h ago"
+        ColumnId::Search => 0,            // only when searching
+    }
+}
+
+/// Negotiate column widths when total needed exceeds available space.
+///
+/// Strategy:
+/// 1. Start with fixed columns at their exact widths.
+/// 2. Give min columns their min widths.
+/// 3. If remaining < 0, shrink non-critical columns (status badge, sparkline, comments, timestamp).
+/// 4. If still tight, reduce title fill space (title will be truncated by paragraph).
+/// 5. For FitContent columns, replace with Min(min_width) to avoid explosion.
+#[allow(dead_code)]
+fn negotiate_tight_widths(
+    results: &mut [ColumnWidthResult],
+    total_available: u16,
+    _variant: ScanLineVariant,
+) {
+    // Phase 1: compute minimum total width
+    let min_total: u16 = results.iter().map(|r| match &r.constraint {
+        Constraint::Fixed(n) => *n,
+        Constraint::Min(n) => *n,
+        Constraint::Fill => 4, // absolute minimum for title
+        Constraint::FitContent | Constraint::FitContentBounded { .. } | Constraint::FitMin => 1,
+        _ => 0,
+    }).sum();
+
+    if min_total <= total_available {
+        // Enough room: use FitContent for flexible columns, Fill for title
+        for r in results.iter_mut() {
+            match r.id {
+                ColumnId::Title => r.constraint = Constraint::Fill,
+                ColumnId::StatusBadge | ColumnId::Sparkline |
+                ColumnId::Deps | ColumnId::Assignee | ColumnId::Timestamp |
+                ColumnId::Search => {
+                    r.constraint = Constraint::FitContent;
+                }
+                _ => {} // keep original constraint
+            }
+        }
+        return;
+    }
+
+    // Phase 2: tight — shrink non-essential columns
+    // Reduce status badge, sparkline to zero width (hide them)
+    for r in results.iter_mut() {
+        match r.id {
+            ColumnId::StatusBadge | ColumnId::Sparkline |
+            ColumnId::Comments | ColumnId::Timestamp |
+            ColumnId::Search => {
+                r.constraint = Constraint::Fixed(0);
+            }
+            ColumnId::Assignee => {
+                // Only show if there's room
+                r.constraint = Constraint::Min(0);
+            }
+            ColumnId::Deps => {
+                r.constraint = Constraint::Min(0);
+            }
+            ColumnId::Title => {
+                r.constraint = Constraint::Fill;
+            }
+            _ => {} // keep fixed/min
+        }
+    }
+
+    // Phase 3: check again after shrinking
+    let shrunk_min: u16 = results.iter().map(|r| match &r.constraint {
+        Constraint::Fixed(n) => *n,
+        Constraint::Min(n) => *n,
+        Constraint::Fill => 4,
+        Constraint::FitContent | Constraint::FitContentBounded { .. } | Constraint::FitMin => 1,
+        _ => 0,
+    }).sum();
+
+    if shrunk_min > total_available {
+        // Extremely tight: clamp title to remaining space
+        let fixed_total: u16 = results.iter().map(|r| match &r.constraint {
+            Constraint::Fixed(n) => *n,
+            Constraint::Min(n) => *n,
+            _ => 0,
+        }).sum();
+
+        let title_idx = results.iter().position(|r| r.id == ColumnId::Title);
+        if let Some(idx) = title_idx {
+            let remaining = total_available.saturating_sub(fixed_total);
+            // Title gets whatever is left, minimum 4 chars
+            results[idx].constraint = Constraint::Max(remaining.max(4));
+        }
+    }
+}
+
+/// Build a `TableRow` for an issue, with one cell per column in the schema.
+///
+/// Each cell is a styled `RichLine`. Empty cells are rendered as a single space
+/// to avoid collapsing. Selection highlighting is handled by the Table widget's
+/// `highlight_style` — do not apply selection backgrounds here.
+fn issue_to_table_row(
+    issue: &crate::model::Issue,
+    is_selected: bool,
+    context: &ScanLineContext,
+    columns: &[ColumnDef],
+) -> TableRow {
+    let action_state = issue_action_state(issue, context.open_blockers);
+    let variant = ScanLineVariant::from_width(context.available_width);
+
+    let cells: Vec<RichLine> = columns.iter().map(|col| {
+        let (label, style) = match col.id {
+            ColumnId::Marker => {
+                let ch = if is_selected { "▸" } else { " " };
+                let style = if is_selected { tokens::selected() } else { tokens::dim() };
+                (ch.to_string(), style)
+            }
+            ColumnId::Rank => {
+                (format!("#{:02}", context.triage_rank), tokens::chip_style(SemanticTone::Accent))
+            }
+            ColumnId::ActionState => {
+                (action_state.to_string(), tokens::chip_style(action_state_tone(&action_state)))
+            }
+            ColumnId::Priority => {
+                let prio = issue.priority.clamp(0, 4) as u8;
+                (format!("P{prio}"), tokens::priority_badge(prio))
+            }
+            ColumnId::Id => {
+                (truncate_display(&issue.id, 14), tokens::dim())
+            }
+            ColumnId::Type => {
+                let icon = type_icon(&issue.issue_type).to_string();
+                let type_name = match icon.as_str() {
+                    "B" => "bug", "F" => "feature", "T" => "task",
+                    "E" => "epic", "Q" => "question", "D" => "docs",
+                    "R" => "refactor", _ => "",
+                };
+                let style = ftui::Style::new().fg(tokens::type_fg(type_name));
+                (icon, style)
+            }
+            ColumnId::StatusBadge => {
+                let label = tokens::status_badge_label(&issue.status).to_string();
+                let style = tokens::status_badge(&issue.status);
+                (label, style)
+            }
+            ColumnId::Sparkline => {
+                if context.graph_score > 0.0 {
+                    let s = tokens::render_sparkline(context.graph_score, 5);
+                    let filled = s.chars().filter(|c| *c != ' ').count();
+                    let score = filled as f64 / 5.0;
+                    let style = ftui::Style::new().fg(tokens::heatmap_color(score));
+                    (s, style)
+                } else {
+                    (String::new(), ftui::Style::default())
+                }
+            }
+            ColumnId::Title => {
+                (issue.title.clone(), ftui::Style::default())
+            }
+            ColumnId::Deps => {
+                let (label, tone) = if context.open_blockers > 0 {
+                    (format!("⊘{}", context.open_blockers), SemanticTone::Danger)
+                } else if context.blocks_count > 0 && !matches!(variant, ScanLineVariant::Narrow) {
+                    (format!("↓{}", context.blocks_count), SemanticTone::Accent)
+                } else {
+                    (String::new(), SemanticTone::Neutral)
+                };
+                if label.is_empty() {
+                    (String::new(), ftui::Style::default())
+                } else {
+                    (label, tokens::chip_style(tone))
+                }
+            }
+            ColumnId::Assignee => {
+                let a = issue.assignee.trim();
+                if a.is_empty() {
+                    if matches!(variant, ScanLineVariant::Wide) {
+                        ("@unassigned".to_string(), tokens::chip_style(SemanticTone::Muted))
+                    } else {
+                        (String::new(), ftui::Style::default())
+                    }
+                } else {
+                    (format!("@{}", truncate_display(a, 12)), tokens::chip_style(SemanticTone::Neutral))
+                }
+            }
+            ColumnId::Comments => {
+                if issue.comments.is_empty() {
+                    (String::new(), ftui::Style::default())
+                } else {
+                    (format!("💬{}", issue.comments.len()), tokens::dim())
+                }
+            }
+            ColumnId::Timestamp => {
+                // Simplified — no exact timestamp formatting here
+                (String::new(), ftui::Style::default())
+            }
+            ColumnId::Search => {
+                if let Some(pos) = context.search_match_position {
+                    (format!("hit {}/{}", pos, context.total_search_matches), tokens::dim())
+                } else {
+                    (String::new(), ftui::Style::default())
+                }
+            }
+        };
+
+        // Selection highlighting is handled by Table's `highlight_style`.
+        if label.is_empty() {
+            // Use a single space to avoid zero-width cell collapsing
+            RichLine::from(RichSpan::styled(" ", style))
+        } else {
+            RichLine::from(RichSpan::styled(label, style))
+        }
+    }).collect();
+
+    TableRow::new(cells)
+}
+
 fn issue_scan_line(
     issue: &crate::model::Issue,
     is_selected: bool,
@@ -2919,35 +3353,129 @@ impl Model for BvrApp {
 
             let vp_height = panes[0].height.saturating_sub(2) as usize;
             self.list_viewport_height.set(vp_height);
-            // Auto-scroll: find the line with the '>' cursor marker and
-            // ensure it is within the visible viewport.
-            if vp_height > 0 {
-                let scroll = self.list_scroll_offset.get();
-                if let Some(cursor_line) = list_text.to_plain_text().lines().position(|line| {
-                    line.starts_with('>')
-                        || line.starts_with(" >")
-                        || line.starts_with("  >")
-                        || line.starts_with("   >")
-                        || line.starts_with("    >")
-                        || line.contains('\u{25b6}')
-                        || line.contains('▸')
-                }) {
-                    if cursor_line < scroll {
-                        self.list_scroll_offset.set(cursor_line);
-                    } else if cursor_line >= scroll + vp_height {
-                        self.list_scroll_offset
-                            .set(cursor_line.saturating_sub(vp_height - 1));
+
+            if matches!(self.mode, ViewMode::Main) && !self.analyzer.issues.is_empty() {
+                // Use ftui Table widget for the main issue list with proper column alignment.
+                let visible = self.visible_issue_indices();
+                let available_width = panes[0].width.saturating_sub(2) as usize;
+                let variant = ScanLineVariant::from_width(available_width);
+                let columns = columns_for_variant(variant);
+                let widths: Vec<Constraint> = columns.iter().map(|c| column_width_to_constraint(&c.width)).collect();
+                let search_matches = self.main_search_matches();
+                let search_positions: BTreeMap<usize, usize> = search_matches
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, index)| (*index, slot + 1))
+                    .collect();
+
+                let rows: Vec<TableRow> = visible.iter().enumerate().filter_map(|(slot, index)| {
+                    let issue = self.analyzer.issues.get(*index)?;
+                    let open_blockers = self.analyzer.graph.open_blockers(&issue.id).len();
+                    let blocks_count = self
+                        .analyzer
+                        .metrics
+                        .blocks_count
+                        .get(&issue.id)
+                        .copied()
+                        .unwrap_or_default();
+                    let depth = self
+                        .analyzer
+                        .metrics
+                        .critical_depth
+                        .get(&issue.id)
+                        .copied()
+                        .unwrap_or_default();
+                    let graph_score = self
+                        .analyzer
+                        .metrics
+                        .pagerank
+                        .get(&issue.id)
+                        .copied()
+                        .unwrap_or_default();
+                    let search_match_position = search_positions.get(index).copied();
+                    let total_search_matches = search_matches.len();
+
+                    let context = ScanLineContext {
+                        open_blockers,
+                        blocks_count,
+                        triage_rank: slot + 1,
+                        pagerank_rank: slot + 1,
+                        critical_depth: depth,
+                        graph_score,
+                        search_match_position,
+                        total_search_matches,
+                        diff_tag: None,
+                        available_width,
+                    };
+
+                    let is_selected = *index == self.selected;
+                    Some(issue_to_table_row(issue, is_selected, &context, &columns))
+                }).collect();
+
+                let mut table_state = TableState::default();
+                table_state.selected = if self.selected < self.analyzer.issues.len() {
+                    Some(self.selected)
+                } else {
+                    None
+                };
+                table_state.offset = self.list_scroll_offset.get();
+
+                // Sync scroll offset from TableState back to BvrApp
+                self.list_scroll_offset.set(table_state.offset);
+
+                // Render panel border first
+                let block = semantic_panel_block(&list_title, list_focused, SemanticTone::Accent);
+                let inner_area = block_inner_rect(panes[0]);
+                block.render(panes[0], frame);
+
+                // Render the search banner inside the panel
+                let banner_lines = self.main_search_banner_lines();
+                let banner_height = banner_lines.len() as u16;
+                let banner_rect = Rect::new(inner_area.x, inner_area.y, inner_area.width, banner_height);
+                Paragraph::new(RichText::from_lines(banner_lines))
+                    .render(banner_rect, frame);
+
+                // Render the table below the banner, inside the panel
+                let table_y = inner_area.y + banner_height;
+                let table_height = inner_area.height.saturating_sub(banner_height);
+                if table_height > 0 {
+                    let table_rect = Rect::new(inner_area.x, table_y, inner_area.width, table_height);
+                    let table = Table::new(rows, widths)
+                        .highlight_style(ftui::Style::new().bg(tokens::bg_highlight()))
+                        .column_spacing(1);
+                    StatefulWidget::render(&table, table_rect, frame, &mut table_state);
+                }
+            } else {
+                // Auto-scroll: find the line with the '>' cursor marker and
+                // ensure it is within the visible viewport.
+                if vp_height > 0 {
+                    let scroll = self.list_scroll_offset.get();
+                    if let Some(cursor_line) = list_text.to_plain_text().lines().position(|line| {
+                        line.starts_with('>')
+                            || line.starts_with(" >")
+                            || line.starts_with("  >")
+                            || line.starts_with("   >")
+                            || line.starts_with("    >")
+                            || line.contains('\u{25b6}')
+                            || line.contains('▸')
+                    }) {
+                        if cursor_line < scroll {
+                            self.list_scroll_offset.set(cursor_line);
+                        } else if cursor_line >= scroll + vp_height {
+                            self.list_scroll_offset
+                                .set(cursor_line.saturating_sub(vp_height - 1));
+                        }
                     }
                 }
+                Paragraph::new(list_text)
+                    .block(semantic_panel_block(
+                        &list_title,
+                        list_focused,
+                        SemanticTone::Accent,
+                    ))
+                    .scroll((saturating_scroll_offset(self.list_scroll_offset.get()), 0))
+                    .render(panes[0], frame);
             }
-            Paragraph::new(list_text)
-                .block(semantic_panel_block(
-                    &list_title,
-                    list_focused,
-                    SemanticTone::Accent,
-                ))
-                .scroll((saturating_scroll_offset(self.list_scroll_offset.get()), 0))
-                .render(panes[0], frame);
 
             detail_viewport_height = panes[1].height.saturating_sub(2) as usize;
             let detail_text = if matches!(self.mode, ViewMode::Board) {

@@ -266,14 +266,14 @@ c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f fil
 --- Step 8: main_after_history ---
 bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Issues [focus]──────────────────────────────┐┌Details─────────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Focus: list owns selection, / s…           ││ ────────────────────────────────────────────────                       │
-│ scope=all | label=any | repo=any | pos=1/3 ││ Summary  ready to execute                                              │
-│ Guide: / search-as-you-type | o/c/r/B/I qu ││ T A  Root  (C copy id)                                                 │
-│                                            ││ Status: open | Priority: p0 | Type: task | State: ready                │
-│ ▸ #01 ready P0 A Root @alice               ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
-│   #02 blocked P0 B Dependent ⊘1            ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
-│   #03 closed P0 C Closed                   ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                │
+│Focus: list owns selection, / s…            ││                                                                        │
+│scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
+│Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
+│                                            ││ T A  Root  (C copy id)                                                 │
+│▸│#01 │ready│P0│A       ││  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
+│ │#02 │block│P0│B       ││⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
+│ │#03 │close│P0│C       ││  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
+│                                            ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │
 │                                            ││ ────────────────────────────────────────────────                       │

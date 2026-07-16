@@ -7,14 +7,14 @@ expression: artifact
 --- Step 1: narrow_main ---
 bvr 1 Main b Board i In  | 3/3 | all
 ┌Issues [focu┐┌Details─────────────────┐
-│            ││                        │
-│ Focus: lis ││ ────────────────────── │
-│ scope=all  ││ Summary  ready to exec │
-│ Guide: / s ││ T A  Root  (C copy id) │
-│            ││ Status: open | Priorit │
-│ ▸ #01 read ││ Action: Pull now | Dow │
-│   #02 bloc ││ Assignee: alice | Repo │
-│   #03 clos ││ Closed: n/a | Labels:  │
+│Focus: list ││                        │
+│scope=all | ││ ────────────────────── │
+│Guide: / sea││ Summary  ready to exec │
+│            ││ T A  Root  (C copy id) │
+│▸│#01│││││││││ Status: open | Priorit │
+│ │#02│││││││││ Action: Pull now | Dow │
+│ │#03│││││││││ Assignee: alice | Repo │
+│            ││ Closed: n/a | Labels:  │
 │            ││ Created: 2026-01-01 |  │
 │            ││                        │
 │            ││                        │
@@ -143,14 +143,14 @@ Tree: 3 nodes │ j/k navigate
 --- Step 9: narrow_main_return ---
 bvr 1 Main b Board i In  | 3/3 | all
 ┌Issues [focu┐┌Details─────────────────┐
-│            ││                        │
-│ Focus: lis ││ ────────────────────── │
-│ scope=all  ││ Summary  reference sta │
-│ Guide: / s ││ T C  Closed  (C copy i │
-│            ││ Status: closed | Prior │
-│   #01 read ││ Action: Closed work it │
-│   #02 bloc ││ Assignee: unassigned | │
-│ ▸ #03 clos ││ Closed: 2026-01-06 | L │
+│Focus: list ││                        │
+│scope=all | ││ ────────────────────── │
+│Guide: / sea││ Summary  reference sta │
+│            ││ T C  Closed  (C copy i │
+│ │#01│││││││││ Status: closed | Prior │
+│ │#02│││││││││ Action: Closed work it │
+│▸│#03│││││││││ Assignee: unassigned | │
+│            ││ Closed: 2026-01-06 | L │
 │            ││ Created: 2026-01-01 |  │
 │            ││                        │
 │            ││                        │
