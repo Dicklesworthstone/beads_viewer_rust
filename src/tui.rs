@@ -3414,11 +3414,8 @@ impl Model for BvrApp {
                 }).collect();
 
                 let mut table_state = TableState::default();
-                table_state.selected = if self.selected < self.analyzer.issues.len() {
-                    Some(self.selected)
-                } else {
-                    None
-                };
+                // Convert issue index -> row index: find the position of self.selected within visible
+                table_state.selected = visible.iter().position(|i| *i == self.selected);
                 table_state.offset = self.list_scroll_offset.get();
 
                 // Render panel border first
