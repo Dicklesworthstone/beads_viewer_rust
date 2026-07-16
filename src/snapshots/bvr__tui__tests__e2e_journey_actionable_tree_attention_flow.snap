@@ -10,10 +10,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │Focus: list owns selection, / s…            ││                                                                        │
 │scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
-│                                            ││ F A  Feature work  (C copy id)                                         │
-│▸│#01 │ready│P1│A│Feature work │ │ │        ││ Status: open | Priority: p1 | Type: feature | State: ready             │
-│ │#02 │ready│P2│B│Bug fix      │ │ │        ││ Action: Pull now | Downstream impact: 0 | Critical depth: 1            │
-│ │#03 │ready│P3│C│UI polish    │ │ │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
+│                                            ││ ✨ A  Feature work  (C copy id)                                        │
+│▸│#01 │OPEN│P1│ready│A│Feature work       │ ││ Status: OPEN | Priority: P1 | Type: feature | State: ready             │
+│ │#02 │OPEN│P2│ready│B│Bug fix            │ ││ Action: Pull now | Downstream impact: 0 | Critical depth: 1            │
+│ │#03 │OPEN│P3│ready│C│UI polish          │ ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
 │                                            ││ Closed: n/a | Labels: [backend] [urgent]  (L label filter)             │
 │                                            ││ Created: n/a | Updated: n/a | Due: n/a  (t time-travel)                │
 │                                            ││                                                                        │
@@ -269,10 +269,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │Focus: list owns selection, / s…            ││                                                                        │
 │scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
-│                                            ││ F A  Feature work  (C copy id)                                         │
-│▸│#01 │ready│P1│A│Feature work │ │ │        ││ Status: open | Priority: p1 | Type: feature | State: ready             │
-│ │#02 │ready│P2│B│Bug fix      │ │ │        ││ Action: Pull now | Downstream impact: 0 | Critical depth: 1            │
-│ │#03 │ready│P3│C│UI polish    │ │ │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
+│                                            ││ ✨ A  Feature work  (C copy id)                                        │
+│▸│#01 │OPEN│P1│ready│A│Feature work       │ ││ Status: OPEN | Priority: P1 | Type: feature | State: ready             │
+│ │#02 │OPEN│P2│ready│B│Bug fix            │ ││ Action: Pull now | Downstream impact: 0 | Critical depth: 1            │
+│ │#03 │OPEN│P3│ready│C│UI polish          │ ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
 │                                            ││ Closed: n/a | Labels: [backend] [urgent]  (L label filter)             │
 │                                            ││ Created: n/a | Updated: n/a | Due: n/a  (t time-travel)                │
 │                                            ││                                                                        │

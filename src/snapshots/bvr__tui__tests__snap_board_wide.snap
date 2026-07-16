@@ -6,12 +6,12 @@ bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | m
 ┌Board Lanes [focus]────────────────────────────────┐┌Board Focus──────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ Grouping: status (s cycles) | Empty: Auto (e)     ││ ┌────────────────────────────────────────┐                                          │
-│                                                   ││ │  o T A p0                              │                                          │
+│                                                   ││ │  o 📝 A p0                              │                                         │
 │ Lanes (5) | 3 issues total                        ││ │ Root                                   │                                          │
 │                                                   ││ ├────────────────────────────────────────┤                                          │
 │ ▸ ┌─ open [2] ██  clear                           ││ │ Lane: open                             │                                          │
-│   ▶ oT P0 A Root↓1 @alice                         ││ │ Assignee: alice                        │                                          │
-│   │ oT P0 B Dependent⊘1                           ││ │ Labels: core, parity                   │                                          │
+│   ▶ o📝 P0 A Root↓1 @alice                        ││ │ Assignee: alice                        │                                          │
+│   │ o📝 P0 B Dependent⊘1                          ││ │ Labels: core, parity                   │                                          │
 │   └────────────                                   ││ │ Age: 91d | Updated: 90d ago            │                                          │
 │                                                   ││ │ PR:0.481 Depth:2                       │                                          │
 │   ┌─ in_progress [0]   empty                      ││ ├────────────────────────────────────────┤                                          │
@@ -23,7 +23,7 @@ bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | m
 │   └────────────                                   ││                                                                                     │
 │                                                   ││ Ready to advance to next lane.                                                      │
 │   ┌─ closed [1] █  clear                          ││                                                                                     │
-│   │ xT P0 C Closed                                ││                                                                                     │
+│   │ x📝 P0 C Closed                               ││                                                                                     │
 │   └────────────                                   ││                                                                                     │
 │                                                   ││                                                                                     │
 │   ┌─ other [0]   empty                            ││                                                                                     │

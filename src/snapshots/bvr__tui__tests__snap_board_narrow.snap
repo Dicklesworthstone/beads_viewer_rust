@@ -6,12 +6,12 @@ bvr 1 Main b Board i In g Graph h Hist  | 3/3 | all
 ┌Board Lanes [focus]┐┌Board Focus──────────────────────────┐
 │                   ││                                     │
 │ Grouping: status  ││ ┌────────────────────────────────── │
-│                   ││ │  o T A p0                         │
+│                   ││ │  o 📝 A p0                        │
 │ Lanes (5) | 3 iss ││ │ Root                              │
 │                   ││ ├────────────────────────────────── │
 │ ▸ ┌─ open [2] ██  ││ │ Lane: open                        │
-│   ▶ oT P0 A Root↓ ││ │ Assignee: alice                   │
-│   │ oT P0 B Depen ││ │ Labels: core, parity              │
+│   ▶ o📝 P0 A Root ││ │ Assignee: alice                   │
+│   │ o📝 P0 B Depe ││ │ Labels: core, parity              │
 │   └────────────   ││ │ Age: 91d | Updated: 90d ago       │
 │                   ││ │ PR:0.481 Depth:2                  │
 │   ┌─ in_progress  ││ ├────────────────────────────────── │
@@ -23,7 +23,7 @@ bvr 1 Main b Board i In g Graph h Hist  | 3/3 | all
 │   └────────────   ││                                     │
 │                   ││ Ready to advance to next lane.      │
 │   ┌─ closed [1] █ ││                                     │
-│   │ xT P0 C Close ││                                     │
+│   │ x📝 P0 C Clos ││                                     │
 │   └────────────   ││                                     │
 │                   ││                                     │
 │   ┌─ other [0]    ││                                     │

@@ -10,7 +10,7 @@ bvr 1 Main b Board i In g Graph h Hist  | 3/3 | all
 │ Focused edge: list focus (Tab to inspect relationships)  │
 │                                                          │
 │                   ╔══════════════════════════════════╗   │
-│                   ║[o T p0] A                        ║   │
+│                   ║[o 📝 p0] A                       ║   │
 │                   ║Root                              ║   │
 │                   ║up:0 down:1                       ║   │
 │                   ╚══════════════════════════════════╝   │

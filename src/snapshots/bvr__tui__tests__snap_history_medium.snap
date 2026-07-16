@@ -7,9 +7,9 @@ bvr 1 Main b Board i Insights h History | mode=History ◈ Beads | focus=list | 
 │                            ││                                 ││                                 │
 │ Bead history list (3 beads ││ No commits correlated with A.   ││ History Summary: beads=3 closed │
 │                            ││                                 ││                                 │
-│ ▸ oT A             2▪ open ││                                 ││ Issue: A (Root)                 │
-│   oT B             3▪ open ││                                 ││ Status: open                    │
-│   xT C             3▪ clos ││                                 ││ Min confidence filter: >= 0%    │
+│ ▸ o📝 A             2▪ ope ││                                 ││ Issue: A (Root)                 │
+│   o📝 B             3▪ ope ││                                 ││ Status: open                    │
+│   x📝 C             3▪ clo ││                                 ││ Min confidence filter: >= 0%    │
 │                            ││                                 ││ Created/Updated/Closed: 2026-01 │
 │                            ││                                 ││                                 │
 │                            ││                                 ││ LIFECYCLE:                      │

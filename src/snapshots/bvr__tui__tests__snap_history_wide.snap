@@ -7,9 +7,9 @@ bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | m
 │                                        ││                                               ││                                               │
 │ Bead history list (3 beads) | v toggle ││ No commits correlated with A.                 ││ History Summary: beads=3 closed-like=1 select │
 │                                        ││                                               ││                                               │
-│ ▸ oT A             2▪ open             ││                                               ││ Issue: A (Root)                               │
-│   oT B             3▪ open             ││                                               ││ Status: open                                  │
-│   xT C             3▪ closed           ││                                               ││ Min confidence filter: >= 0%                  │
+│ ▸ o📝 A             2▪ open            ││                                               ││ Issue: A (Root)                               │
+│   o📝 B             3▪ open            ││                                               ││ Status: open                                  │
+│   x📝 C             3▪ closed          ││                                               ││ Min confidence filter: >= 0%                  │
 │                                        ││                                               ││ Created/Updated/Closed: 2026-01-01 / 2026-01- │
 │                                        ││                                               ││                                               │
 │                                        ││                                               ││ LIFECYCLE:                                    │

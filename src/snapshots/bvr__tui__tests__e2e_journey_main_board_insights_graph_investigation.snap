@@ -10,10 +10,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │Focus: list owns selection, / s…            ││                                                                        │
 │scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
-│                                            ││ T A  Root  (C copy id)                                                 │
-│▸│#01 │ready  │P0│A│Root │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
-│ │#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
-│ │#03 │closed │P0│C│Close│  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
+│                                            ││ 📝 A  Root  (C copy id)                                                │
+│▸│#01 │OPEN│P0│ready  │A│Root            │  ││ Status: OPEN | Priority: P0 | Type: task | State: ready                │
+│ │#02 │BLKD│P0│blocked│B│Dependent       │⊘1││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
+│ │#03 │DONE│P0│closed │C│Closed          │  ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
 │                                            ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │
@@ -47,10 +47,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=detail | iss
 │Focus: detail owns J/K deps, ^j…            ││                                                                        │
 │scope=all | label=any | repo=any | pos=2/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  waiting on blockers                                           │
-│                                            ││ T B  Dependent  (C copy id)                                            │
-│ │#01 │ready  │P0│A│Root │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: blocked              │
-│▸│#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Unblock first via A | Open blockers: 1 | Downstream impact: 0  │
-│ │#03 │closed │P0│C│Close│  │      │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
+│                                            ││ 📝 B  Dependent  (C copy id)                                           │
+│ │#01 │OPEN│P0│ready  │A│Root            │  ││ Status: OPEN | Priority: P0 | Type: task | State: blocked              │
+│▸│#02 │BLKD│P0│blocked│B│Dependent       │⊘1││ Action: Unblock first via A | Open blockers: 1 | Downstream impact: 0  │
+│ │#03 │DONE│P0│closed │C│Closed          │  ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
 │                                            ││ Closed: n/a | Labels: none  (L label filter)                           │
 │                                            ││ Created: 2026-01-03 | Updated: 2026-01-04 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │
@@ -65,6 +65,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=detail | iss
 │                                            ││ Upstream: A                                                            │
 │                                            ││ Open Gate: A                                                           │
 │                                            ││ Downstream: none                                                       │
+│                                            ││ Status: OPEN | Priority: P0 | Type: task | State: blocked | Blockers:  │
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 │                                            ││                                                                        │
@@ -72,7 +73,6 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=detail | iss
 │                                            ││ ────────────────────────────────────────────────                       │
 │                                            ││ Description                                                            │
 │                                            ││   Depends on A and should report blocked state clearly.                │
-│                                            ││                                                                        │
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
@@ -83,12 +83,12 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issu
 ┌Board Lanes [focus]─────────────────────────┐┌Board Focus─────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Grouping: status (s cycles) | Empty: Auto  ││ ┌────────────────────────────────────────┐                             │
-│                                            ││ │  o T B p0                              │                             │
+│                                            ││ │  o 📝 B p0                              │                            │
 │ Lanes (5) | 3 issues total                 ││ │ Dependent                              │                             │
 │                                            ││ ├────────────────────────────────────────┤                             │
 │ ▸ ┌─ open [2] ██  clear                    ││ │ Lane: open                             │                             │
-│   │ oT P0 A Root↓1 @alice                  ││ │ Assignee:                              │                             │
-│   ▶ oT P0 B Dependent⊘1                    ││ │ Age: 89d | Updated: 88d ago            │                             │
+│   │ o📝 P0 A Root↓1 @alice                 ││ │ Assignee:                              │                             │
+│   ▶ o📝 P0 B Dependent⊘1                   ││ │ Age: 89d | Updated: 88d ago            │                             │
 │   └────────────                            ││ │ PR:0.260 Depth:1                       │                             │
 │                                            ││ ├────────────────────────────────────────┤                             │
 │   ┌─ in_progress [0]   empty               ││ │ Depends on A and should report block…  │                             │
@@ -100,7 +100,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issu
 │   └────────────                            ││ Blocked by 1 open issue(s).                                            │
 │                                            ││                                                                        │
 │   ┌─ closed [1] █  clear                   ││                                                                        │
-│   │ xT P0 C Closed                         ││                                                                        │
+│   │ x📝 P0 C Closed                        ││                                                                        │
 │   └────────────                            ││                                                                        │
 │                                            ││                                                                        │
 │   ┌─ other [0]   empty                     ││                                                                        │
@@ -120,12 +120,12 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issu
 ┌Board Lanes [focus]─────────────────────────┐┌Board Focus─────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Grouping: status (s cycles) | Empty: Auto  ││ ┌────────────────────────────────────────┐                             │
-│                                            ││ │  x T C p0                              │                             │
+│                                            ││ │  x 📝 C p0                              │                            │
 │ Lanes (5) | 3 issues total                 ││ │ Closed                                 │                             │
 │                                            ││ ├────────────────────────────────────────┤                             │
 │   ┌─ open [2] ██  clear                    ││ │ Lane: closed                           │                             │
-│   │ oT P0 A Root↓1 @alice                  ││ │ Assignee:                              │                             │
-│   │ oT P0 B Dependent⊘1                    ││ │ Age: 91d | Updated: 86d ago            │                             │
+│   │ o📝 P0 A Root↓1 @alice                 ││ │ Assignee:                              │                             │
+│   │ o📝 P0 B Dependent⊘1                   ││ │ Age: 91d | Updated: 86d ago            │                             │
 │   └────────────                            ││ │ PR:0.260 Depth:1                       │                             │
 │                                            ││ └────────────────────────────────────────┘                             │
 │   ┌─ in_progress [0]   empty               ││                                                                        │
@@ -137,7 +137,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issu
 │   └────────────                            ││                                                                        │
 │                                            ││                                                                        │
 │ ▸ ┌─ closed [1] █  clear                   ││                                                                        │
-│   ▶ xT P0 C Closed                         ││                                                                        │
+│   ▶ x📝 P0 C Closed                        ││                                                                        │
 │   └────────────                            ││                                                                        │
 │                                            ││                                                                        │
 │   ┌─ other [0]   empty                     ││                                                                        │
@@ -161,7 +161,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Graph | focus=list | issu
 │   A PR ██████ 0.48 ↓1 Root                 ││ Focused edge: list focus (Tab to inspect relationships)                │
 │   B PR ███░░░ 0.26 ⊘1 Depende…             ││                                                                        │
 │ ▸ C PR ███░░░ 0.26 Closed                  ││                   ╔══════════════════════════════════╗                 │
-│                                            ││                   ║[x T p0] C                        ║                 │
+│                                            ││                   ║[x 📝 p0] C                       ║                 │
 │                                            ││                   ║Closed                            ║                 │
 │                                            ││                   ║up:0 down:0                       ║                 │
 │                                            ││                   ╚══════════════════════════════════╝                 │
@@ -198,7 +198,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Graph | focus=detail | is
 │   A PR ██████ 0.48 ↓1 Root                 ││ Focused edge: none (isolated node)                                     │
 │   B PR ███░░░ 0.26 ⊘1 Depende…             ││                                                                        │
 │ ▸ C PR ███░░░ 0.26 Closed                  ││                   ╔══════════════════════════════════╗                 │
-│                                            ││                   ║[x T p0] C                        ║                 │
+│                                            ││                   ║[x 📝 p0] C                       ║                 │
 │                                            ││                   ║Closed                            ║                 │
 │                                            ││                   ║up:0 down:0                       ║                 │
 │                                            ││                   ╚══════════════════════════════════╝                 │
@@ -306,10 +306,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │Focus: list owns selection, / s…            ││                                                                        │
 │scope=all | label=any | repo=any | pos=3/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  reference state                                               │
-│                                            ││ T C  Closed  (C copy id)                                               │
-│ │#01 │ready  │P0│A│Root │  │@alice│        ││ Status: closed | Priority: p0 | Type: task | State: closed             │
-│ │#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Closed work item | Downstream still watching: 0                │
-│▸│#03 │closed │P0│C│Close│  │      │        ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
+│                                            ││ 📝 C  Closed  (C copy id)                                              │
+│ │#01 │OPEN│P0│ready  │A│Root            │  ││ Status: DONE | Priority: P0 | Type: task | State: closed               │
+│ │#02 │BLKD│P0│blocked│B│Dependent       │⊘1││ Action: Closed work item | Downstream still watching: 0                │
+│▸│#03 │DONE│P0│closed │C│Closed          │  ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w repo filter)    │
 │                                            ││ Closed: 2026-01-06 | Labels: none  (L label filter)                    │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-06 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │

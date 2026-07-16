@@ -1381,15 +1381,14 @@ fn push_scan_segment(line: &mut RichLine, segment: &ScanSegment, row_selected: b
             tokens::priority_badge(prio as u8)
         }
         ScanSegmentKind::Type => {
-            // Use type-specific colour from label (B/F/T/E/Q/D/R)
             let type_name = match segment.label.as_str() {
-                "B" => "bug",
-                "F" => "feature",
-                "T" => "task",
-                "E" => "epic",
-                "Q" => "question",
-                "D" => "docs",
-                "R" => "refactor",
+                "🐛" => "bug",
+                "✨" => "feature",
+                "📝" => "task",
+                "🏗️" => "epic",
+                "❓" => "question",
+                "📄" => "docs",
+                "🔧" => "refactor",
                 _ => "",
             };
             ftui::Style::new().fg(tokens::type_fg(type_name))
@@ -1423,7 +1422,16 @@ fn scan_segments_width(segments: &[ScanSegment]) -> usize {
         + segments.len().saturating_sub(1)
 }
 
-fn issue_action_state(issue: &crate::model::Issue, open_blockers: usize) -> &'static str {
+fn effective_status_badge(status: &str, open_blockers: usize) -> (String, ftui::Style) {
+    let effective = if open_blockers > 0 {
+        "blocked"
+    } else {
+        status
+    };
+    (tokens::status_badge_label(effective).to_string(), tokens::status_badge(effective))
+}
+
+fn issue_state(issue: &crate::model::Issue, open_blockers: usize) -> &'static str {
     if issue.is_closed_like() {
         "closed"
     } else if open_blockers > 0 {
@@ -1433,7 +1441,7 @@ fn issue_action_state(issue: &crate::model::Issue, open_blockers: usize) -> &'st
     }
 }
 
-fn action_state_tone(state: &str) -> SemanticTone {
+fn state_tone(state: &str) -> SemanticTone {
     match state {
         "ready" => SemanticTone::Success,
         "blocked" => SemanticTone::Danger,
@@ -1489,6 +1497,7 @@ enum ColumnId {
     Marker,
     Rank,
     ActionState,
+    State,
     Priority,
     Id,
     Type,
@@ -1542,11 +1551,10 @@ fn narrow_columns() -> Vec<ColumnDef> {
         ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
         ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::State, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
         ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(8) },
     ]
 }
 
@@ -1556,14 +1564,12 @@ fn medium_columns() -> Vec<ColumnDef> {
         ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
         ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::State, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },
         ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
         ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Assignee, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Comments, header: "", width: ColumnWidth::Fixed(5) },
-        ColumnDef { id: ColumnId::Timestamp, header: "", width: ColumnWidth::FitContent },
-        ColumnDef { id: ColumnId::Search, header: "", width: ColumnWidth::Fixed(8) },
     ]
 }
 
@@ -1573,9 +1579,9 @@ fn wide_columns() -> Vec<ColumnDef> {
         ColumnDef { id: ColumnId::Rank, header: "#", width: ColumnWidth::Fixed(4) },
         ColumnDef { id: ColumnId::ActionState, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Priority, header: "", width: ColumnWidth::Fixed(2) },
+        ColumnDef { id: ColumnId::State, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Id, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Type, header: "", width: ColumnWidth::Fixed(2) },
-        ColumnDef { id: ColumnId::StatusBadge, header: "", width: ColumnWidth::FitContent },
         ColumnDef { id: ColumnId::Sparkline, header: "", width: ColumnWidth::Fixed(5) },
         ColumnDef { id: ColumnId::Title, header: "", width: ColumnWidth::Fill },
         ColumnDef { id: ColumnId::Deps, header: "", width: ColumnWidth::FitContent },
@@ -1621,7 +1627,7 @@ fn compute_column_widths(
     let mut results: Vec<ColumnWidthResult> = Vec::with_capacity(columns.len());
 
     // First pass: compute max content width per column
-    let mut header_widths: Vec<u16> = columns.iter().map(|c| display_width(c.header) as u16).collect();
+    let header_widths: Vec<u16> = columns.iter().map(|c| display_width(c.header) as u16).collect();
 
     for (col_idx, col) in columns.iter().enumerate() {
         let mut max_width: u16 = 0;
@@ -1660,6 +1666,7 @@ fn estimate_column_content_width(col: ColumnId, issue: &crate::model::Issue) -> 
             if is_blocked { 7 } else { 5 }   // "blocked" vs "ready"
         }
         ColumnId::Priority => 2,          // "P0".."P4"
+        ColumnId::State => 7,             // "blocked"|"closed"|"ready"
         ColumnId::Id => {
             let id_len = display_width(&issue.id);
             id_len.min(14) as u16         // truncated to 14
@@ -1802,7 +1809,6 @@ fn issue_to_table_row(
     context: &ScanLineContext,
     columns: &[ColumnDef],
 ) -> TableRow {
-    let action_state = issue_action_state(issue, context.open_blockers);
     let variant = ScanLineVariant::from_width(context.available_width);
 
     let cells: Vec<RichLine> = columns.iter().map(|col| {
@@ -1816,23 +1822,23 @@ fn issue_to_table_row(
                 (format!("#{:02}", context.triage_rank), tokens::chip_style(SemanticTone::Accent))
             }
             ColumnId::ActionState => {
-                (action_state.to_string(), tokens::chip_style(action_state_tone(&action_state)))
+                let (badge, style) = effective_status_badge(&issue.status, context.open_blockers);
+                (badge, style)
             }
             ColumnId::Priority => {
                 let prio = issue.priority.clamp(0, 4) as u8;
                 (format!("P{prio}"), tokens::priority_badge(prio))
             }
+            ColumnId::State => {
+                let state = issue_state(issue, context.open_blockers);
+                (state.to_string(), tokens::chip_style(state_tone(state)))
+            }
             ColumnId::Id => {
-                (truncate_display(&issue.id, 14), tokens::dim())
+                (issue.id.clone(), tokens::dim())
             }
             ColumnId::Type => {
                 let icon = type_icon(&issue.issue_type).to_string();
-                let type_name = match icon.as_str() {
-                    "B" => "bug", "F" => "feature", "T" => "task",
-                    "E" => "epic", "Q" => "question", "D" => "docs",
-                    "R" => "refactor", _ => "",
-                };
-                let style = ftui::Style::new().fg(tokens::type_fg(type_name));
+                let style = ftui::Style::new().fg(tokens::type_fg(type_fg_name(&issue.issue_type)));
                 (icon, style)
             }
             ColumnId::StatusBadge => {
@@ -1918,7 +1924,6 @@ fn issue_scan_line(
     context: ScanLineContext,
 ) -> RichLine {
     let variant = ScanLineVariant::from_width(context.available_width);
-    let action_state = issue_action_state(issue, context.open_blockers);
     let mut prefix = vec![
         ScanSegment {
             label: if is_selected {
@@ -1935,15 +1940,21 @@ fn issue_scan_line(
             kind: ScanSegmentKind::Chip(SemanticTone::Accent),
         },
         ScanSegment {
-            label: action_state.to_string(),
-            kind: ScanSegmentKind::Chip(action_state_tone(action_state)),
+            label: effective_status_badge(&issue.status, context.open_blockers).0,
+            kind: ScanSegmentKind::StatusBadge {
+                status: if context.open_blockers > 0 { "blocked".to_string() } else { issue.status.clone() },
+            },
         },
         ScanSegment {
             label: format!("P{}", issue.priority.clamp(0, 4)),
             kind: ScanSegmentKind::Priority,
         },
         ScanSegment {
-            label: truncate_display(&issue.id, 14),
+            label: issue_state(issue, context.open_blockers).to_string(),
+            kind: ScanSegmentKind::Chip(state_tone(issue_state(issue, context.open_blockers))),
+        },
+        ScanSegment {
+            label: truncate_display(&issue.id, 7),
             kind: ScanSegmentKind::Dim,
         },
     ];
@@ -1956,9 +1967,9 @@ fn issue_scan_line(
     }
     if matches!(variant, ScanLineVariant::Wide) {
         prefix.push(ScanSegment {
-            label: tokens::status_badge_label(&issue.status).to_string(),
+            label: effective_status_badge(&issue.status, context.open_blockers).0,
             kind: ScanSegmentKind::StatusBadge {
-                status: issue.status.clone(),
+                status: if context.open_blockers > 0 { "blocked".to_string() } else { issue.status.clone() },
             },
         });
         // Sparkline for graph importance (5 chars)
@@ -3360,7 +3371,15 @@ impl Model for BvrApp {
                 let visible = self.visible_issue_indices();
                 let available_width = panes[0].width.saturating_sub(2) as usize;
                 let variant = ScanLineVariant::from_width(available_width);
-                let columns = columns_for_variant(variant);
+                let mut columns = columns_for_variant(variant);
+                // Add Search column on-demand when actively searching
+                if !self.main_search_matches().is_empty() {
+                    columns.push(ColumnDef {
+                        id: ColumnId::Search,
+                        header: "",
+                        width: ColumnWidth::Fixed(8),
+                    });
+                }
                 let widths: Vec<Constraint> = columns.iter().map(|c| column_width_to_constraint(&c.width)).collect();
                 let search_matches = self.main_search_matches();
                 let search_positions: BTreeMap<usize, usize> = search_matches
@@ -12611,11 +12630,11 @@ impl BvrApp {
             )
         };
         let status_line = format!(
-            "Status: {} | Priority: p{} | Type: {} | State: {}",
+            "Status: {} | Priority: P{} | Type: {} | State: {}",
             issue.status,
             issue.priority,
             display_or_fallback(&issue.issue_type, "unknown"),
-            action_state
+            action_state,
         );
         let context_line = format!(
             "Assignee: {} | Repo: {} | Estimate: {}",
@@ -12652,16 +12671,14 @@ impl BvrApp {
         };
 
         push_module_header(&mut lines, "Summary", action_subtitle);
-        lines.push(RichLine::from_spans([
-            RichSpan::raw(format!(
-                "{} {}  {}",
-                type_icon(&issue.issue_type),
-                issue.id,
-                issue.title
-            )),
-            RichSpan::styled("  ", tokens::dim()),
-            RichSpan::styled("(C copy id)", tokens::dim()),
-        ]));
+        lines.push({
+            let mut line = RichLine::new();
+            line.push_span(type_badge(&issue.issue_type));
+            line.push_span(RichSpan::raw(format!(" {}  {}", issue.id, issue.title)));
+            line.push_span(RichSpan::styled("  ", tokens::dim()));
+            line.push_span(RichSpan::styled("(C copy id)", tokens::dim()));
+            line
+        });
         if let Some(styled_line) = styled_detail_summary_line(&status_line) {
             lines.push(styled_line);
         }
@@ -13005,18 +13022,28 @@ impl BvrApp {
         let ev_max = max_metric_value(&self.analyzer.metrics.eigenvector);
         let hub_max = max_metric_value(&self.analyzer.metrics.hubs);
         let auth_max = max_metric_value(&self.analyzer.metrics.authorities);
-        let action_state = if issue.is_closed_like() {
+        let closed_display = if issue.is_closed_like() {
+            format_compact_timestamp(issue.closed_at.or(issue.updated_at))
+        } else {
+            "n/a".to_string()
+        };
+        let this_state = if issue.is_closed_like() {
             "closed"
         } else if open_blockers.is_empty() {
             "ready"
         } else {
             "blocked"
         };
-        let closed_display = if issue.is_closed_like() {
-            format_compact_timestamp(issue.closed_at.or(issue.updated_at))
-        } else {
-            "n/a".to_string()
-        };
+        let mut status_line = format!(
+            "Status: {} | Priority: P{} | Type: {} | State: {}",
+            issue.status,
+            issue.priority,
+            display_or_fallback(&issue.issue_type, "unknown"),
+            this_state,
+        );
+        if !open_blockers.is_empty() {
+            status_line.push_str(&format!(" | Blockers: {}", open_blockers.len()));
+        }
 
         let mut lines = vec![
             format!(
@@ -13025,13 +13052,7 @@ impl BvrApp {
                 issue.id,
                 issue.title
             ),
-            format!(
-                "Status: {} | Priority: p{} | Type: {} | State: {}",
-                issue.status,
-                issue.priority,
-                display_or_fallback(&issue.issue_type, "unknown"),
-                action_state
-            ),
+            status_line,
             format!(
                 "Assignee: {} | Repo: {} | Estimate: {}",
                 display_or_fallback(&issue.assignee, "unassigned"),
@@ -14674,14 +14695,27 @@ fn status_icon(status: &str) -> &'static str {
 
 fn type_icon(issue_type: &str) -> &'static str {
     match issue_type.to_ascii_lowercase().as_str() {
-        "bug" => "B",
-        "feature" => "F",
-        "task" => "T",
-        "epic" => "E",
-        "question" => "Q",
-        "docs" => "D",
-        "refactor" => "R",
-        _ => "-",
+        "bug" => "🐛",
+        "feature" => "✨",
+        "task" => "📝",
+        "epic" => "🏗️",
+        "question" => "❓",
+        "docs" => "📄",
+        "refactor" => "🔧",
+        _ => "●",
+    }
+}
+
+fn type_fg_name(issue_type: &str) -> &'static str {
+    match issue_type.to_ascii_lowercase().as_str() {
+        "bug" => "bug",
+        "feature" => "feature",
+        "task" => "task",
+        "epic" => "epic",
+        "question" => "question",
+        "docs" => "docs",
+        "refactor" => "refactor",
+        _ => "",
     }
 }
 
@@ -15175,61 +15209,6 @@ fn truncate_display(value: &str, max_len: usize) -> String {
     truncate_with_ellipsis(value, max_len, "…")
 }
 
-fn tone_for_status(status: &str) -> SemanticTone {
-    if status.eq_ignore_ascii_case("open") || status.eq_ignore_ascii_case("review") {
-        SemanticTone::Accent
-    } else if status.eq_ignore_ascii_case("in_progress") || status.eq_ignore_ascii_case("hooked") {
-        SemanticTone::Warning
-    } else if status.eq_ignore_ascii_case("blocked") || status.eq_ignore_ascii_case("tombstone") {
-        SemanticTone::Danger
-    } else if status.eq_ignore_ascii_case("closed") {
-        SemanticTone::Success
-    } else {
-        SemanticTone::Muted
-    }
-}
-
-fn tone_for_state(state: &str) -> SemanticTone {
-    if state.eq_ignore_ascii_case("ready") {
-        SemanticTone::Success
-    } else if state.eq_ignore_ascii_case("blocked") {
-        SemanticTone::Danger
-    } else if state.eq_ignore_ascii_case("closed") {
-        SemanticTone::Muted
-    } else {
-        SemanticTone::Accent
-    }
-}
-
-fn tone_for_priority(priority: &str) -> SemanticTone {
-    match priority.trim_start_matches(['p', 'P']) {
-        "0" => SemanticTone::Danger,
-        "1" => SemanticTone::Warning,
-        "2" => SemanticTone::Accent,
-        "3" | "4" => SemanticTone::Muted,
-        _ => SemanticTone::Neutral,
-    }
-}
-
-fn summary_line_from_pairs(
-    line: &str,
-    tone_for_key: impl Fn(&str, &str) -> SemanticTone,
-) -> Option<RichLine> {
-    let mut out = RichLine::new();
-    let mut wrote_any = false;
-    for part in line.split(" | ") {
-        let (label, value) = part.split_once(": ")?;
-        if wrote_any {
-            out.push_span(RichSpan::styled(" | ", tokens::dim()));
-        }
-        out.push_span(RichSpan::styled(format!("{label}:"), tokens::dim()));
-        out.push_span(RichSpan::raw(" "));
-        push_chip(&mut out, value, tone_for_key(label, value));
-        wrote_any = true;
-    }
-    wrote_any.then_some(out)
-}
-
 fn styled_detail_summary_line(line: &str) -> Option<RichLine> {
     if line.ends_with(':') && !line.starts_with("  ") {
         return Some(RichLine::from_spans([RichSpan::styled(
@@ -15239,13 +15218,42 @@ fn styled_detail_summary_line(line: &str) -> Option<RichLine> {
     }
 
     if line.starts_with("Status: ") {
-        return summary_line_from_pairs(line, |label, value| match label {
-            "Status" => tone_for_status(value),
-            "Priority" => tone_for_priority(value),
-            "State" => tone_for_state(value),
-            "Type" => SemanticTone::Neutral,
-            _ => SemanticTone::Muted,
-        });
+        let mut out = RichLine::new();
+        let mut wrote_any = false;
+        for part in line.split(" | ") {
+            let (label, value) = part.split_once(": ")?;
+            if wrote_any {
+                out.push_span(RichSpan::styled(" | ", tokens::dim()));
+            }
+            out.push_span(RichSpan::styled(format!("{label}:"), tokens::dim()));
+            out.push_span(RichSpan::raw(" "));
+            match label {
+                "Status" => {
+                    let badge = tokens::status_badge_label(value);
+                    let style = tokens::status_badge(value);
+                    out.push_span(RichSpan::styled(badge, style));
+                }
+                "Priority" => {
+                    let prio = value
+                        .trim_start_matches(['p', 'P'])
+                        .parse::<u8>()
+                        .unwrap_or(99)
+                        .clamp(0, 4);
+                    out.push_span(RichSpan::styled(
+                        format!("P{prio}"),
+                        tokens::priority_badge(prio),
+                    ));
+                }
+                "State" => {
+                    push_chip(&mut out, value, state_tone(value));
+                }
+                _ => {
+                    push_chip(&mut out, value, SemanticTone::Muted);
+                }
+            }
+            wrote_any = true;
+        }
+        return Some(out);
     }
 
     None
@@ -20338,7 +20346,7 @@ mod tests {
         let app = new_app(ViewMode::Main, 1);
         let text = app.main_list_render_text(48).to_plain_text();
         assert!(text.contains("▸"), "selected row marker missing: {text}");
-        assert!(text.contains("blocked"), "state chip missing: {text}");
+        assert!(text.contains("BLKD"), "blocked badge missing: {text}");
         assert!(text.contains("Dependent"), "title missing: {text}");
         assert!(
             !text.contains("repo:"),
@@ -20436,7 +20444,7 @@ mod tests {
         let app = new_app(ViewMode::Main, 1);
         let text = app.detail_panel_text();
 
-        assert!(text.contains("State: blocked"));
+        assert!(text.contains("Blockers: 1"));
         assert!(text.contains("Dependency Map:"));
         assert!(text.contains("upstream: A"));
         assert!(text.contains("open gate: A"));
@@ -21568,24 +21576,28 @@ mod tests {
     #[test]
     fn styled_detail_summary_line_turns_status_into_chips() {
         let line =
-            styled_detail_summary_line("Status: open | Priority: p1 | Type: bug | State: ready")
+            styled_detail_summary_line("Status: open | Priority: P1 | Type: bug")
                 .expect("styled summary line");
+        // Status value is converted to badge label (OPEN) via status_badge_label
         assert_eq!(
             line.to_plain_text(),
-            "Status: open | Priority: p1 | Type: bug | State: ready"
+            "Status: OPEN | Priority: P1 | Type: bug"
         );
         let spans = line.spans();
+        // Status value uses status_badge style
         assert_eq!(
             spans[2].style,
-            Some(tokens::chip_style(SemanticTone::Accent))
+            Some(tokens::status_badge("open"))
         );
+        // Priority value uses priority_badge style
         assert_eq!(
             spans[6].style,
-            Some(tokens::chip_style(SemanticTone::Warning))
+            Some(tokens::priority_badge(1))
         );
+        // Type value uses default muted chip
         assert_eq!(
-            spans[14].style,
-            Some(tokens::chip_style(SemanticTone::Success))
+            spans[10].style,
+            Some(tokens::chip_style(SemanticTone::Muted))
         );
     }
 
@@ -26974,9 +26986,9 @@ mod tests {
 
     #[test]
     fn type_badge_maps_types() {
-        assert_eq!(span_text(&type_badge("task")), "T");
-        assert_eq!(span_text(&type_badge("bug")), "B");
-        assert_eq!(span_text(&type_badge("epic")), "E");
+        assert_eq!(span_text(&type_badge("task")), "📝");
+        assert_eq!(span_text(&type_badge("bug")), "🐛");
+        assert_eq!(span_text(&type_badge("epic")), "🏗️");
     }
 
     #[test]
@@ -27244,3 +27256,37 @@ mod tests {
         assert_eq!(tree_cursor_id(&app), "SOLO");
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

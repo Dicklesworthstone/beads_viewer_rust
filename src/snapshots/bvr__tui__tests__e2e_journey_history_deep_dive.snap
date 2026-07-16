@@ -10,9 +10,9 @@ bvr 1 Main b Board i Insights g Graph h History | mode=History ◈ Beads | focus
 │                                  ││                                        ││                                        │
 │ Bead history list (3 beads) | v  ││ No commits correlated with A.          ││ History Summary: beads=3 closed-like=1 │
 │                                  ││                                        ││                                        │
-│ ▸ oT A             2▪ open       ││                                        ││ Issue: A (Root)                        │
-│   oT B             3▪ open       ││                                        ││ Status: open                           │
-│   xT C             3▪ closed     ││                                        ││ Min confidence filter: >= 0%           │
+│ ▸ o📝 A             2▪ open      ││                                        ││ Issue: A (Root)                        │
+│   o📝 B             3▪ open      ││                                        ││ Status: open                           │
+│   x📝 C             3▪ closed    ││                                        ││ Min confidence filter: >= 0%           │
 │                                  ││                                        ││ Created/Updated/Closed: 2026-01-01 / 2 │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││ Timeline:                              │
@@ -47,9 +47,9 @@ bvr 1 Main b Board i Insights g Graph h History | mode=History ◈ Beads | focus
 │                                  ││                                        ││                                        │
 │ Bead history list (3 beads) | v  ││ 2 commit(s) for B                      ││ History Summary: beads=3 closed-like=1 │
 │                                  ││                                        ││                                        │
-│   oT A             2▪ open       ││   aaaa111  95% feat: ui wiring         ││ Issue: B (Dependent)                   │
-│ ▸ oT B             3▪ open       ││   bbbb222  80% feat: graph core        ││ Status: open                           │
-│   xT C             3▪ closed     ││                                        ││ Min confidence filter: >= 0%           │
+│   o📝 A             2▪ open      ││   aaaa111  95% feat: ui wiring         ││ Issue: B (Dependent)                   │
+│ ▸ o📝 B             3▪ open      ││   bbbb222  80% feat: graph core        ││ Status: open                           │
+│   x📝 C             3▪ closed    ││                                        ││ Min confidence filter: >= 0%           │
 │                                  ││                                        ││ Created/Updated/Closed: 2026-01-03 / 2 │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││ Timeline:                              │
@@ -269,10 +269,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │Focus: list owns selection, / s…            ││                                                                        │
 │scope=all | label=any | repo=any | pos=1/3 |││ ────────────────────────────────────────────────                       │
 │Guide: / search-as-you-type | o/c/r/B/I quic││ Summary  ready to execute                                              │
-│                                            ││ T A  Root  (C copy id)                                                 │
-│▸│#01 │ready  │P0│A│Root │  │@alice│        ││ Status: open | Priority: p0 | Type: task | State: ready                │
-│ │#02 │blocked│P0│B│Depen│⊘1│      │        ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
-│ │#03 │closed │P0│C│Close│  │      │        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
+│                                            ││ 📝 A  Root  (C copy id)                                                │
+│▸│#01 │OPEN│P0│ready  │A│Root            │  ││ Status: OPEN | Priority: P0 | Type: task | State: ready                │
+│ │#02 │BLKD│P0│blocked│B│Dependent       │⊘1││ Action: Pull now | Downstream impact: 1 | Critical depth: 2            │
+│ │#03 │DONE│P0│closed │C│Closed          │  ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)        │
 │                                            ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                │
 │                                            ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)  │
 │                                            ││                                                                        │

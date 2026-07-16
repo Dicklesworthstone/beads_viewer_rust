@@ -7,9 +7,9 @@ bvr 1 Main b Board i In g Graph h Hist  | 3/3 | all
 │                   ││                                     │
 │ Bead history list ││ History Summary: beads=3 closed-lik │
 │                   ││                                     │
-│ ▸ oT A            ││ Issue: A (Root)                     │
-│   oT B            ││ Status: open                        │
-│   xT C            ││ Min confidence filter: >= 0%        │
+│ ▸ o📝 A           ││ Issue: A (Root)                     │
+│   o📝 B           ││ Status: open                        │
+│   x📝 C           ││ Min confidence filter: >= 0%        │
 │                   ││ Created/Updated/Closed: 2026-01-01  │
 │                   ││                                     │
 │                   ││ LIFECYCLE:                          │

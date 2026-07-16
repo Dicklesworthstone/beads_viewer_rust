@@ -18,7 +18,7 @@ bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=detail | issues=3/3 |
 │                                        ││                                    │                   │
 │                                        ││                                    ▼                   │
 │                                        ││                   ╔══════════════════════════════════╗ │
-│                                        ││                   ║[o T p0] B                        ║ │
+│                                        ││                   ║[o 📝 p0] B                       ║ │
 │                                        ││                   ║Dependent                         ║ │
 │                                        ││                   ║up:1 down:0                       ║ │
 │                                        ││                   ╚══════════════════════════════════╝ │

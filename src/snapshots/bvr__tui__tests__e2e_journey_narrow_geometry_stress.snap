@@ -10,10 +10,10 @@ bvr 1 Main b Board i In  | 3/3 | all
 │Focus: list ││                        │
 │scope=all | ││ ────────────────────── │
 │Guide: / sea││ Summary  ready to exec │
-│            ││ T A  Root  (C copy id) │
-│▸│#01│││││││││ Status: open | Priorit │
-│ │#02│││││││││ Action: Pull now | Dow │
-│ │#03│││││││││ Assignee: alice | Repo │
+│            ││ 📝 A  Root  (C copy id │
+│▸│#01 ││││││││ Status: OPEN | Priorit │
+│ │#02 ││││││││ Action: Pull now | Dow │
+│ │#03 ││││││││ Assignee: alice | Repo │
 │            ││ Closed: n/a | Labels:  │
 │            ││ Created: 2026-01-01 |  │
 │            ││                        │
@@ -26,12 +26,12 @@ bvr 1 Main b Board i In  | 3/3 | all
 ┌Board Lanes ┐┌Board Focus─────────────┐
 │            ││                        │
 │ Grouping:  ││ ┌───────────────────── │
-│            ││ │  o T A p0            │
+│            ││ │  o 📝 A p0           │
 │ Lanes (5)  ││ │ Root                 │
 │            ││ ├───────────────────── │
 │ ▸ ┌─ open  ││ │ Lane: open           │
-│   ▶ oT P0  ││ │ Assignee: alice      │
-│   │ oT P0  ││ │ Labels: core, parity │
+│   ▶ o📝 P0 ││ │ Assignee: alice      │
+│   │ o📝 P0 ││ │ Labels: core, parity │
 │   └─────── ││ │ Age: 91d | Updated:  │
 │            ││ │ PR:0.481 Depth:2     │
 │            ││                        │
@@ -43,7 +43,7 @@ bvr 1 Main b Board i In  | 3/3 | all
 ┌Board Lanes ┐┌Board Focus─────────────┐
 │            ││                        │
 │   └─────── ││ ┌───────────────────── │
-│            ││ │  x T C p0            │
+│            ││ │  x 📝 C p0           │
 │   ┌─ in_pr ││ │ Closed               │
 │   │ (empty ││ ├───────────────────── │
 │   └─────── ││ │ Lane: closed         │
@@ -64,7 +64,7 @@ bvr 1 Main b Board i In g Graph  | 3/3 |
 │ Focused edge: list focus (Tab to ins │
 │                                      │
 │                   ╔═════════════════ │
-│                   ║[x T p0] C        │
+│                   ║[x 📝 p0] C       │
 │                   ║Closed            │
 │                   ║up:0 down:0       │
 │                   ╚═════════════════ │
@@ -146,10 +146,10 @@ bvr 1 Main b Board i In  | 3/3 | all
 │Focus: list ││                        │
 │scope=all | ││ ────────────────────── │
 │Guide: / sea││ Summary  reference sta │
-│            ││ T C  Closed  (C copy i │
-│ │#01│││││││││ Status: closed | Prior │
-│ │#02│││││││││ Action: Closed work it │
-│▸│#03│││││││││ Assignee: unassigned | │
+│            ││ 📝 C  Closed  (C copy  │
+│ │#01 ││││││││ Status: DONE | Priorit │
+│ │#02 ││││││││ Action: Closed work it │
+│▸│#03 ││││││││ Assignee: unassigned | │
 │            ││ Closed: 2026-01-06 | L │
 │            ││ Created: 2026-01-01 |  │
 │            ││                        │

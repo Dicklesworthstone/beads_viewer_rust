@@ -6,12 +6,12 @@ bvr 1 Main b Board i Insights | mode=Board | focus=detail | issues=3/3 | filter=
 ┌Board Lanes─────────────────────────────┐┌Board Focus [focus]─────────────────────────────────────┐
 │                                        ││                                                        │
 │ Grouping: status (s cycles) | Empty: A ││ ┌────────────────────────────────────────┐             │
-│                                        ││ │  o T B p0                              │             │
+│                                        ││ │  o 📝 B p0                              │            │
 │ Lanes (5) | 3 issues total             ││ │ Dependent                              │             │
 │                                        ││ ├────────────────────────────────────────┤             │
 │ ▸ ┌─ open [2] ██  clear                ││ │ Lane: open                             │             │
-│   │ oT P0 A Root↓1 @alice              ││ │ Assignee:                              │             │
-│   ▶ oT P0 B Dependent⊘1                ││ │ Age: 89d | Updated: 88d ago            │             │
+│   │ o📝 P0 A Root↓1 @alice             ││ │ Assignee:                              │             │
+│   ▶ o📝 P0 B Dependent⊘1               ││ │ Age: 89d | Updated: 88d ago            │             │
 │   └────────────                        ││ │ PR:0.260 Depth:1                       │             │
 │                                        ││ ├────────────────────────────────────────┤             │
 │   ┌─ in_progress [0]   empty           ││ │ Depends on A and should report block…  │             │
@@ -23,7 +23,7 @@ bvr 1 Main b Board i Insights | mode=Board | focus=detail | issues=3/3 | filter=
 │   └────────────                        ││ Blocked by 1 open issue(s).                            │
 │                                        ││                                                        │
 │   ┌─ closed [1] █  clear               ││                                                        │
-│   │ xT P0 C Closed                     ││                                                        │
+│   │ x📝 P0 C Closed                    ││                                                        │
 │   └────────────                        ││                                                        │
 │                                        ││                                                        │
 │   ┌─ other [0]   empty                 ││                                                        │
