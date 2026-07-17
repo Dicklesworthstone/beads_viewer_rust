@@ -14925,7 +14925,7 @@ fn new_app_with_background(
     };
     let slow_metrics_pending = use_two_phase;
 
-    BvrApp {
+    let mut app = BvrApp {
         analyzer,
         repo_root,
         selected: 0,
@@ -15018,7 +15018,9 @@ fn new_app_with_background(
         background_runtime,
         #[cfg(test)]
         key_trace: Vec::new(),
-    }
+    };
+    app.select_first_visible();
+    app
 }
 
 pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
@@ -15075,6 +15077,7 @@ pub fn run_tui_with_background(
         ViewMode::Attention => model.compute_attention(),
         _ => {}
     }
+    model.select_first_visible();
     App::new(model)
         .screen_mode(ScreenMode::AltScreen)
         .with_budget(interactive_frame_budget())
@@ -16025,6 +16028,26 @@ mod tests {
             .and_then(|&idx| app.analyzer.issues.get(idx))
             .map(|issue| issue.id.clone())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn startup_selection_uses_first_default_sorted_issue() {
+        let app = super::new_app(sortable_issues(), ViewMode::Main);
+
+        assert_eq!(first_rendered_issue_id(&app), "M");
+        assert_eq!(selected_issue_id(&app), "M");
+    }
+
+    #[test]
+    fn startup_selection_respects_the_initial_filter() {
+        let mut app = super::new_app(sample_issues(), ViewMode::Main);
+        assert_eq!(selected_issue_id(&app), "A");
+
+        app.list_filter = ListFilter::Closed;
+        app.select_first_visible();
+
+        assert_eq!(first_rendered_issue_id(&app), "C");
+        assert_eq!(selected_issue_id(&app), "C");
     }
 
     #[test]
