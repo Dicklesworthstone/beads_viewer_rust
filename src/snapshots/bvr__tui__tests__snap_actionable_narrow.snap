@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i In g Graph h Hist a Act  | 3/3 | all
+bvr 1 Main b Board i In g Graph H Hist a Act  | 3/3 | all
 ┌Execution Tracks [f┐┌Track Detail─────────────────────────┐
 │                   ││                                     │
 │ (no execution pla ││ (no plan)                           │

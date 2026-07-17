@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights h History | mode=History ◉ Git | focus=list | issues=3/3 | filter=all
+bvr 1 Main b Board i Insights H History | mode=History ◉ Git | focus=list | issues=3/3 | filter=all
 ┌Commits [focus]─────────────┐┌Related Beads────────────────────┐┌Commit Details───────────────────┐
 │                            ││                                 ││                                 │
 │ Git commits (4/4 correlate ││ 1 related bead(s) for aaaa111   ││ Commit 1/4 | confidence >= 0%   │

@@ -3,7 +3,7 @@ source: src/tui.rs
 assertion_line: 21678
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | mode=Insights | focus=list | issues=3/3 | filter=all | sort=d
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Insights | focus=list | issues=3/3 | filter=all | sort=d
 ┌Insight Queue [focus]──────────────────────────────┐┌Insight Detail───────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ [Bottlenecks] s/S cycles panel | e explanations | ││ Analytics Cockpit                                                                   │

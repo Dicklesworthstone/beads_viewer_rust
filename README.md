@@ -588,7 +588,7 @@ Bare `bvr` launches the interactive terminal UI. For automation, do not run the 
 | `b` | Board | Kanban-style lane view |
 | `i` | Insights | Metric and explanation panels |
 | `g` | Graph | Dependency graph and edge inspection |
-| `h` | History | Bead/git timeline and file tree |
+| `H` | History | Bead/git timeline and file tree |
 | `a` | Actionable | Parallel execution tracks |
 | `!` | Attention | Label attention ranking |
 | `T` | Tree | Dependency tree |

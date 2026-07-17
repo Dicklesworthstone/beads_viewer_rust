@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | mode=Board | focus=list | issues=3/3 | filter=all | sort=defa
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Board | focus=list | issues=3/3 | filter=all | sort=defa
 ┌Board Lanes [focus]────────────────────────────────┐┌Board Focus──────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ Grouping: status (s cycles) | Empty: Auto (e)     ││ ┌────────────────────────────────────────┐                                          │
@@ -31,4 +31,4 @@ bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | m
 │   └────────────                                   ││                                                                                     │
 │                                                   ││                                                                                     │
 └───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ H/L lanes │ 0/$ edges │ ^j/k detail scroll
+Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges │ ^j/k detail scroll

@@ -31,4 +31,4 @@ bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=list | issues=3/3 | f
 │                                        ││ Flow & Connectivity:                                   │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ H/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back
+h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back

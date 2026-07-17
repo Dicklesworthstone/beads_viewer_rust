@@ -31,4 +31,4 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=2/3 | filter=ope
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/h modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize

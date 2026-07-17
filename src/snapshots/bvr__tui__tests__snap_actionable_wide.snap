@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | mode=Actionable | focus=list | issues=3/3 | filter=all | sort
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Actionable | focus=list | issues=3/3 | filter=all | sort
 ┌Execution Tracks [focus]───────────────────────────┐┌Track Detail─────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ (no execution plan computed)                      ││ (no plan)                                                                           │

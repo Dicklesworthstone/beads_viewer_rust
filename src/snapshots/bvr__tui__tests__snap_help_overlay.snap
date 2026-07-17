@@ -28,7 +28,7 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all
 │   a            Toggle actionable mode            |                                               │
 │   b            Toggle board mode                 | [Board]                                       │
 │   i            Toggle insights mode              |   1-4          Jump to lane                   │
-│   g            Toggle graph mode                 |   H/L          First/last lane                │
+│   g            Toggle graph mode                 |   L            Jump to last lane              │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ? or Esc close | j/k scroll | Ctrl+d/u page | line 1/45

@@ -1763,7 +1763,7 @@ impl ViewMode {
             Self::Board => "b",
             Self::Insights => "i",
             Self::Graph => "g",
-            Self::History => "h",
+            Self::History => "H",
             Self::Actionable => "a",
             Self::Attention => "!",
             Self::Tree => "T",
@@ -3023,7 +3023,7 @@ impl Model for BvrApp {
                         desc: &empty_desc,
                     });
                     hints.push(CommandHint {
-                        key: "H/L",
+                        key: "1-4",
                         desc: "lanes",
                     });
                     hints.push(CommandHint {
@@ -3414,7 +3414,7 @@ impl Model for BvrApp {
                             desc: "file-tree",
                         },
                         CommandHint {
-                            key: "h/Esc",
+                            key: "H/Esc",
                             desc: "back",
                         },
                         CommandHint {
@@ -4599,6 +4599,9 @@ impl BvrApp {
         }
 
         match code {
+            KeyCode::Char('H') => {
+                self.toggle_history_mode();
+            }
             KeyCode::Escape if self.exit_insights_heatmap_drill() => return Cmd::None,
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -5174,11 +5177,6 @@ impl BvrApp {
             {
                 self.move_selection_relative(1);
             }
-            KeyCode::Char('H')
-                if matches!(self.mode, ViewMode::Graph) && self.focus == FocusPane::List =>
-            {
-                self.move_selection_relative(-10);
-            }
             KeyCode::Char('L')
                 if matches!(self.mode, ViewMode::Graph) && self.focus == FocusPane::List =>
             {
@@ -5189,14 +5187,6 @@ impl BvrApp {
             }
             KeyCode::Char('l') if matches!(self.mode, ViewMode::Insights) => {
                 self.focus = FocusPane::Detail;
-            }
-            KeyCode::Char('h') if matches!(self.mode, ViewMode::Main) => {
-                self.toggle_history_mode();
-            }
-            KeyCode::Char('h')
-                if matches!(self.mode, ViewMode::History) && !self.history_file_tree_focus =>
-            {
-                self.toggle_history_mode();
             }
             KeyCode::Char('c')
                 if matches!(self.mode, ViewMode::History) && !self.history_file_tree_focus =>
@@ -5416,9 +5406,6 @@ impl BvrApp {
             }
             KeyCode::Char('4') if self.board_shortcut_focus() => {
                 self.select_first_in_board_lane(4);
-            }
-            KeyCode::Char('H') if self.board_shortcut_focus() => {
-                self.select_first_in_non_empty_board_lane();
             }
             KeyCode::Char('L') if self.board_shortcut_focus() => {
                 self.select_last_in_non_empty_board_lane();
@@ -7022,21 +7009,6 @@ impl BvrApp {
             .or_else(|| lanes.iter().position(|(_, indices)| !indices.is_empty()))
     }
 
-    fn select_first_in_non_empty_board_lane(&mut self) {
-        if !matches!(self.mode, ViewMode::Board) {
-            return;
-        }
-
-        if let Some((_, indices)) = self
-            .board_lane_indices()
-            .into_iter()
-            .find(|(_, indices)| !indices.is_empty())
-            && let Some(index) = indices.first().copied()
-        {
-            self.set_selected_index(index);
-        }
-    }
-
     fn select_last_in_non_empty_board_lane(&mut self) {
         if !matches!(self.mode, ViewMode::Board) {
             return;
@@ -7628,7 +7600,7 @@ impl BvrApp {
     fn main_footer_command_hints(&self) -> Vec<CommandHint<'static>> {
         let mut hints = vec![
             CommandHint {
-                key: "b/i/g/h",
+                key: "b/i/g/H",
                 desc: "modes",
             },
             CommandHint {
@@ -7697,7 +7669,7 @@ impl BvrApp {
                     desc: "nodes",
                 },
                 CommandHint {
-                    key: "H/L",
+                    key: "^u/L",
                     desc: "jump",
                 },
                 CommandHint {
@@ -8102,7 +8074,7 @@ impl BvrApp {
                     ("b", "Toggle board mode"),
                     ("i", "Toggle insights mode"),
                     ("g", "Toggle graph mode"),
-                    ("h", "Toggle history mode"),
+                    ("H", "Toggle history mode"),
                     ("!", "Toggle attention mode"),
                     ("T", "Toggle tree view"),
                     ("[", "Toggle label dashboard"),
@@ -8153,7 +8125,7 @@ impl BvrApp {
                 title: "Board",
                 bindings: vec![
                     ("1-4", "Jump to lane"),
-                    ("H/L", "First/last lane"),
+                    ("L", "Jump to last lane"),
                     ("0/$", "First/last in lane"),
                     ("e", "Toggle empty lanes"),
                 ],
@@ -16599,22 +16571,38 @@ mod tests {
     }
 
     #[test]
-    fn history_toggle_and_escape_match_legacy_behavior() {
+    fn history_shortcut_and_escape_are_unambiguous() {
         let mut app = new_app(ViewMode::Main, 0);
 
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.mode, ViewMode::History));
         assert_eq!(app.focus, FocusPane::List);
 
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.mode, ViewMode::Main));
         assert_eq!(app.focus, FocusPane::List);
 
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.mode, ViewMode::History));
         app.update(key(KeyCode::Escape));
         assert!(matches!(app.mode, ViewMode::Main));
         assert!(!app.show_quit_confirm);
+    }
+
+    #[test]
+    fn history_shortcut_returns_from_actionable_without_stealing_vim_h() {
+        let mut app = new_app(ViewMode::History, 0);
+
+        app.update(key(KeyCode::Char('a')));
+        assert!(matches!(app.mode, ViewMode::Actionable));
+
+        app.update(key(KeyCode::Char('H')));
+        assert!(matches!(app.mode, ViewMode::History));
+
+        app.update(key(KeyCode::Char('a')));
+        assert!(matches!(app.mode, ViewMode::Actionable));
+        app.update(key(KeyCode::Char('h')));
+        assert!(matches!(app.mode, ViewMode::Actionable));
     }
 
     #[test]
@@ -16730,15 +16718,12 @@ mod tests {
     }
 
     #[test]
-    fn graph_mode_shift_h_l_jump_by_page_window() {
+    fn graph_mode_shift_l_jumps_forward_by_page_window() {
         let mut app = new_app(ViewMode::Graph, 0);
 
         assert_eq!(selected_issue_id(&app), "A");
         app.update(key(KeyCode::Char('L')));
         assert_eq!(selected_issue_id(&app), "C");
-
-        app.update(key(KeyCode::Char('H')));
-        assert_eq!(selected_issue_id(&app), "A");
     }
 
     #[test]
@@ -17518,7 +17503,7 @@ mod tests {
     #[test]
     fn history_confidence_cycles_on_c_key() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
 
         let initial_index = app.history_confidence_index;
         app.update(key(KeyCode::Char('c')));
@@ -17547,7 +17532,7 @@ mod tests {
     #[test]
     fn history_v_toggles_git_mode_and_enter_jumps_to_related_issue() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Bead));
 
         app.update(key(KeyCode::Char('v')));
@@ -17600,7 +17585,7 @@ mod tests {
         app.update(key(KeyCode::Char('q')));
         assert!(matches!(app.mode, ViewMode::Main));
 
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.mode, ViewMode::History));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Bead));
         assert!(!app.history_search_active);
@@ -17618,7 +17603,7 @@ mod tests {
     #[test]
     fn history_git_mode_shift_j_k_perform_secondary_navigation() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         app.update(key(KeyCode::Char('v')));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Git));
         assert_eq!(app.history_related_bead_cursor, 0);
@@ -17637,7 +17622,7 @@ mod tests {
     #[test]
     fn history_mode_search_filters_git_timeline_and_intercepts_hotkeys() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         app.update(key(KeyCode::Char('v')));
         assert!(matches!(app.mode, ViewMode::History));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Git));
@@ -17678,7 +17663,7 @@ mod tests {
     #[test]
     fn history_mode_search_filters_bead_list_and_escape_clears_query() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.mode, ViewMode::History));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Bead));
 
@@ -17710,7 +17695,7 @@ mod tests {
     #[test]
     fn history_mode_search_zero_results_show_explicit_message() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert!(matches!(app.mode, ViewMode::History));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Bead));
 
@@ -17735,7 +17720,7 @@ mod tests {
     #[test]
     fn history_git_search_zero_results_show_explicit_message() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         app.update(key(KeyCode::Char('v')));
         assert!(matches!(app.mode, ViewMode::History));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Git));
@@ -17761,7 +17746,7 @@ mod tests {
     #[test]
     fn history_git_mode_g_switches_to_graph_and_selects_issue_from_event() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         app.update(key(KeyCode::Char('v')));
         assert!(matches!(app.mode, ViewMode::History));
         assert!(matches!(app.history_view_mode, HistoryViewMode::Git));
@@ -18158,7 +18143,7 @@ mod tests {
 
         app.update(key(KeyCode::Char('L')));
         assert_eq!(selected_issue_id(&app), "CLS-1");
-        app.update(key(KeyCode::Char('H')));
+        app.update(key(KeyCode::Char('1')));
         assert_eq!(selected_issue_id(&app), "OPEN-1");
 
         app.update(key(KeyCode::Char('c')));
@@ -18970,7 +18955,7 @@ mod tests {
         app.update(key(KeyCode::Char('L')));
         assert_eq!(selected_issue_id(&app), "CLS-1");
 
-        app.update(key(KeyCode::Char('H')));
+        app.update(key(KeyCode::Char('1')));
         assert_eq!(selected_issue_id(&app), "OPEN-1");
 
         app.update(key(KeyCode::Char('/')));
@@ -21015,7 +21000,7 @@ mod tests {
     fn main_footer_command_hints_wrap_across_multiple_lines() {
         let hints = [
             CommandHint {
-                key: "b/i/g/h",
+                key: "b/i/g/H",
                 desc: "modes",
             },
             CommandHint {
@@ -21054,7 +21039,7 @@ mod tests {
         assert_eq!(
             plain_lines,
             vec![
-                "b/i/g/h modes".to_string(),
+                "b/i/g/H modes".to_string(),
                 "/ search │ s sort".to_string(),
                 "p hints │ C copy".to_string(),
                 "x export │ O edit".to_string(),
@@ -21169,7 +21154,7 @@ mod tests {
     }
 
     #[test]
-    fn history_file_tree_focus_blocks_view_toggle_shortcuts() {
+    fn history_file_tree_focus_blocks_local_toggle_but_not_global_history_shortcut() {
         let mut app = history_app_with_git_cache(HistoryViewMode::Git, 0);
         app.history_show_file_tree = true;
         app.history_file_tree_focus = true;
@@ -21177,9 +21162,8 @@ mod tests {
         app.update(key(KeyCode::Char('v')));
         assert_eq!(app.history_view_mode, HistoryViewMode::Git);
 
-        app.update(key(KeyCode::Char('h')));
-        assert_eq!(app.mode, ViewMode::History);
-        assert!(app.history_file_tree_focus);
+        app.update(key(KeyCode::Char('H')));
+        assert_eq!(app.mode, ViewMode::Main);
     }
 
     #[test]
@@ -23263,7 +23247,7 @@ mod tests {
         let mut app = new_app(ViewMode::Main, 0);
 
         // Enter history
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert_eq!(app.mode, ViewMode::History);
 
         // Toggle to git mode
@@ -23510,7 +23494,7 @@ mod tests {
             ('g', ViewMode::Main), // toggle back
             ('a', ViewMode::Actionable),
             ('a', ViewMode::Main), // toggle back
-            ('h', ViewMode::History),
+            ('H', ViewMode::History),
         ] {
             app.update(key(KeyCode::Char(toggle_key)));
             assert_eq!(
@@ -23605,7 +23589,9 @@ mod tests {
 
     #[test]
     fn snap_history_git_mode() {
-        let app = history_app_with_git_cache(HistoryViewMode::Git, 0);
+        let repo = init_temp_repo_with_remote("git@github.com:owner/repo.git");
+        let mut app = history_app_with_git_cache(HistoryViewMode::Git, 0);
+        app.repo_root = Some(repo.path().to_path_buf());
 
         let text = render_app(&app, 100, 30);
         insta::assert_snapshot!(text);
@@ -26372,13 +26358,15 @@ mod tests {
 
     #[test]
     fn e2e_journey_history_deep_dive() {
+        let repo = init_temp_repo_with_remote("git@github.com:owner/repo.git");
         let mut app = new_app(ViewMode::Main, 0);
+        app.repo_root = Some(repo.path().to_path_buf());
         inject_deterministic_git_cache(&mut app);
         let (w, h) = (120, 35);
         let mut caps: Vec<(String, String)> = Vec::new();
 
         // Enter History from Main
-        app.update(key(KeyCode::Char('h')));
+        app.update(key(KeyCode::Char('H')));
         assert_eq!(app.mode, ViewMode::History);
         let text = journey_capture(&app, w, h, "history_entry", &mut caps);
         assert!(!text.is_empty());

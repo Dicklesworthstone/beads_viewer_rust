@@ -31,4 +31,4 @@ bvr 1 Main b Board i Insights | mode=Board | focus=detail | issues=3/3 | filter=
 │   └────────────                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ H/L lanes │ 0/$ edges
+Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges

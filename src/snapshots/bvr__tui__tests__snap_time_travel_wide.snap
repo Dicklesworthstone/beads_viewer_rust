@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow t TimeTravel | mode=TimeTravel | focus=list | issues=3/3 | filt
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow t TimeTravel | mode=TimeTravel | focus=list | issues=3/3 | filt
 ┌Diff Categories [focus]────────────────────────────┐┌Diff Detail──────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │  No diff loaded. Press t to enter a ref.          ││                                                                                     │

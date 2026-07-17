@@ -65,7 +65,7 @@ Output conventions:
 ## 6. TUI Behavioral Surface
 Key aspects from README + `pkg/ui/*`:
 - Split list/detail main view.
-- Kanban board (`b`), insights (`i`), graph (`g`), history (`h`).
+- Kanban board (`b`), insights (`i`), graph (`g`), history (`H`).
 - Vim-style navigation (`j/k`, `gg`, `G`) and keyboard-centric operation.
 - Adaptive layouts with width thresholds around 100 / 140 / 180 columns.
 

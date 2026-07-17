@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | mode=Labels | focus=list | issues=3/3 | filter=all | sort=def
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Labels | focus=list | issues=3/3 | filter=all | sort=def
 ┌Label Health [focus]───────────────────────────────┐┌Label Detail─────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ (computing label health...)                       ││ (no data)                                                                           │

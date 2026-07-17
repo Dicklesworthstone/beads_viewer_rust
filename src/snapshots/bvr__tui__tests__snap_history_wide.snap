@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all |
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all |
 ┌Beads With History [focus]──────────────┐┌Commits────────────────────────────────────────┐┌Commit Details─────────────────────────────────┐
 │                                        ││                                               ││                                               │
 │ Bead history list (3 beads) | v toggle ││ No commits correlated with A.                 ││ History Summary: beads=3 closed-like=1 select │
@@ -31,4 +31,4 @@ bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow | m
 │                                        ││                                               ││                                               │
 │                                        ││                                               ││                                               │
 └────────────────────────────────────────┘└───────────────────────────────────────────────┘└───────────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f file-tree │ h/Esc back │ ^←/→ resize │ ^0 reset split
+c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f file-tree │ H/Esc back │ ^←/→ resize │ ^0 reset split

@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow T Tree | mode=Tree | focus=list | issues=3/3 | filter=all | sor
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow T Tree | mode=Tree | focus=list | issues=3/3 | filter=all | sor
 ┌Dependency Tree [focus]────────────────────────────┐┌Issue Detail─────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │ (no dependency tree — all issues are independent) ││ (no node selected)                                                                  │

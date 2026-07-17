@@ -34,7 +34,7 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=0/0 | filter=all
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/h modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
 
 --- Step 2: empty_board ---
 bvr 1 Main b Board i Insights | mode=Board | focus=list | issues=0/0 | filter=all |
@@ -66,7 +66,7 @@ bvr 1 Main b Board i Insights | mode=Board | focus=list | issues=0/0 | filter=al
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ H/L lanes │ 0/$ edges
+Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges
 
 --- Step 3: empty_graph ---
 bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=list | issues=0/0 | filter=all |
@@ -98,7 +98,7 @@ bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=list | issues=0/0 | f
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ H/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back
+h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back
 
 --- Step 4: empty_insights ---
 bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=0/0 | filter=all |
@@ -226,4 +226,4 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=0/0 | filter=all
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/h modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize

@@ -5,7 +5,7 @@ expression: artifact
 === E2E Journey: main→board→graph→insights→main | 120x35 ===
 
 --- Step 1: main_list_start ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Main | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Issues [focus]──────────────────────────────┐┌Details─────────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Focus: list owns selection, / s…           ││ ────────────────────────────────────────────────                       │
@@ -39,10 +39,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-b/i/g/h modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize │ ^0 reset split
+b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize │ ^0 reset split
 
 --- Step 2: main_detail_focus ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=detail | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Main | focus=detail | issues=3/3 | filter=all | sort=default |
 ┌Issues──────────────────────────────────────┐┌Details [focus]─────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Focus: detail owns J/K deps, ^j…           ││ ────────────────────────────────────────────────                       │
@@ -76,10 +76,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=detail | iss
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-b/i/g/h modes │ / search │ s default │ p hints │ C copy │ ^j/k scroll │ x export │ O edit │ ^←/→ resize
+b/i/g/H modes │ / search │ s default │ p hints │ C copy │ ^j/k scroll │ x export │ O edit │ ^←/→ resize
 
 --- Step 3: board_entry ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Board | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Board Lanes [focus]─────────────────────────┐┌Board Focus─────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Grouping: status (s cycles) | Empty: Auto  ││ ┌────────────────────────────────────────┐                             │
@@ -113,10 +113,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issu
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ H/L lanes │ 0/$ edges │ ^j/k detail scroll
+Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges │ ^j/k detail scroll
 
 --- Step 4: board_navigate ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Board | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Board Lanes [focus]─────────────────────────┐┌Board Focus─────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Grouping: status (s cycles) | Empty: Auto  ││ ┌────────────────────────────────────────┐                             │
@@ -150,10 +150,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Board | focus=list | issu
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ H/L lanes │ 0/$ edges │ ^j/k detail scroll
+Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges │ ^j/k detail scroll
 
 --- Step 5: graph_entry_from_board ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Graph | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Graph Nodes [focus]─────────────────────────┐┌Graph Focus─────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Nodes  3 by critical-path score | h/l nav  ││ Graph: nodes=3 edges=1 cycles=0 actionable=1                           │
@@ -187,10 +187,10 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Graph | focus=list | issu
 │                                            ││   C            0.2597                                                  │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ H/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back │ ^←/→ resize
+h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back │ ^←/→ resize
 
 --- Step 6: graph_detail_focus ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Graph | focus=detail | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=detail | issues=3/3 | filter=all | sort=default |
 ┌Graph Nodes─────────────────────────────────┐┌Graph Focus [focus]─────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Nodes  3 by critical-path score | h/l nav  ││ Graph: nodes=3 edges=1 cycles=0 actionable=1                           │
@@ -227,7 +227,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Graph | focus=detail | is
 h/Tab list │ Enter open details │ ^j/k scroll │ g/Esc back │ ^←/→ resize │ ^0 reset split
 
 --- Step 7: insights_entry ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Insight Queue [focus]───────────────────────┐┌Insight Detail──────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ [Bottlenecks] s/S cycles panel | e explana ││ Analytics Cockpit                                                      │
@@ -264,7 +264,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Insights | focus=list | i
 Insights [bottlenecks] │ Tab focus │ / search │ s/S panel │ e explanations=on │ x proof=off
 
 --- Step 8: insights_panel_cycle ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Insight Queue [focus]───────────────────────┐┌Insight Detail──────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ [Keystones] s/S cycles panel | e explanati ││ Analytics Cockpit                                                      │
@@ -301,7 +301,7 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Insights | focus=list | i
 Insights [keystones] │ Tab focus │ / search │ s/S panel │ e explanations=on │ x proof=off
 
 --- Step 9: main_return ---
-bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issues=3/3 | filter=all | sort=default |
+bvr 1 Main b Board i Insights g Graph H History | mode=Main | focus=list | issues=3/3 | filter=all | sort=default |
 ┌Issues [focus]──────────────────────────────┐┌Details─────────────────────────────────────────────────────────────────┐
 │                                            ││                                                                        │
 │ Focus: list owns selection, / s…           ││ ────────────────────────────────────────────────                       │
@@ -335,4 +335,4 @@ bvr 1 Main b Board i Insights g Graph h History | mode=Main | focus=list | issue
 │                                            ││   . 2026-01-06 Current status: closed                                  │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-b/i/g/h modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize │ ^0 reset split
+b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize │ ^0 reset split

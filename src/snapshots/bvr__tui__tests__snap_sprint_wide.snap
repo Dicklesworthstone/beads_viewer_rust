@@ -2,7 +2,7 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph h History a Actionable [ Labels ] Flow S Sprint | mode=Sprint | focus=list | issues=3/3 | filter=all |
+bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow S Sprint | mode=Sprint | focus=list | issues=3/3 | filter=all |
 ┌Sprints [focus]────────────────────────────────────┐┌Sprint Detail────────────────────────────────────────────────────────────────────────┐
 │                                                   ││                                                                                     │
 │  No sprints found.                                ││  Select a sprint from the list.                                                     │

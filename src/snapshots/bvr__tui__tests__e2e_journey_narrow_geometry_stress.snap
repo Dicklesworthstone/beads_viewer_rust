@@ -19,7 +19,7 @@ bvr 1 Main b Board i In  | 3/3 | all
 │            ││                        │
 │            ││                        │
 └────────────┘└────────────────────────┘
-b/i/g/h modes │ / search │ s default
+b/i/g/H modes │ / search │ s default
 
 --- Step 2: narrow_board ---
 bvr 1 Main b Board i In  | 3/3 | all
@@ -70,7 +70,7 @@ bvr 1 Main b Board i In g Graph  | 3/3 |
 │                   ╚═════════════════ │
 │                                      │
 └──────────────────────────────────────┘
-h/l nodes │ j/k nodes │ H/L jump
+h/l nodes │ j/k nodes │ ^u/L jump
 
 --- Step 5: narrow_insights ---
 bvr 1 Main b Board i In  | 3/3 | all
@@ -155,4 +155,4 @@ bvr 1 Main b Board i In  | 3/3 | all
 │            ││                        │
 │            ││                        │
 └────────────┘└────────────────────────┘
-b/i/g/h modes │ / search │ s default
+b/i/g/H modes │ / search │ s default
