@@ -1325,6 +1325,75 @@ struct ScanLineContext {
     available_width: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ScanPrefixWidths {
+    marker: usize,
+    triage_rank: usize,
+    action_state: usize,
+    priority: usize,
+    issue_id: usize,
+    issue_type: usize,
+    status: usize,
+    sparkline: usize,
+}
+
+impl ScanPrefixWidths {
+    fn observe(&mut self, issue: &crate::model::Issue, context: ScanLineContext) {
+        let variant = ScanLineVariant::from_width(context.available_width);
+        self.marker = self.marker.max(1);
+        self.triage_rank = self
+            .triage_rank
+            .max(display_width(&format!("#{:02}", context.triage_rank)));
+        self.action_state = self.action_state.max(display_width(issue_action_state(
+            issue,
+            context.open_blockers,
+        )));
+        self.priority = self
+            .priority
+            .max(display_width(&format!("P{}", issue.priority.clamp(0, 4))));
+        self.issue_id = self
+            .issue_id
+            .max(display_width(&truncate_display(&issue.id, 14)));
+
+        if !matches!(variant, ScanLineVariant::Narrow) {
+            self.issue_type = self
+                .issue_type
+                .max(display_width(type_icon(&issue.issue_type)));
+        }
+        if matches!(variant, ScanLineVariant::Wide) {
+            self.status = self
+                .status
+                .max(display_width(tokens::status_badge_label(&issue.status)));
+            if context.graph_score > 0.0 {
+                self.sparkline = self.sparkline.max(display_width(&tokens::render_sparkline(
+                    context.graph_score,
+                    5,
+                )));
+            }
+        }
+    }
+
+    fn for_variant(self, variant: ScanLineVariant) -> Vec<usize> {
+        let mut widths = vec![
+            self.marker,
+            self.triage_rank,
+            self.action_state,
+            self.priority,
+            self.issue_id,
+        ];
+        if !matches!(variant, ScanLineVariant::Narrow) {
+            widths.push(self.issue_type);
+        }
+        if matches!(variant, ScanLineVariant::Wide) {
+            widths.push(self.status);
+            if self.sparkline > 0 {
+                widths.push(self.sparkline);
+            }
+        }
+        widths
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiffTag {
     New,
@@ -1411,14 +1480,42 @@ fn push_scan_segment(line: &mut RichLine, segment: &ScanSegment, row_selected: b
 }
 
 fn scan_segments_width(segments: &[ScanSegment]) -> usize {
+    scan_segments_width_aligned(segments, None)
+}
+
+fn scan_segments_width_aligned(
+    segments: &[ScanSegment],
+    aligned_widths: Option<&[usize]>,
+) -> usize {
     if segments.is_empty() {
         return 0;
     }
     segments
         .iter()
-        .map(|segment| display_width(&segment.label))
+        .enumerate()
+        .map(|(index, segment)| {
+            let label_width = display_width(&segment.label);
+            aligned_widths
+                .and_then(|widths| widths.get(index))
+                .copied()
+                .unwrap_or(label_width)
+                .max(label_width)
+        })
         .sum::<usize>()
         + segments.len().saturating_sub(1)
+}
+
+fn push_scan_padding(line: &mut RichLine, label: &str, target_width: usize, row_selected: bool) {
+    let padding = target_width.saturating_sub(display_width(label));
+    if padding == 0 {
+        return;
+    }
+    let spaces = " ".repeat(padding);
+    if row_selected {
+        line.push_span(RichSpan::styled(spaces, tokens::selected()));
+    } else {
+        line.push_span(RichSpan::raw(spaces));
+    }
 }
 
 fn issue_action_state(issue: &crate::model::Issue, open_blockers: usize) -> &'static str {
@@ -1477,10 +1574,20 @@ fn issue_label_summary(issue: &crate::model::Issue) -> Option<String> {
 
 /// Issue scan line: dense single-line summary for list views.
 /// Format adapts by width to surface rank, state, ownership, freshness, and scope.
+#[cfg(test)]
 fn issue_scan_line(
     issue: &crate::model::Issue,
     is_selected: bool,
     context: ScanLineContext,
+) -> RichLine {
+    issue_scan_line_aligned(issue, is_selected, context, None)
+}
+
+fn issue_scan_line_aligned(
+    issue: &crate::model::Issue,
+    is_selected: bool,
+    context: ScanLineContext,
+    prefix_widths: Option<ScanPrefixWidths>,
 ) -> RichLine {
     let variant = ScanLineVariant::from_width(context.available_width);
     let action_state = issue_action_state(issue, context.open_blockers);
@@ -1527,13 +1634,19 @@ fn issue_scan_line(
             },
         });
         // Sparkline for graph importance (5 chars)
-        if context.graph_score > 0.0 {
+        if context.graph_score > 0.0 || prefix_widths.is_some_and(|widths| widths.sparkline > 0) {
             prefix.push(ScanSegment {
-                label: tokens::render_sparkline(context.graph_score, 5),
+                label: if context.graph_score > 0.0 {
+                    tokens::render_sparkline(context.graph_score, 5)
+                } else {
+                    String::new()
+                },
                 kind: ScanSegmentKind::Sparkline,
             });
         }
     }
+    let aligned_prefix_widths = prefix_widths.map(|widths| widths.for_variant(variant));
+    let aligned_prefix_widths = aligned_prefix_widths.as_deref();
 
     let mut suffix =
         dependency_signal_segments(context.open_blockers, context.blocks_count, variant);
@@ -1628,7 +1741,7 @@ fn issue_scan_line(
     };
     while !suffix.is_empty()
         && context.available_width
-            < scan_segments_width(&prefix)
+            < scan_segments_width_aligned(&prefix, aligned_prefix_widths)
                 + scan_segments_width(&suffix)
                 + min_title_width
                 + usize::from(!prefix.is_empty())
@@ -1637,7 +1750,7 @@ fn issue_scan_line(
         suffix.pop();
     }
 
-    let reserved_width = scan_segments_width(&prefix)
+    let reserved_width = scan_segments_width_aligned(&prefix, aligned_prefix_widths)
         + scan_segments_width(&suffix)
         + usize::from(!prefix.is_empty())
         + usize::from(!suffix.is_empty());
@@ -1658,6 +1771,11 @@ fn issue_scan_line(
             line.push_span(sep.clone());
         }
         push_scan_segment(&mut line, segment, is_selected);
+        if let Some(target_width) =
+            aligned_prefix_widths.and_then(|widths| widths.get(index).copied())
+        {
+            push_scan_padding(&mut line, &segment.label, target_width, is_selected);
+        }
     }
     if !prefix.is_empty() {
         line.push_span(sep.clone());
@@ -8436,49 +8554,63 @@ impl BvrApp {
             .enumerate()
             .map(|(slot, index)| (*index, slot + 1))
             .collect::<BTreeMap<usize, usize>>();
-        for (slot, (index, issue)) in visible
+        let rows = visible
             .into_iter()
             .filter_map(|index| self.analyzer.issues.get(index).map(|issue| (index, issue)))
             .enumerate()
-        {
-            let open_blockers = self.analyzer.graph.open_blockers(&issue.id).len();
-            let blocks_count = self
-                .analyzer
-                .metrics
-                .blocks_count
-                .get(&issue.id)
-                .copied()
-                .unwrap_or_default();
-            let pagerank_rank = metric_rank(&self.analyzer.metrics.pagerank, &issue.id);
-            let graph_score = self
-                .analyzer
-                .metrics
-                .pagerank
-                .get(&issue.id)
-                .copied()
-                .unwrap_or_default();
-            let critical_depth = self
-                .analyzer
-                .metrics
-                .critical_depth
-                .get(&issue.id)
-                .copied()
-                .unwrap_or_default();
-            lines.push(issue_scan_line(
+            .map(|(slot, (index, issue))| {
+                let open_blockers = self.analyzer.graph.open_blockers(&issue.id).len();
+                let blocks_count = self
+                    .analyzer
+                    .metrics
+                    .blocks_count
+                    .get(&issue.id)
+                    .copied()
+                    .unwrap_or_default();
+                let pagerank_rank = metric_rank(&self.analyzer.metrics.pagerank, &issue.id);
+                let graph_score = self
+                    .analyzer
+                    .metrics
+                    .pagerank
+                    .get(&issue.id)
+                    .copied()
+                    .unwrap_or_default();
+                let critical_depth = self
+                    .analyzer
+                    .metrics
+                    .critical_depth
+                    .get(&issue.id)
+                    .copied()
+                    .unwrap_or_default();
+                (
+                    index,
+                    issue,
+                    ScanLineContext {
+                        open_blockers,
+                        blocks_count,
+                        triage_rank: slot + 1,
+                        pagerank_rank,
+                        critical_depth,
+                        graph_score,
+                        search_match_position: search_positions.get(&index).copied(),
+                        total_search_matches: search_matches.len(),
+                        diff_tag: self.issue_diff_tag(&issue.id),
+                        available_width: line_width,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut prefix_widths = ScanPrefixWidths::default();
+        for (_, issue, context) in &rows {
+            prefix_widths.observe(issue, *context);
+        }
+        for (index, issue, context) in rows {
+            lines.push(issue_scan_line_aligned(
                 issue,
                 index == self.selected,
-                ScanLineContext {
-                    open_blockers,
-                    blocks_count,
-                    triage_rank: slot + 1,
-                    pagerank_rank,
-                    critical_depth,
-                    graph_score,
-                    search_match_position: search_positions.get(&index).copied(),
-                    total_search_matches: search_matches.len(),
-                    diff_tag: self.issue_diff_tag(&issue.id),
-                    available_width: line_width,
-                },
+                context,
+                Some(prefix_widths),
             ));
         }
 
@@ -15354,11 +15486,11 @@ mod tests {
         GitCommitRecord, HistoryBeadCompat, HistoryCommitCompat, HistoryGitCache, HistoryLayout,
         HistoryMilestonesCompat, HistorySearchMode, HistoryViewMode, InsightsPanel, ListFilter,
         ListSort, ModalOverlay, MouseButton, MouseEvent, MouseEventKind, Msg, ScanLineContext,
-        SemanticTone, ViewMode, background_warning_message, blocker_indicator, buffer_to_text,
-        build_header_text, cached_detail_content_area, center_display, command_hint_width,
-        compact_history_duration_label, decide_background_tick, display_width, fit_display,
-        history_legacy_lifecycle_lines, issue_scan_line, label_chips,
-        legacy_history_author_initials, metric_strip, panel_header, priority_badge,
+        ScanPrefixWidths, SemanticTone, ViewMode, background_warning_message, blocker_indicator,
+        buffer_to_text, build_header_text, cached_detail_content_area, center_display,
+        command_hint_width, compact_history_duration_label, decide_background_tick, display_width,
+        fit_display, history_legacy_lifecycle_lines, issue_scan_line, issue_scan_line_aligned,
+        label_chips, legacy_history_author_initials, metric_strip, panel_header, priority_badge,
         record_view_size, render_debug_view, saturating_scroll_offset, section_separator,
         should_apply_background_reload, sprint_reference_now, status_chip,
         styled_detail_summary_line, truncate_display, type_badge, wrap_command_hints,
@@ -26591,6 +26723,122 @@ mod tests {
         .to_plain_text();
         assert!(text.contains("⊘2"), "blocker missing: {text}");
         assert!(text.contains("↓1"), "downstream count missing: {text}");
+    }
+
+    fn scan_title_column(line: &RichLine, title: &str) -> usize {
+        let text = line.to_plain_text();
+        let byte_offset = text
+            .find(title)
+            .unwrap_or_else(|| panic!("title {title:?} missing from {text:?}"));
+        display_width(&text[..byte_offset])
+    }
+
+    #[test]
+    fn aligned_issue_scan_lines_share_title_column_with_unicode_ids_and_states() {
+        let ready = Issue {
+            id: "A".into(),
+            title: "Ready title".into(),
+            status: "open".into(),
+            priority: 1,
+            issue_type: "task".into(),
+            ..Default::default()
+        };
+        let blocked = Issue {
+            id: "漢字-42".into(),
+            title: "Blocked title".into(),
+            status: "blocked".into(),
+            priority: 4,
+            issue_type: "bug".into(),
+            ..Default::default()
+        };
+        let ready_context = ScanLineContext {
+            open_blockers: 0,
+            blocks_count: 0,
+            triage_rank: 1,
+            pagerank_rank: 2,
+            critical_depth: 0,
+            graph_score: 0.0,
+            search_match_position: None,
+            total_search_matches: 0,
+            diff_tag: None,
+            available_width: 80,
+        };
+        let blocked_context = ScanLineContext {
+            open_blockers: 2,
+            blocks_count: 1,
+            triage_rank: 12,
+            pagerank_rank: 1,
+            critical_depth: 1,
+            graph_score: 0.0,
+            search_match_position: None,
+            total_search_matches: 0,
+            diff_tag: None,
+            available_width: 80,
+        };
+        let mut widths = ScanPrefixWidths::default();
+        widths.observe(&ready, ready_context);
+        widths.observe(&blocked, blocked_context);
+
+        let ready_line = issue_scan_line_aligned(&ready, false, ready_context, Some(widths));
+        let blocked_line = issue_scan_line_aligned(&blocked, false, blocked_context, Some(widths));
+
+        assert_eq!(
+            scan_title_column(&ready_line, &ready.title),
+            scan_title_column(&blocked_line, &blocked.title)
+        );
+        assert!(display_width(&ready_line.to_plain_text()) <= ready_context.available_width);
+        assert!(display_width(&blocked_line.to_plain_text()) <= blocked_context.available_width);
+    }
+
+    #[test]
+    fn aligned_issue_scan_lines_reserve_optional_wide_sparkline_column() {
+        let plain = Issue {
+            id: "PLAIN".into(),
+            title: "Plain title".into(),
+            status: "open".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            ..Default::default()
+        };
+        let ranked = Issue {
+            id: "RANKED".into(),
+            title: "Ranked title".into(),
+            status: "open".into(),
+            priority: 2,
+            issue_type: "task".into(),
+            ..Default::default()
+        };
+        let plain_context = ScanLineContext {
+            open_blockers: 0,
+            blocks_count: 0,
+            triage_rank: 1,
+            pagerank_rank: 2,
+            critical_depth: 0,
+            graph_score: 0.0,
+            search_match_position: None,
+            total_search_matches: 0,
+            diff_tag: None,
+            available_width: 120,
+        };
+        let ranked_context = ScanLineContext {
+            graph_score: 0.75,
+            triage_rank: 2,
+            pagerank_rank: 1,
+            ..plain_context
+        };
+        let mut widths = ScanPrefixWidths::default();
+        widths.observe(&plain, plain_context);
+        widths.observe(&ranked, ranked_context);
+
+        let plain_line = issue_scan_line_aligned(&plain, false, plain_context, Some(widths));
+        let ranked_line = issue_scan_line_aligned(&ranked, false, ranked_context, Some(widths));
+
+        assert_eq!(
+            scan_title_column(&plain_line, &plain.title),
+            scan_title_column(&ranked_line, &ranked.title)
+        );
+        assert!(display_width(&plain_line.to_plain_text()) <= plain_context.available_width);
+        assert!(display_width(&ranked_line.to_plain_text()) <= ranked_context.available_width);
     }
 
     // ---------- tree fold (zc / zo) tests ----------

@@ -9,9 +9,9 @@ bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | m
 │ scope=all | label=any | repo=any | pos=1/3 | sear ││ Summary  ready to execute                                                           │
 │ Guide: / search-as-you-type | o/c/r/B/I quick fil ││ T A  Root  (C copy id)                                                              │
 │                                                   ││ Status: open | Priority: p0 | Type: task | State: ready                             │
-│ ▸ #01 ready P0 A Root @alice                      ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2                         │
+│ ▸ #01 ready   P0 A Root @alice                    ││ Action: Pull now | Downstream impact: 1 | Critical depth: 2                         │
 │   #02 blocked P0 B Dependent ⊘1                   ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w repo filter)                     │
-│   #03 closed P0 C Closed                          ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                             │
+│   #03 closed  P0 C Closed                         ││ Closed: n/a | Labels: [core] [parity]  (L label filter)                             │
 │                                                   ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a  (t time-travel)               │
 │                                                   ││                                                                                     │
 │                                                   ││ ────────────────────────────────────────────────                                    │

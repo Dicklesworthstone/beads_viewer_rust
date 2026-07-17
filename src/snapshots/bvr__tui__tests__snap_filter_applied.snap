@@ -9,7 +9,7 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=2/3 | filter=ope
 │ scope=open | label=any | repo=any | po ││ Summary  ready to execute                              │
 │ Guide: / search-as-you-type | o/c/r/B/ ││ T A  Root  (C copy id)                                 │
 │                                        ││ Status: open | Priority: p0 | Type: task | State: read │
-│ ▸ #01 ready P0 A Root @alice           ││ Action: Pull now | Downstream impact: 1 | Critical dep │
+│ ▸ #01 ready   P0 A Root @alice         ││ Action: Pull now | Downstream impact: 1 | Critical dep │
 │   #02 blocked P0 B Dependent ⊘1        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w rep │
 │                                        ││ Closed: n/a | Labels: [core] [parity]  (L label filter │
 │                                        ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a   │

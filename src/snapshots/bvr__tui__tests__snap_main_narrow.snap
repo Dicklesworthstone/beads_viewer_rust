@@ -9,9 +9,9 @@ bvr 1 Main b Board i In g Graph H Hist  | 3/3 | all
 │ scope=all | label ││ Summary  ready to execute           │
 │ Guide: / search-a ││ T A  Root  (C copy id)              │
 │                   ││ Status: open | Priority: p0 | Type: │
-│ ▸ #01 ready P0 A  ││ Action: Pull now | Downstream impac │
+│ ▸ #01 ready   P0  ││ Action: Pull now | Downstream impac │
 │   #02 blocked P0  ││ Assignee: alice | Repo: viewer | Es │
-│   #03 closed P0 C ││ Closed: n/a | Labels: [core] [parit │
+│   #03 closed  P0  ││ Closed: n/a | Labels: [core] [parit │
 │                   ││ Created: 2026-01-01 | Updated: 2026 │
 │                   ││                                     │
 │                   ││ ─────────────────────────────────── │
