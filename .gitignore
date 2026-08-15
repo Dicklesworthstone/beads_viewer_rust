@@ -57,6 +57,9 @@ storage.sqlite3-wal.corrupt-*
 .codex-tmp/
 
 # Beads ephemeral artifacts
+.beads/.br_history/
+.beads/*wal-cert
+.beads/*wal-cert-head
 .beads/*.bad_*
 .beads/*.backup_*
 .beads/*.rebuild_*
