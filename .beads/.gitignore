@@ -9,3 +9,9 @@
 # Temporary
 last-touched
 *.tmp
+
+# Local history backups
+.br_history/
+
+# br fsqlite WAL-cert sidecars — per-machine runtime, like -wal/-shm
+*.db-wal-cert*

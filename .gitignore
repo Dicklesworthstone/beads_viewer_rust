@@ -63,3 +63,5 @@ storage.sqlite3-wal.corrupt-*
 .beads/*.reindex_test_*
 .beads/*.vacuum_test_*
 .beads/recovery*/
+.beads/.br_history/
+.beads/*.db-wal-cert*
