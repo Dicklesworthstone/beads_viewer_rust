@@ -1293,6 +1293,14 @@ fn missing_beads_dir_returns_error() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
 
+    // The upward .beads search checks every ancestor, so a tempdir living
+    // inside a beads repo (remote build workers point TMPDIR at a synced
+    // checkout) finds real sources and the "missing" scenario never exists.
+    if root.ancestors().any(|a| a.join(".beads").is_dir()) {
+        eprintln!("skipping: tempdir has a .beads ancestor that wins the upward search");
+        return;
+    }
+
     // No .beads/ directory at all
     let stderr = run_failing(&["--robot-triage"], root);
     assert!(

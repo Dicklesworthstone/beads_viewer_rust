@@ -1120,10 +1120,32 @@ mod tests {
         assert_eq!(beads_dir, root.join(".beads"));
     }
 
+    /// The temp root must not itself live under a repo that has a `.beads`
+    /// ancestor: the upward directory search checks ancestors before the
+    /// worktree fallback, so such an ancestor legitimately wins and the
+    /// scenario under test never runs (seen when TMPDIR points inside a
+    /// synced checkout on remote build workers).
+    fn ancestor_beads_interferes(root: &std::path::Path) -> bool {
+        root.ancestors().any(|a| a.join(".beads").is_dir())
+    }
+
+    /// Compare via canonicalize: on macOS the tempdir is handed out under
+    /// `/var/...` while resolution yields `/private/var/...`.
+    fn assert_same_dir(actual: &std::path::Path, expected: &std::path::Path) {
+        assert_eq!(
+            actual.canonicalize().expect("canonicalize actual"),
+            expected.canonicalize().expect("canonicalize expected")
+        );
+    }
+
     #[test]
     fn get_beads_dir_falls_back_to_main_repo_for_git_worktree() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
+        if ancestor_beads_interferes(root) {
+            eprintln!("skipping: tempdir has a .beads ancestor that wins the upward search");
+            return;
+        }
         let main_repo = root.join("main-repo");
         let worktree = root.join("worktree");
         let gitdir = main_repo.join(".git/worktrees/feature");
@@ -1140,13 +1162,17 @@ mod tests {
 
         let beads_dir =
             get_beads_dir(Some(&worktree.join("nested/path"))).expect("find main repo .beads");
-        assert_eq!(beads_dir, main_repo.join(".beads"));
+        assert_same_dir(&beads_dir, &main_repo.join(".beads"));
     }
 
     #[test]
     fn get_beads_dir_ignores_malformed_intermediate_git_file_during_worktree_fallback() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
+        if ancestor_beads_interferes(root) {
+            eprintln!("skipping: tempdir has a .beads ancestor that wins the upward search");
+            return;
+        }
         let main_repo = root.join("main-repo");
         let worktree = root.join("worktree");
         let gitdir = main_repo.join(".git/worktrees/feature");
@@ -1166,7 +1192,7 @@ mod tests {
 
         let beads_dir = get_beads_dir(Some(&nested))
             .expect("skip malformed nested .git and find main repo .beads");
-        assert_eq!(beads_dir, main_repo.join(".beads"));
+        assert_same_dir(&beads_dir, &main_repo.join(".beads"));
     }
 
     #[test]
