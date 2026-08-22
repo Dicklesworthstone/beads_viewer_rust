@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 fn parse_confidence(s: &str) -> Result<f64, String> {
     let value: f64 = s.parse().map_err(|e| format!("{e}"))?;
@@ -42,6 +42,23 @@ pub enum GraphStyle {
     Grid,
 }
 
+/// Operational subcommands.
+///
+/// `--check-update` stays the non-mutating availability check; `upgrade`
+/// (issue #23) is the mutating counterpart that actually installs the latest
+/// release through the project's supported distribution mechanism
+/// (cargo / crates.io).
+#[derive(Debug, Clone, Subcommand)]
+pub enum BvrCommand {
+    /// Install the latest released bvr version (via `cargo install`).
+    Upgrade {
+        /// Report what would be installed and the exact command, then exit
+        /// without changing anything.
+        #[arg(long, action = ArgAction::SetTrue)]
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "bvr",
@@ -50,6 +67,11 @@ pub enum GraphStyle {
     disable_version_flag = true
 )]
 pub struct Cli {
+    /// Operational verbs (`bvr upgrade`). The robot/query surface stays
+    /// flag-based; subcommands are reserved for actions users type by hand.
+    #[command(subcommand)]
+    pub command: Option<BvrCommand>,
+
     #[arg(short = 'V', long = "version", action = ArgAction::SetTrue)]
     pub version: bool,
 
@@ -567,7 +589,7 @@ impl Cli {
 
     #[must_use]
     pub fn is_operational_command(&self) -> bool {
-        self.check_update
+        self.check_update || self.command.is_some()
     }
 
     #[must_use]

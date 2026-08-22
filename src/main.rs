@@ -21,7 +21,7 @@ use bvr::analysis::graph::AnalysisConfig;
 use bvr::analysis::suggest::{SuggestOptions, SuggestionType};
 use bvr::analysis::triage::{TriageOptions, TriageScoringOptions};
 use bvr::analysis::{Analyzer, Insights, MetricStatus};
-use bvr::cli::{Cli, GraphFormat, GraphPreset, GraphStyle};
+use bvr::cli::{BvrCommand, Cli, GraphFormat, GraphPreset, GraphStyle};
 use bvr::loader;
 use bvr::robot::{
     compute_data_hash, default_field_descriptions, emit_with_stats, envelope, envelope_empty,
@@ -2644,15 +2644,20 @@ fn compare_versions(current: &str, latest: &str) -> Ordering {
     current_parts.cmp(&latest_parts)
 }
 
-fn fetch_latest_release_tag() -> Result<String, String> {
+/// Fetch a small payload over HTTPS via the system curl (kept dependency-free,
+/// matching the original update check). `--fail` turns HTTP errors (404 on a
+/// repo with no GitHub releases) into curl failures instead of JSON error
+/// bodies that fail later with a confusing parse message.
+fn http_get(url: &str) -> Result<Vec<u8>, String> {
     let output = Command::new("curl")
         .args([
             "-sS",
+            "--fail",
             "--max-time",
-            "5",
+            "10",
             "-H",
             "User-Agent: bvr-update-check",
-            "https://api.github.com/repos/Dicklesworthstone/beads_viewer_rust/releases/latest",
+            url,
         ])
         .output()
         .map_err(|error| format!("failed to run curl: {error}"))?;
@@ -2661,16 +2666,184 @@ fn fetch_latest_release_tag() -> Result<String, String> {
         return Err(format!("curl exited with status {}", output.status));
     }
 
-    let payload: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|error| format!("invalid JSON: {error}"))?;
-    let tag_name = payload
+    Ok(output.stdout)
+}
+
+/// Extract the newest published version from a crates.io crate payload.
+fn parse_crates_io_latest_version(payload: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(payload).map_err(|error| format!("invalid JSON: {error}"))?;
+    let krate = value
+        .get("crate")
+        .ok_or_else(|| "missing crate object in crates.io payload".to_string())?;
+    for key in ["max_stable_version", "max_version", "newest_version"] {
+        if let Some(version) = krate
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "null")
+        {
+            return Ok(version.trim_start_matches('v').to_string());
+        }
+    }
+    Err("no usable version field in crates.io payload".to_string())
+}
+
+/// Extract the tag of a GitHub releases/latest payload.
+fn parse_github_latest_release(payload: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(payload).map_err(|error| format!("invalid JSON: {error}"))?;
+    let tag_name = value
         .get("tag_name")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "missing tag_name in GitHub release payload".to_string())?;
-
     Ok(tag_name.trim_start_matches('v').to_string())
+}
+
+/// Extract the highest semver-looking tag from a GitHub tags payload. The
+/// tags API's ordering is not documented, so every parseable tag competes.
+fn parse_github_highest_tag(payload: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(payload).map_err(|error| format!("invalid JSON: {error}"))?;
+    let tags = value
+        .as_array()
+        .ok_or_else(|| "expected a JSON array of tags".to_string())?;
+    let mut best: Option<String> = None;
+    for tag in tags {
+        let Some(name) = tag
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(|name| name.trim().trim_start_matches('v'))
+            .filter(|name| parse_version_components(name).is_some())
+        else {
+            continue;
+        };
+        match &best {
+            Some(current) if compare_versions(name, current) != Ordering::Greater => {}
+            _ => best = Some(name.to_string()),
+        }
+    }
+    best.ok_or_else(|| "no version-shaped tags in GitHub tags payload".to_string())
+}
+
+/// Resolve the newest released bvr version. crates.io is consulted first — it
+/// is the supported install source (`cargo install beads_viewer_rust`) — then
+/// GitHub releases, then git tags. The repo tags releases without always
+/// publishing GitHub Releases, so the old releases/latest-only check 404'd and
+/// permanently reported "network unavailable" (issue #23).
+fn fetch_latest_version() -> Result<String, String> {
+    let mut errors = Vec::new();
+
+    match http_get("https://crates.io/api/v1/crates/beads_viewer_rust")
+        .and_then(|payload| parse_crates_io_latest_version(&payload))
+    {
+        Ok(version) => return Ok(version),
+        Err(error) => errors.push(format!("crates.io: {error}")),
+    }
+
+    match http_get(
+        "https://api.github.com/repos/Dicklesworthstone/beads_viewer_rust/releases/latest",
+    )
+    .and_then(|payload| parse_github_latest_release(&payload))
+    {
+        Ok(version) => return Ok(version),
+        Err(error) => errors.push(format!("github releases: {error}")),
+    }
+
+    match http_get("https://api.github.com/repos/Dicklesworthstone/beads_viewer_rust/tags")
+        .and_then(|payload| parse_github_highest_tag(&payload))
+    {
+        Ok(version) => return Ok(version),
+        Err(error) => errors.push(format!("github tags: {error}")),
+    }
+
+    Err(errors.join("; "))
+}
+
+/// The exact cargo argv `bvr upgrade` runs. `--locked` keeps the published
+/// lockfile authoritative; the crate name is `beads_viewer_rust` (the short
+/// `bvr` name was taken on crates.io), though it installs a `bvr` binary.
+fn upgrade_cargo_args(latest: &str) -> Vec<String> {
+    vec![
+        "install".to_string(),
+        "beads_viewer_rust".to_string(),
+        "--version".to_string(),
+        latest.to_string(),
+        "--locked".to_string(),
+    ]
+}
+
+/// `bvr upgrade` (issue #23): check the latest release and install it through
+/// the supported distribution mechanism. `--check-update` remains the
+/// non-mutating counterpart.
+fn run_upgrade(dry_run: bool) -> EarlyCommandOutcome {
+    let current = env!("CARGO_PKG_VERSION");
+    let latest = match fetch_latest_version() {
+        Ok(latest) => latest,
+        Err(error) => {
+            return EarlyCommandOutcome {
+                message: format!(
+                    "Could not determine the latest bvr version ({error}).\n\
+                     Current version: bvr v{current}.\n\
+                     Check network access and retry, or install manually:\n  cargo install beads_viewer_rust --locked"
+                ),
+                exit_code: ExitCode::from(1),
+                to_stderr: true,
+            };
+        }
+    };
+
+    match compare_versions(current, &latest) {
+        Ordering::Equal | Ordering::Greater => EarlyCommandOutcome {
+            message: format!("Up to date (v{current})"),
+            exit_code: ExitCode::SUCCESS,
+            to_stderr: false,
+        },
+        Ordering::Less => {
+            let args = upgrade_cargo_args(&latest);
+            let rendered = format!("cargo {}", args.join(" "));
+            if dry_run {
+                return EarlyCommandOutcome {
+                    message: format!(
+                        "Newer version available: v{latest} (you have v{current})\nWould run: {rendered}"
+                    ),
+                    exit_code: ExitCode::SUCCESS,
+                    to_stderr: false,
+                };
+            }
+
+            println!("Upgrading bvr v{current} -> v{latest}");
+            println!("Running: {rendered}");
+            // Inherit stdio so cargo's own progress and errors stream through.
+            match Command::new("cargo").args(&args).status() {
+                Ok(status) if status.success() => EarlyCommandOutcome {
+                    message: format!(
+                        "Upgraded bvr to v{latest}. The binary lives in cargo's bin directory \
+                         (usually ~/.cargo/bin); run `bvr --version` to confirm."
+                    ),
+                    exit_code: ExitCode::SUCCESS,
+                    to_stderr: false,
+                },
+                Ok(status) => EarlyCommandOutcome {
+                    message: format!(
+                        "cargo install failed ({status}).\nRetry manually with:\n  {rendered}"
+                    ),
+                    exit_code: ExitCode::from(1),
+                    to_stderr: true,
+                },
+                Err(error) => EarlyCommandOutcome {
+                    message: format!(
+                        "Could not run cargo ({error}).\n\
+                         bvr is distributed via cargo; install the Rust toolchain (https://rustup.rs), then run:\n  {rendered}"
+                    ),
+                    exit_code: ExitCode::from(1),
+                    to_stderr: true,
+                },
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2901,12 +3074,16 @@ fn load_background_mode_from_user_config() -> Option<bool> {
 }
 
 fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
+    if let Some(BvrCommand::Upgrade { dry_run }) = &cli.command {
+        return run_upgrade(*dry_run);
+    }
+
     if cli.check_update {
         let current = env!("CARGO_PKG_VERSION");
-        let message = match fetch_latest_release_tag() {
+        let message = match fetch_latest_version() {
             Ok(latest) => match compare_versions(current, &latest) {
                 Ordering::Less => format!(
-                    "Newer version available: v{latest} (you have v{current})\n  Update: cargo install --git https://github.com/Dicklesworthstone/beads_viewer_rust.git bvr"
+                    "Newer version available: v{latest} (you have v{current})\n  Update: bvr upgrade   (or: cargo install beads_viewer_rust --locked)"
                 ),
                 Ordering::Equal | Ordering::Greater => format!("Up to date (v{current})"),
             },
@@ -2924,7 +3101,7 @@ fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
 
     EarlyCommandOutcome {
         message: "error: unsupported operational flag.\n\
-                  Remediation: use --check-update."
+                  Remediation: use --check-update or `bvr upgrade`."
             .to_string(),
         exit_code: ExitCode::from(2),
         to_stderr: true,
@@ -6776,14 +6953,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BackgroundModeSource, Cli, IssueLoadTarget, actionable_ids_for_recipe_filters,
+        BackgroundModeSource, BvrCommand, Cli, IssueLoadTarget, actionable_ids_for_recipe_filters,
         build_background_mode_config, compare_versions, compute_related_work_result,
         discover_workspace_config_from_starts, feedback_project_dir, file_watch_token,
         filter_by_repo, generate_daily_burndown_points, handle_operational_commands, load_issues,
-        parse_background_mode_bool, parse_scope_git_header_line, project_dir_for_export_hooks,
+        parse_background_mode_bool, parse_crates_io_latest_version, parse_github_highest_tag,
+        parse_github_latest_release, parse_scope_git_header_line, project_dir_for_export_hooks,
         reconcile_watch_export_paths, resolve_background_mode, resolve_cli_path_from_project_dir,
         resolve_cli_reference_file_path, resolve_git_toplevel, resolve_issue_load_target,
         resolve_reference_file_path, resolve_watch_export_paths, resolve_workspace_config_path,
+        upgrade_cargo_args,
     };
 
     struct CurrentDirGuard {
@@ -7435,6 +7614,76 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_subcommand_parses() {
+        let cli = Cli::parse_from(["bvr", "upgrade"]);
+        assert!(matches!(
+            cli.command,
+            Some(BvrCommand::Upgrade { dry_run: false })
+        ));
+        assert!(cli.is_operational_command());
+
+        let cli = Cli::parse_from(["bvr", "upgrade", "--dry-run"]);
+        assert!(matches!(
+            cli.command,
+            Some(BvrCommand::Upgrade { dry_run: true })
+        ));
+
+        // No subcommand leaves the flag surface untouched.
+        let cli = Cli::parse_from(["bvr", "--check-update"]);
+        assert!(cli.command.is_none());
+        assert!(cli.is_operational_command());
+    }
+
+    #[test]
+    fn upgrade_cargo_args_pin_version_and_lockfile() {
+        assert_eq!(
+            upgrade_cargo_args("0.9.3"),
+            vec![
+                "install",
+                "beads_viewer_rust",
+                "--version",
+                "0.9.3",
+                "--locked"
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_crates_io_latest_version_prefers_stable() {
+        let payload = br#"{"crate":{"max_stable_version":"0.2.1","max_version":"0.3.0","newest_version":"0.3.0"}}"#;
+        assert_eq!(parse_crates_io_latest_version(payload).unwrap(), "0.2.1");
+
+        // A null stable version falls through to max_version.
+        let payload = br#"{"crate":{"max_stable_version":null,"max_version":"0.2.1"}}"#;
+        assert_eq!(parse_crates_io_latest_version(payload).unwrap(), "0.2.1");
+
+        assert!(parse_crates_io_latest_version(br#"{"crate":{}}"#).is_err());
+        assert!(parse_crates_io_latest_version(b"not json").is_err());
+    }
+
+    #[test]
+    fn parse_github_highest_tag_picks_semver_max() {
+        // The tags API's ordering is unspecified: the semver max must win and
+        // non-version tags must be ignored, not poison the comparison.
+        let payload =
+            br#"[{"name":"v0.2.1"},{"name":"v0.10.0"},{"name":"nightly"},{"name":"v0.9.9"}]"#;
+        assert_eq!(parse_github_highest_tag(payload).unwrap(), "0.10.0");
+
+        assert!(parse_github_highest_tag(br"[]").is_err());
+        assert!(parse_github_highest_tag(br#"[{"name":"nightly"}]"#).is_err());
+        assert!(parse_github_highest_tag(br#"{"message":"rate limited"}"#).is_err());
+    }
+
+    #[test]
+    fn parse_github_latest_release_extracts_tag() {
+        assert_eq!(
+            parse_github_latest_release(br#"{"tag_name":"v0.2.1"}"#).unwrap(),
+            "0.2.1"
+        );
+        assert!(parse_github_latest_release(br#"{"message":"Not Found"}"#).is_err());
+    }
+
+    #[test]
     fn compare_versions_detects_equal_versions() {
         assert_eq!(compare_versions("0.1.0", "0.1.0"), Ordering::Equal);
         assert_eq!(compare_versions("v0.1.0", "0.1.0"), Ordering::Equal);
@@ -7542,6 +7791,14 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let empty_root = temp.path().join("empty");
         fs::create_dir_all(&empty_root).expect("create empty root");
+        // The upward .beads search checks every ancestor, so a tempdir that
+        // lives inside a beads repo (remote build workers point TMPDIR at a
+        // synced checkout) legitimately finds sources and the "no sources"
+        // scenario under test never exists.
+        if empty_root.ancestors().any(|a| a.join(".beads").is_dir()) {
+            eprintln!("skipping: tempdir has a .beads ancestor that wins the upward search");
+            return;
+        }
         let _guard = CurrentDirGuard::set(&empty_root);
         let empty_arg = empty_root.to_string_lossy().to_string();
         let cli = Cli::parse_from(["bvr", "--repo-path", &empty_arg]);

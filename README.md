@@ -286,6 +286,16 @@ cd beads_viewer_rust
 cargo install --path .
 ```
 
+### Upgrading
+
+```bash
+bvr --check-update   # non-mutating: report whether a newer version exists
+bvr upgrade          # install the latest release via `cargo install beads_viewer_rust --locked`
+bvr upgrade --dry-run  # show what would be installed without changing anything
+```
+
+`bvr upgrade` resolves the latest version from crates.io (falling back to GitHub releases/tags) and reinstalls through cargo, so it works for any cargo-based install above. It requires the Rust toolchain to be present — the same prerequisite as installing in the first place.
+
 ### Toolchain
 
 - Rust edition: `2024`
