@@ -2,14 +2,40 @@
 
 All notable changes to **beads_viewer_rust** (`bvr`) are documented here.
 
-This project has no tagged releases yet; the version in `Cargo.toml` remains
-`0.1.0`. Development has been continuous since 2026-02-18 across 215 commits
-in roughly one month of intensive multi-agent work. The changelog below is
-organized by development phase and grouped by capability area rather than
-raw diff order. Every commit link points to the canonical GitHub repository at
+Releases are published to crates.io (`cargo install beads_viewer_rust`) and
+tagged on GitHub. Earlier history below is organized by development phase and
+grouped by capability area rather than raw diff order. Every commit link
+points to the canonical GitHub repository at
 <https://github.com/Dicklesworthstone/beads_viewer_rust>.
 
 Binary name: **`bvr`**
+
+---
+
+## [v0.3.0] -- 2026-08-22
+
+### Self-update: new `bvr upgrade` command (#23)
+
+- New `bvr upgrade` subcommand: resolves the newest released version
+  (crates.io first, then GitHub releases, then the highest semver tag) and
+  installs it via `cargo install beads_viewer_rust --version <latest> --locked`.
+  `bvr upgrade --dry-run` reports what would be installed without changing
+  anything.
+  ([79b7386](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/79b7386))
+- Fixed `--check-update`, which permanently reported "network unavailable":
+  it only consulted GitHub `releases/latest`, which 404s on this repository,
+  and its hint referenced a nonexistent `bvr` cargo package. It now shares
+  the multi-source version resolution above and names the correct
+  `beads_viewer_rust` package.
+- README documents the upgrade flow.
+
+### Test hardening
+
+- `.beads`-discovery tests are now robust to non-hermetic environments
+  (macOS `/private/var` canonicalization; ancestor `.beads/` directories
+  above the test TMPDIR), with loud environment skips only where the test
+  premise cannot be constructed.
+  ([24727a4](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/24727a4))
 
 ---
 
