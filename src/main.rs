@@ -3538,9 +3538,9 @@ fn load_historical_issues_for_load_target(
 }
 
 fn load_issues_from_git_ref(cli: &Cli, reference: &str) -> bvr::Result<Vec<bvr::model::Issue>> {
-    load_historical_issues_for_load_target(cli, reference).map_err(|_| {
+    load_historical_issues_for_load_target(cli, reference).map_err(|error| {
         bvr::BvrError::InvalidArgument(format!(
-            "could not resolve --diff-since={reference} to a historical beads JSONL snapshot"
+            "could not resolve --diff-since={reference} to a historical beads JSONL snapshot: {error}"
         ))
     })
 }
@@ -3616,22 +3616,56 @@ fn latest_commit_sha(cli: &Cli) -> Option<String> {
     }
 }
 
+/// Parse issues from historical JSONL text (e.g. `git show` output) with the
+/// same tolerance as the live loader path (`loader::parse_issues_from_text`):
+/// invalid records — including unknown custom statuses that `br` accepts but
+/// `KNOWN_STATUSES` does not — are warned about and skipped rather than
+/// aborting the whole load. Before this, a single custom-status record made
+/// every git-ref time travel fail even though the identical bytes loaded fine
+/// through the file-path form (issue #24).
 fn parse_issues_from_jsonl_text(text: &str) -> bvr::Result<Vec<bvr::model::Issue>> {
     let mut issues = Vec::<bvr::model::Issue>::new();
 
-    for raw_line in text.lines() {
-        let line = raw_line.trim();
+    for (index, raw_line) in text.lines().enumerate() {
+        let line_no = index + 1;
+        let line = if index == 0 {
+            raw_line.trim_start_matches('\u{feff}').trim()
+        } else {
+            raw_line.trim()
+        };
         if line.is_empty() {
             continue;
         }
 
-        let mut issue: bvr::model::Issue = serde_json::from_str(line)?;
-        issue.status = issue.normalized_status();
-        issue.validate()?;
-        issues.push(issue);
+        match serde_json::from_str::<bvr::model::Issue>(line) {
+            Ok(mut issue) => {
+                issue.status = issue.normalized_status();
+                if let Err(error) = issue.validate() {
+                    warn_historical_snapshot_skip(format!(
+                        "skipping invalid issue on line {line_no} in historical snapshot: {error}"
+                    ));
+                    continue;
+                }
+                issues.push(issue);
+            }
+            Err(error) => {
+                warn_historical_snapshot_skip(format!(
+                    "skipping malformed JSON on line {line_no} in historical snapshot: {error}"
+                ));
+            }
+        }
     }
 
     Ok(issues)
+}
+
+/// Warning channel for tolerant historical-snapshot parsing, mirroring the
+/// live loader's `warn`: stderr only, and suppressed in robot mode so piped
+/// `--robot-*` output stays clean.
+fn warn_historical_snapshot_skip(message: String) {
+    if !bvr::loader::is_robot_mode() {
+        eprintln!("Warning: {message}");
+    }
 }
 
 fn build_robot_history_output(
@@ -6957,9 +6991,10 @@ mod tests {
         build_background_mode_config, compare_versions, compute_related_work_result,
         discover_workspace_config_from_starts, feedback_project_dir, file_watch_token,
         filter_by_repo, generate_daily_burndown_points, handle_operational_commands, load_issues,
-        parse_background_mode_bool, parse_crates_io_latest_version, parse_github_highest_tag,
-        parse_github_latest_release, parse_scope_git_header_line, project_dir_for_export_hooks,
-        reconcile_watch_export_paths, resolve_background_mode, resolve_cli_path_from_project_dir,
+        load_issues_from_git_ref, parse_background_mode_bool, parse_crates_io_latest_version,
+        parse_github_highest_tag, parse_github_latest_release, parse_issues_from_jsonl_text,
+        parse_scope_git_header_line, project_dir_for_export_hooks, reconcile_watch_export_paths,
+        resolve_background_mode, resolve_cli_path_from_project_dir,
         resolve_cli_reference_file_path, resolve_git_toplevel, resolve_issue_load_target,
         resolve_reference_file_path, resolve_watch_export_paths, resolve_workspace_config_path,
         upgrade_cargo_args,
@@ -7406,6 +7441,61 @@ mod tests {
             issues
                 .iter()
                 .any(|issue| issue.title == "Web issue" && issue.source_repo == "web")
+        );
+    }
+
+    #[test]
+    fn parse_issues_from_jsonl_text_skips_unknown_status_and_malformed_lines() {
+        // Historical parsing must mirror the live loader's tolerance (issue
+        // #24): a custom status that `br` accepts and a malformed line must be
+        // skipped with a warning, not abort the whole snapshot load.
+        let text = concat!(
+            "\u{feff}{\"id\":\"demo-1\",\"title\":\"ordinary\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\"}\n",
+            "{\"id\":\"demo-2\",\"title\":\"glossary\",\"status\":\"reference\",\"priority\":4,\"issue_type\":\"vocabulary\"}\n",
+            "not json at all\n",
+            "\n",
+            "{\"id\":\"demo-3\",\"title\":\"still parsed\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\"}\n",
+        );
+
+        let issues = parse_issues_from_jsonl_text(text).expect("tolerant parse must not fail");
+
+        let ids: Vec<&str> = issues.iter().map(|issue| issue.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["demo-1", "demo-3"],
+            "known-status issues around skipped records must survive"
+        );
+    }
+
+    #[test]
+    fn load_issues_from_git_ref_preserves_underlying_cause() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join(".beads")).expect("create beads dir");
+        fs::write(root.join("README.md"), "readme\n").expect("write readme");
+        run_git(root, &["init"]);
+        run_git(root, &["add", "README.md"]);
+        run_git(root, &["commit", "-m", "no beads committed"]);
+
+        let repo_arg = root.to_string_lossy().to_string();
+        let cli = Cli::parse_from(["bvr", "--repo-path", &repo_arg]);
+
+        let error = load_issues_from_git_ref(&cli, "HEAD")
+            .expect_err("historical load must fail when no beads file exists at the revision");
+        let message = error.to_string();
+        assert!(
+            message.contains("could not resolve --diff-since=HEAD"),
+            "resolution context missing from: {message}"
+        );
+        assert!(
+            message.contains("historical beads JSONL snapshot: "),
+            "underlying cause was discarded: {message}"
+        );
+        // The underlying loader error names the file it could not load, which
+        // is exactly the detail the old map_err(|_| ...) threw away.
+        assert!(
+            message.contains("revision") || message.contains("could not load"),
+            "underlying cause text missing from: {message}"
         );
     }
 
