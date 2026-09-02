@@ -172,9 +172,42 @@ impl Issue {
         self.normalized_status() == "in_progress"
     }
 
+    /// Returns true for any non-terminal status. This is a "not closed"
+    /// predicate, NOT a readiness predicate: blocked/deferred/draft/pinned/
+    /// hooked/review and custom statuses are open-like (they still block
+    /// their dependents and count toward open totals) but are not actionable.
+    /// Use [`Self::is_actionable_status`] for readiness.
     #[must_use]
     pub fn is_open_like(&self) -> bool {
         !self.is_closed_like()
+    }
+
+    /// Returns true when the status alone makes this issue ready work.
+    ///
+    /// This is the single status gate behind `actionable_ids()` and therefore
+    /// behind every triage surface (`recommendations`, `quick_wins`,
+    /// `top_picks`, `--robot-next`, `actionable_count`). It mirrors the
+    /// status rule `br ready` applies: only `open` is ready work, and every
+    /// parked status — `blocked`, `deferred`, `draft`, `pinned`, `hooked`,
+    /// `review`, and any custom status — is excluded (issue #25).
+    ///
+    /// The one deliberate difference from `br ready` is `in_progress`:
+    /// `br ready` hides it because it is already claimed, while bvr keeps it
+    /// actionable because it is live work (health counts and the "Continue
+    /// work" recommendations rely on that). The claimable pick surfaces
+    /// (`top_picks` / `--robot-next` / `quick_wins`) additionally require
+    /// [`Self::is_claimable_status`].
+    #[must_use]
+    pub fn is_actionable_status(&self) -> bool {
+        matches!(self.normalized_status().as_str(), "open" | "in_progress")
+    }
+
+    /// Returns true when the status alone allows an agent to claim this
+    /// issue: exactly `open` (the `br ready` status rule). `in_progress` is
+    /// actionable but already claimed, so it is not claimable.
+    #[must_use]
+    pub fn is_claimable_status(&self) -> bool {
+        self.normalized_status() == "open"
     }
 
     #[must_use]
@@ -423,6 +456,45 @@ mod tests {
         assert!(!open.is_closed());
         assert!(!open.is_tombstone());
         assert!(!open.is_closed_like());
+    }
+
+    #[test]
+    fn actionable_and_claimable_status_mirror_br_ready() {
+        // Issue #25: only open/in_progress are actionable; only open is claimable.
+        for status in ["open", "OPEN", " open "] {
+            let issue = Issue {
+                status: status.to_string(),
+                ..Default::default()
+            };
+            assert!(issue.is_actionable_status(), "{status:?} is actionable");
+            assert!(issue.is_claimable_status(), "{status:?} is claimable");
+        }
+        let in_progress = Issue {
+            status: "in_progress".to_string(),
+            ..Default::default()
+        };
+        assert!(in_progress.is_actionable_status());
+        assert!(!in_progress.is_claimable_status());
+
+        for status in [
+            "blocked",
+            "deferred",
+            "draft",
+            "pinned",
+            "hooked",
+            "review",
+            "custom-parked",
+            "closed",
+            "tombstone",
+            "",
+        ] {
+            let issue = Issue {
+                status: status.to_string(),
+                ..Default::default()
+            };
+            assert!(!issue.is_actionable_status(), "{status:?} is parked");
+            assert!(!issue.is_claimable_status(), "{status:?} is not claimable");
+        }
     }
 
     #[test]

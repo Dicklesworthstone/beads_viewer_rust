@@ -246,7 +246,11 @@ fn detect_blocking_cascades(
     thresholds: &AlertThresholds,
     alerts: &mut Vec<Alert>,
 ) {
-    for issue_id in graph.actionable_ids() {
+    // Cascade alerts are about graph structure ("completing X unblocks N"), so
+    // they consider every dependency-unblocked bead, including one parked in a
+    // non-actionable status (a deferred blocker with fan-out is exactly what
+    // this alert should surface).
+    for issue_id in graph.dependency_unblocked_ids() {
         let unblocks = compute_unblocks(graph, &issue_id);
         let unblocks_count = unblocks.len();
         if unblocks_count < thresholds.blocking_cascade_info {

@@ -508,8 +508,31 @@ impl IssueGraph {
             .collect()
     }
 
+    /// Issues that are ready work: an actionable status
+    /// (`Issue::is_actionable_status`: open/in_progress) AND no open blocking
+    /// dependency, directly or inherited through a blocked parent.
+    ///
+    /// Every triage surface (`recommendations`, `quick_wins`, `top_picks`,
+    /// `--robot-next`, `actionable_count`, plan/drift) derives from this set,
+    /// so the status gate lives here and is enforced once (issue #25). For the
+    /// dependency-only view (which issues have no open blockers, whatever
+    /// their status — what-if simulations and cascade alerts) see
+    /// [`Self::dependency_unblocked_ids`].
     #[must_use]
     pub fn actionable_ids(&self) -> Vec<String> {
+        let mut ids = self.dependency_unblocked_ids();
+        ids.retain(|id| self.issue(id).is_some_and(Issue::is_actionable_status));
+        ids
+    }
+
+    /// Non-closed issues with no open blocking dependency (directly or via a
+    /// blocked parent), regardless of their own status. A `blocked`/`deferred`
+    /// bead whose blockers are all closed IS in this set — it is
+    /// dependency-unblocked even though it is not actionable until its status
+    /// changes. This is the graph-structural view used by what-if
+    /// simulations; use [`Self::actionable_ids`] for "ready to work on".
+    #[must_use]
+    pub fn dependency_unblocked_ids(&self) -> Vec<String> {
         // Phase 1: Compute directly blocked issues (open blocking dependencies).
         let mut directly_blocked = HashSet::<String>::new();
         for issue in &self.issues {
@@ -567,7 +590,13 @@ impl IssueGraph {
             }
         }
 
-        // Phase 4: Collect actionable issues (open, not blocked).
+        // Phase 4: Collect non-closed, dependency-unblocked issues. The status
+        // gate (`Issue::is_actionable_status`) is applied by `actionable_ids`
+        // on top of this set: a bead parked in `deferred`, `draft`, `blocked`,
+        // `pinned`, `hooked`, `review` or a custom status is dependency-
+        // unblocked here but withheld there, exactly as `br ready` withholds it
+        // (issue #25). Such a bead still blocks its dependents in Phase 1
+        // because it is not closed.
         //
         // NOTE: a standalone open parent with open children remains actionable
         // here. parent-child is a rollup edge that never gates the parent's own
@@ -1747,6 +1776,61 @@ mod tests {
         let actionable = graph.actionable_ids();
 
         assert_eq!(actionable, vec!["C".to_string(), "E".to_string()]);
+    }
+
+    #[test]
+    fn actionable_ids_excludes_parked_statuses() {
+        // Issue #25: every status `br ready` excludes must be excluded here,
+        // even with no dependencies at all. The parked bead still blocks its
+        // dependent because it is not closed, so only the open leaf remains.
+        for status in [
+            "deferred",
+            "draft",
+            "blocked",
+            "pinned",
+            "hooked",
+            "review",
+            "custom-parked",
+        ] {
+            let issues = vec![
+                Issue {
+                    id: "PARKED".to_string(),
+                    title: "Parked P0 blocker".to_string(),
+                    status: status.to_string(),
+                    issue_type: "task".to_string(),
+                    priority: 0,
+                    ..Issue::default()
+                },
+                Issue {
+                    id: "DEP".to_string(),
+                    title: "Blocked by PARKED".to_string(),
+                    status: "open".to_string(),
+                    issue_type: "task".to_string(),
+                    priority: 2,
+                    dependencies: vec![Dependency {
+                        issue_id: "DEP".to_string(),
+                        depends_on_id: "PARKED".to_string(),
+                        dep_type: "blocks".to_string(),
+                        ..Dependency::default()
+                    }],
+                    ..Issue::default()
+                },
+                Issue {
+                    id: "READY".to_string(),
+                    title: "Open leaf".to_string(),
+                    status: "open".to_string(),
+                    issue_type: "task".to_string(),
+                    priority: 3,
+                    ..Issue::default()
+                },
+            ];
+            let graph = IssueGraph::build(&issues);
+            assert_eq!(
+                graph.actionable_ids(),
+                vec!["READY".to_string()],
+                "status {status:?} must not be actionable"
+            );
+        }
     }
 
     #[test]

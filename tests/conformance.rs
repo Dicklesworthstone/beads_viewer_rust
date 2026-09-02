@@ -1969,8 +1969,10 @@ fn stress_triage_counts_and_top_recommendation() {
 
     // 9 issues are closed; 80 remain open/blocked
     assert_eq!(qr["total_open"], 80);
-    // 24 actionable (not blocked or in a cycle)
-    assert_eq!(qr["total_actionable"], 24);
+    // 22 actionable: 24 issues have no open blocker and are not in a cycle,
+    // but two of them (ST-030, ST-035) carry status=blocked, which `br ready`
+    // does not surface — the status gate excludes them (issue #25).
+    assert_eq!(qr["total_actionable"], 22);
     // Hub epic ST-011 should be #1 recommendation (unblocks 14)
     let top = &qr["top_picks"][0];
     assert_eq!(top["id"], "ST-011");
@@ -2028,12 +2030,14 @@ fn stress_graph_reports_expected_node_and_edge_counts() {
 fn stress_plan_covers_all_actionable_tracks() {
     let actual = run_bvr_json(&["--robot-plan"], "tests/testdata/stress_complex_89.jsonl");
     let tracks = actual["plan"]["tracks"].as_array().expect("tracks array");
-    // Each actionable issue gets its own track
-    assert_eq!(tracks.len(), 24);
+    // Each actionable issue gets its own track (22: see
+    // stress_triage_counts_and_top_recommendation for why the two
+    // status=blocked, dependency-free issues are not actionable).
+    assert_eq!(tracks.len(), 22);
 
     let summary = &actual["plan"]["summary"];
-    assert_eq!(summary["track_count"], 24);
-    assert_eq!(summary["actionable_count"], 24);
+    assert_eq!(summary["track_count"], 22);
+    assert_eq!(summary["actionable_count"], 22);
 }
 
 #[test]

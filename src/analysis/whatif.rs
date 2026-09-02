@@ -43,7 +43,11 @@ pub fn compute_what_if(
     }
     direct_unblocks.sort();
 
-    // Transitive unblocks: simulate removing the issue and see what becomes actionable.
+    // Transitive unblocks: simulate removing the issue and see which issues
+    // lose their last open blocker. This is the dependency-structural view
+    // (`dependency_unblocked_ids`), not the status-gated `actionable_ids`: a
+    // dependent parked as `blocked`/`deferred` is still "unblocked" by closing
+    // its blocker even though it needs a status change before it is ready.
     // Build a modified issue list with the target marked as closed.
     let modified_issues: Vec<Issue> = issues
         .iter()
@@ -59,10 +63,12 @@ pub fn compute_what_if(
         .collect();
 
     let modified_graph = IssueGraph::build(&modified_issues);
-    let modified_actionable: std::collections::HashSet<String> =
-        modified_graph.actionable_ids().into_iter().collect();
+    let modified_actionable: std::collections::HashSet<String> = modified_graph
+        .dependency_unblocked_ids()
+        .into_iter()
+        .collect();
     let original_actionable: std::collections::HashSet<String> =
-        graph.actionable_ids().into_iter().collect();
+        graph.dependency_unblocked_ids().into_iter().collect();
 
     let mut transitive_unblocks: Vec<String> = modified_actionable
         .difference(&original_actionable)
