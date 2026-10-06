@@ -492,6 +492,7 @@ bvr --robot-triage
 bvr --robot-triage-by-track
 bvr --robot-triage-by-label
 bvr --robot-triage --brief                          # compact, decision-only payload
+bvr --robot-triage --graph-root bd-epic             # scope triage to an epic's work tree
 bvr --robot-next --robot-not-ready-labels needs-design,waiting-external
 bvr --robot-plan
 bvr --robot-priority
@@ -567,6 +568,7 @@ bvr --export /tmp/issues.csv --export-format csv --export-include-graph=false
 bvr --priority-brief /tmp/priority-brief.md
 bvr --agent-brief /tmp/agent-brief
 bvr --export-graph /tmp/deps.json
+bvr --export-graph /tmp/deps.html                        # self-contained interactive force graph
 bvr --export-pages ./bv-pages
 bvr --preview-pages ./bv-pages
 bvr --export-pages ./bv-pages --watch-export

@@ -3,7 +3,7 @@
 #![allow(clippy::too_many_lines)]
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fmt::Write;
 use std::fs;
@@ -128,11 +128,17 @@ fn validate_orphaned_modifier_flags(cli: &Cli) -> Option<String> {
         "--graph-style",
         "--graph-title",
     ];
+    // --graph-root also scopes triage/next to an epic's work tree.
+    let triage_scoped = cli.robot_triage
+        || cli.robot_next
+        || cli.robot_triage_by_track
+        || cli.robot_triage_by_label;
     if !cli.robot_graph
         && cli.export_graph.is_none()
-        && graph_flags
-            .iter()
-            .any(|flag| arg_flag_was_explicit_in_args(&raw_args, flag))
+        && graph_flags.iter().any(|flag| {
+            !(triage_scoped && *flag == "--graph-root")
+                && arg_flag_was_explicit_in_args(&raw_args, flag)
+        })
     {
         return Some(
             "error: graph modifiers require --robot-graph or --export-graph <path>".to_string(),
@@ -811,6 +817,27 @@ fn main() -> ExitCode {
         analyzer = Analyzer::new_with_config(subgraph, &analysis_config);
     }
 
+    // --graph-root scopes triage/next to the root and everything that
+    // (transitively) depends on it — an epic's whole work tree — matching the
+    // legacy RootIssueID triage option. --robot-graph applies its own
+    // depth-limited root scoping, so it is left alone here.
+    if let Some(root) = cli
+        .graph_root
+        .as_deref()
+        .filter(|root| !root.trim().is_empty())
+        && (cli.robot_triage
+            || cli.robot_next
+            || cli.robot_triage_by_track
+            || cli.robot_triage_by_label)
+    {
+        let scoped = descendant_subgraph(&analyzer.issues, root.trim());
+        if scoped.is_empty() {
+            eprintln!("error: --graph-root {root:?} does not match any issue");
+            return ExitCode::from(2);
+        }
+        analyzer = Analyzer::new_with_config(scoped, &analysis_config);
+    }
+
     let issues = &analyzer.issues;
 
     let (label_scope, label_context) = if let Some(ref label) = cli.label {
@@ -1242,6 +1269,39 @@ fn main() -> ExitCode {
                     eprintln!("error: {error}");
                     return ExitCode::from(1);
                 }
+            }
+            GraphExportTarget::Interactive => {
+                let triage = analyzer.triage(TriageOptions {
+                    max_recommendations: 20,
+                    not_ready_labels: resolve_not_ready_labels(&cli),
+                    ..TriageOptions::default()
+                });
+                let html = match render_interactive_graph_html(
+                    &issues,
+                    &analyzer.metrics,
+                    &triage.result,
+                    cli.graph_title.as_deref(),
+                ) {
+                    Ok(html) => html,
+                    Err(error) => {
+                        eprintln!("error: {error}");
+                        return ExitCode::from(1);
+                    }
+                };
+                let written = export_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map_or(Ok(()), fs::create_dir_all)
+                    .and_then(|()| fs::write(export_path, html));
+                if let Err(error) = written {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(1);
+                }
+                println!(
+                    "Interactive graph written to {} ({} nodes)",
+                    export_path.display(),
+                    issues.len()
+                );
             }
         }
 
@@ -5204,6 +5264,8 @@ enum StaticGraphFormat {
 enum GraphExportTarget {
     Text(GraphFormat),
     Static(StaticGraphFormat),
+    /// Self-contained interactive force-graph page (`.html`).
+    Interactive,
 }
 
 #[derive(Debug, Clone)]
@@ -5389,6 +5451,8 @@ fn resolve_graph_export_target(path: &Path, fallback: GraphFormat) -> GraphExpor
         GraphExportTarget::Static(StaticGraphFormat::Svg)
     } else if extension.eq_ignore_ascii_case("png") {
         GraphExportTarget::Static(StaticGraphFormat::Png)
+    } else if extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm") {
+        GraphExportTarget::Interactive
     } else {
         GraphExportTarget::Text(fallback)
     }
@@ -5458,6 +5522,203 @@ fn render_graph_export_snapshot(
             "unsupported graph export format: {other}"
         ))),
     }
+}
+
+const INTERACTIVE_GRAPH_TEMPLATE: &str = include_str!("../viewer_assets/graph_export.html");
+const FORCE_GRAPH_JS: &str = include_str!("../viewer_assets/vendor/force-graph.min.js");
+const MARKED_JS: &str = include_str!("../viewer_assets/vendor/marked.min.js");
+
+/// Escape HTML text content and attribute values.
+fn escape_html(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Rank map (1 = highest) for a metric, ties broken by ID for determinism.
+fn metric_ranks(values: &HashMap<String, f64>) -> HashMap<String, usize> {
+    let mut ordered: Vec<(&String, f64)> = values.iter().map(|(id, v)| (id, *v)).collect();
+    ordered.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, _))| (id.clone(), index + 1))
+        .collect()
+}
+
+/// Render the self-contained interactive dependency graph page
+/// (`--export-graph graph.html`): force-graph and marked are inlined, every
+/// node carries its full bead content plus graph metrics, links on the zero-
+/// slack critical path are flagged, and triage recommendations ride along.
+fn render_interactive_graph_html(
+    issues: &[bvr::model::Issue],
+    metrics: &bvr::analysis::graph::GraphMetrics,
+    triage: &bvr::analysis::triage::TriageResult,
+    title: Option<&str>,
+) -> Result<String, String> {
+    if issues.is_empty() {
+        return Err("no issues to export".to_string());
+    }
+    let ids: HashSet<&str> = issues.iter().map(|issue| issue.id.as_str()).collect();
+    let mut blocks: HashMap<&str, Vec<&str>> = HashMap::new();
+    for issue in issues {
+        for dep in &issue.dependencies {
+            if dep.is_blocking() && ids.contains(dep.depends_on_id.as_str()) {
+                blocks
+                    .entry(dep.depends_on_id.as_str())
+                    .or_default()
+                    .push(issue.id.as_str());
+            }
+        }
+    }
+    let pagerank_rank = metric_ranks(&metrics.pagerank);
+    let betweenness_rank = metric_ranks(&metrics.betweenness);
+    let fmt_time = |time: Option<DateTime<Utc>>, format: &str| {
+        time.map(|t| t.format(format).to_string())
+            .unwrap_or_default()
+    };
+    let float = |map: &HashMap<String, f64>, id: &str| map.get(id).copied().unwrap_or(0.0);
+
+    let mut sorted: Vec<&bvr::model::Issue> = issues.iter().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut nodes = Vec::with_capacity(sorted.len());
+    let mut links = Vec::new();
+    for issue in sorted {
+        let id = issue.id.as_str();
+        let blocked_by: Vec<&str> = issue
+            .dependencies
+            .iter()
+            .filter(|dep| dep.is_blocking() && ids.contains(dep.depends_on_id.as_str()))
+            .map(|dep| dep.depends_on_id.as_str())
+            .collect();
+        let slack = metrics.slack.get(id).copied();
+        nodes.push(serde_json::json!({
+            "id": id,
+            "title": issue.title,
+            "description": issue.description,
+            "design": issue.design,
+            "acceptance_criteria": issue.acceptance_criteria,
+            "notes": issue.notes,
+            "status": issue.status,
+            "priority": issue.priority,
+            "type": issue.issue_type,
+            "labels": issue.labels,
+            "assignee": issue.assignee,
+            "created_at": fmt_time(issue.created_at, "%Y-%m-%d %H:%M"),
+            "updated_at": fmt_time(issue.updated_at, "%Y-%m-%d %H:%M"),
+            "closed_at": fmt_time(issue.closed_at, "%Y-%m-%d %H:%M"),
+            "due_date": fmt_time(issue.due_date, "%Y-%m-%d"),
+            "blocked_by": blocked_by,
+            "blocks": blocks.get(id).cloned().unwrap_or_default(),
+            "pagerank": float(&metrics.pagerank, id),
+            "betweenness": float(&metrics.betweenness, id),
+            "eigenvector": float(&metrics.eigenvector, id),
+            "hub": float(&metrics.hubs, id),
+            "authority": float(&metrics.authorities, id),
+            "critical_path": metrics.critical_depth.get(id).copied().unwrap_or(0),
+            "in_degree": metrics.blocks_count.get(id).copied().unwrap_or(0),
+            "out_degree": metrics.blocked_by_count.get(id).copied().unwrap_or(0),
+            "core_number": metrics.k_core.get(id).copied().unwrap_or(0),
+            "slack": slack.unwrap_or(0.0),
+            "is_articulation": metrics.articulation_points.contains(id),
+            "pagerank_rank": pagerank_rank.get(id).copied().unwrap_or(0),
+            "betweenness_rank": betweenness_rank.get(id).copied().unwrap_or(0),
+        }));
+        for dep in &issue.dependencies {
+            let target = dep.depends_on_id.as_str();
+            if !ids.contains(target) {
+                continue;
+            }
+            let critical = slack == Some(0.0) && metrics.slack.get(target).copied() == Some(0.0);
+            let dep_type = if dep.dep_type.trim().is_empty() {
+                "blocks"
+            } else {
+                dep.dep_type.as_str()
+            };
+            links.push(serde_json::json!({
+                "source": id,
+                "target": target,
+                "type": dep_type,
+                "critical": critical,
+            }));
+        }
+    }
+
+    let node_count = nodes.len();
+    let edge_count = links.len();
+    let data_hash = compute_data_hash(issues);
+    let payload = serde_json::json!({
+        "generated_at": Utc::now().to_rfc3339(),
+        "data_hash": data_hash,
+        "version": format!("v{}", env!("CARGO_PKG_VERSION")),
+        "nodes": nodes,
+        "links": links,
+        "triage": triage,
+    });
+    // `<`, `>`, `&` only occur inside JSON strings, so \u escapes keep the
+    // JSON valid while making `</script>` injection impossible.
+    let data_json = serde_json::to_string(&payload)
+        .map_err(|error| error.to_string())?
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+
+    let project = std::env::current_dir()
+        .ok()
+        .and_then(|dir| {
+            dir.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_default();
+    let title = escape_html(title.unwrap_or("Dependency Graph"));
+    let values: HashMap<&str, String> = HashMap::from([
+        ("TITLE", title),
+        ("NODE_COUNT", node_count.to_string()),
+        ("EDGE_COUNT", edge_count.to_string()),
+        (
+            "TIMESTAMP",
+            Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        ),
+        ("DATA_HASH", escape_html(&data_hash)),
+        ("PROJECT", escape_html(&project)),
+        ("FORCE_GRAPH_JS", FORCE_GRAPH_JS.to_string()),
+        ("MARKED_JS", MARKED_JS.to_string()),
+        ("GRAPH_DATA_JSON", data_json),
+    ]);
+
+    // Single pass over the template so substituted content (minified
+    // libraries, bead text) is never re-scanned for placeholders.
+    let mut out =
+        String::with_capacity(INTERACTIVE_GRAPH_TEMPLATE.len() + FORCE_GRAPH_JS.len() * 2);
+    let mut rest = INTERACTIVE_GRAPH_TEMPLATE;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after
+            .find("}}")
+            .and_then(|end| values.get(&after[..end]).map(|v| (end, v)))
+        {
+            Some((end, value)) => {
+                out.push_str(value);
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 fn write_static_graph_export_snapshot(
@@ -6633,6 +6894,39 @@ fn agent_intent_argv() -> Vec<std::ffi::OsString> {
         .collect()
 }
 
+/// The root issue plus every issue that reaches it through dependency edges
+/// (children and dependents, transitively), in original order. Empty when the
+/// root is unknown.
+fn descendant_subgraph(issues: &[bvr::model::Issue], root: &str) -> Vec<bvr::model::Issue> {
+    if !issues.iter().any(|issue| issue.id == root) {
+        return Vec::new();
+    }
+    let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+    for issue in issues {
+        for dep in &issue.dependencies {
+            dependents
+                .entry(dep.depends_on_id.as_str())
+                .or_default()
+                .push(issue.id.as_str());
+        }
+    }
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut queue = VecDeque::from([root]);
+    while let Some(current) = queue.pop_front() {
+        if !visited.insert(current) {
+            continue;
+        }
+        if let Some(next) = dependents.get(current) {
+            queue.extend(next.iter().copied().filter(|id| !visited.contains(id)));
+        }
+    }
+    issues
+        .iter()
+        .filter(|issue| visited.contains(issue.id.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Resolve the opt-in not-ready label class: `--robot-not-ready-labels`
 /// (comma-separated) wins, else `BV_ROBOT_NOT_READY_LABELS`. Empty entries are
 /// dropped; an empty result disables the gate.
@@ -7349,6 +7643,69 @@ mod tests {
         let mermaid = super::render_export_report(&issues, "mermaid", true).expect("mermaid");
         assert!(mermaid.starts_with("graph TD"));
         assert!(mermaid.contains("A-2 ==> A-1"));
+    }
+
+    #[test]
+    fn interactive_graph_html_is_self_contained_and_injection_safe() {
+        let mut issues = export_fixture();
+        issues[0].title = "</script><script>alert(1)</script>".to_string();
+        let analyzer = bvr::analysis::Analyzer::new(issues.clone());
+        let triage = analyzer.triage(super::TriageOptions::default());
+        let html = super::render_interactive_graph_html(
+            &issues,
+            &analyzer.metrics,
+            &triage.result,
+            Some("Deps <&> \"quoted\""),
+        )
+        .expect("render");
+
+        assert!(!html.contains("{{GRAPH_DATA_JSON}}") && !html.contains("{{TITLE}}"));
+        assert!(html.contains("<title>Deps &lt;&amp;&gt; &quot;quoted&quot; | bv Graph</title>"));
+        assert!(
+            !html.contains("</script><script>alert(1)"),
+            "bead text must not close the script"
+        );
+        assert!(html.contains("\\u003c/script\\u003e"));
+        assert!(html.contains("forceGraph") || html.contains("ForceGraph"));
+        assert!(html.contains("\"source\":\"A-2\""));
+        assert!(
+            super::render_interactive_graph_html(&[], &analyzer.metrics, &triage.result, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn descendant_subgraph_follows_dependents_transitively() {
+        let mut issues = export_fixture();
+        issues.push(bvr::model::Issue {
+            id: "A-3".to_string(),
+            title: "Grandchild".to_string(),
+            status: "open".to_string(),
+            dependencies: vec![bvr::model::Dependency {
+                issue_id: "A-3".to_string(),
+                depends_on_id: "A-2".to_string(),
+                dep_type: "parent-child".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        issues.push(bvr::model::Issue {
+            id: "Z-9".to_string(),
+            title: "Unrelated".to_string(),
+            ..Default::default()
+        });
+        let ids = |scoped: Vec<bvr::model::Issue>| {
+            scoped.into_iter().map(|issue| issue.id).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(super::descendant_subgraph(&issues, "A-1")),
+            ["A-1", "A-2", "A-3"]
+        );
+        assert_eq!(
+            ids(super::descendant_subgraph(&issues, "A-2")),
+            ["A-2", "A-3"]
+        );
+        assert!(super::descendant_subgraph(&issues, "missing").is_empty());
     }
 
     #[test]

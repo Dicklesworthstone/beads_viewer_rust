@@ -285,13 +285,14 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--graph-format` | `--graph-format` | complete |
 | `--graph-root` | `--graph-root` | complete |
 | `--graph-depth` | `--graph-depth` | complete |
+| `--graph-root` (triage) | `--graph-root` with `--robot-triage`/`--robot-next` | complete | Scopes triage to the root and its transitive dependents (legacy `RootIssueID`). |
 
 ### Export/Graph Snapshot Flags — 6 complete
 | Legacy Flag | bvr Flag | Status | Notes |
 |---|---|---|---|
 | `--export-md` | `--export-md` | complete | Markdown report export. |
 | `--no-hooks` | `--no-hooks` | complete | Skip export hook execution. |
-| `--export-graph` | `--export-graph` | complete | Deterministic graph snapshot output for `.json/.dot/.mmd/.svg/.png` with extension-based format inference. |
+| `--export-graph` | `--export-graph` | complete | Deterministic graph snapshot output for `.json/.dot/.mmd/.svg/.png`, plus `.html`: the legacy self-contained interactive force-graph page (inlined force-graph + marked, full bead content, metrics, ranks, critical links, triage panel), with extension-based format inference. |
 | `--graph-title` | `--graph-title` | complete | Optional title metadata for exported graph snapshots (text + static). |
 | `--graph-preset` | `--graph-preset` | complete | Layout density preset (`compact`/`roomy`) for text and static snapshots. |
 | `--graph-style` | `--graph-style` | complete | Static snapshot layout style (`force`/`grid`). |
