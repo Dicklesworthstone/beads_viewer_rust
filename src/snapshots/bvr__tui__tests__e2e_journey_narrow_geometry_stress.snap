@@ -74,37 +74,37 @@ h/l nodes │ j/k nodes │ ^u/L jump
 
 --- Step 5: narrow_insights ---
 bvr 1 Main b Board i In  | 3/3 | all
-┌Insight Queu┐┌Insight Detail──────────┐
-│            ││                        │
-│ [Bottlenec ││ Analytics Cockpit      │
-│            ││ System Radar | bottlen │
-│ Signal Til ││                        │
-│ [Flow ] op ││ Focus: A (Root)        │
-│ [Risk ] bo ││ Status: open | Priorit │
-│            ││                        │
-│ Outlier Ra ││ Metric Strip           │
-│ [Lead ] bo ││ [Rank ] pagerank=0.480 │
-│ [Rank ] in ││ [HITS ] hub=0.0000 aut │
-│            ││                        │
-└────────────┘└────────────────────────┘
-Insights [bottlenecks] │ Tab focus
+╭───────────╮╭───────────╮╭───────────╮
+│ 🚧 Bottl… ││ 🏛 Keysto… ││ 🌐 Influ… │
+│ Betweenne ││ Impact De ││ Eigenvect │
+╰───────────╯╰───────────╯╰───────────╯
+╭───────────╮╭───────────╮╭───────────╮
+│ 🛰 Hubs (… ││ 📚 Autho… ││ 🧠 Cores… │
+│ HITS Hub  ││ HITS Auth ││ k-core Co │
+╰───────────╯╰───────────╯╰───────────╯
+╭───────────╮╭───────────╮╭───────────╮
+│ 🪢 Cut P… ││ ⏳ Slack… ││ 🔄 Cycle… │
+│ Articulat ││ Longest-p ││ Circular  │
+╰───────────╯╰───────────╯╰───────────╯
+
+ 📋 ALL  Bottlenecks • L:labels • h:deta
 
 --- Step 6: narrow_insights_cycle ---
 bvr 1 Main b Board i In  | 3/3 | all
-┌Insight Queu┐┌Insight Detail──────────┐
-│            ││                        │
-│ [Keystones ││ Analytics Cockpit      │
-│            ││ System Radar | bottlen │
-│ Signal Til ││                        │
-│ [Flow ] op ││ Focus: A (Root)        │
-│ [Risk ] bo ││ Status: open | Priorit │
-│            ││                        │
-│ Outlier Ra ││ Metric Strip           │
-│ [Lead ] bo ││ [Rank ] pagerank=0.480 │
-│ [Rank ] in ││ [HITS ] hub=0.0000 aut │
-│            ││                        │
-└────────────┘└────────────────────────┘
-Insights [keystones] │ Tab focus
+╭───────────╮╭───────────╮╭───────────╮
+│ 🚧 Bottl… ││ 🏛 Keysto… ││ 🌐 Influ… │
+│ Betweenne ││ Impact De ││ Eigenvect │
+╰───────────╯╰───────────╯╰───────────╯
+╭───────────╮╭───────────╮╭───────────╮
+│ 🛰 Hubs (… ││ 📚 Autho… ││ 🧠 Cores… │
+│ HITS Hub  ││ HITS Auth ││ k-core Co │
+╰───────────╯╰───────────╯╰───────────╯
+╭───────────╮╭───────────╮╭───────────╮
+│ 🪢 Cut P… ││ ⏳ Slack… ││ 🔄 Cycle… │
+│ Articulat ││ Longest-p ││ Circular  │
+╰───────────╯╰───────────╯╰───────────╯
+
+ 📋 ALL  Keystones • L:labels • h:detail
 
 --- Step 7: narrow_actionable ---
 bvr 1 Main b Board i In a Act  | 3/3 | a

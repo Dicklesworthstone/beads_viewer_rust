@@ -3236,6 +3236,14 @@ impl Model for BvrApp {
                 ])
                 .split(body);
 
+            if matches!(self.mode, ViewMode::Insights) && self.insights_heatmap.is_none() {
+                self.render_go_insights(frame, body);
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
             if matches!(self.mode, ViewMode::Board) {
                 self.render_go_board(frame, body);
                 Paragraph::new(RichText::from_lines([
@@ -5579,11 +5587,16 @@ impl BvrApp {
             {
                 self.move_selection_relative(10);
             }
+            // Go bv: h/l step between insight panels (Tab still moves focus).
             KeyCode::Char('h') if matches!(self.mode, ViewMode::Insights) => {
+                self.insights_panel = self.insights_panel.prev();
                 self.focus = FocusPane::List;
+                self.reselect_insights_panel_context();
             }
             KeyCode::Char('l') if matches!(self.mode, ViewMode::Insights) => {
-                self.focus = FocusPane::Detail;
+                self.insights_panel = self.insights_panel.next();
+                self.focus = FocusPane::List;
+                self.reselect_insights_panel_context();
             }
             KeyCode::Char('c')
                 if matches!(self.mode, ViewMode::History) && !self.history_file_tree_focus =>
@@ -7665,23 +7678,13 @@ impl BvrApp {
             .position(|issue| issue.id == issue_id)
     }
 
-    fn insights_visible_issue_indices_for_list_nav(&self) -> Vec<usize> {
-        if let Some(state) = self.insights_heatmap.as_ref() {
-            let data = self.insights_heatmap_data();
-            let row = state
-                .row
-                .min(INSIGHTS_HEATMAP_DEPTH_LABELS.len().saturating_sub(1));
-            let col = state
-                .col
-                .min(INSIGHTS_HEATMAP_SCORE_LABELS.len().saturating_sub(1));
-            return data.issue_ids[row][col]
-                .iter()
-                .filter_map(|issue_id| self.issue_index_for_id(issue_id))
-                .collect();
-        }
-
-        let insights = self.analyzer.insights();
-        let ids = match self.insights_panel {
+    /// Issue IDs ranked by one insights panel's metric.
+    fn insights_panel_ids(
+        &self,
+        panel: InsightsPanel,
+        insights: &crate::analysis::Insights,
+    ) -> Vec<String> {
+        match panel {
             InsightsPanel::Bottlenecks => insights
                 .bottlenecks
                 .iter()
@@ -7745,7 +7748,26 @@ impl BvrApp {
                 .map(|item| item.id)
                 .collect::<Vec<_>>(),
             InsightsPanel::Cycles => Vec::new(),
-        };
+        }
+    }
+
+    fn insights_visible_issue_indices_for_list_nav(&self) -> Vec<usize> {
+        if let Some(state) = self.insights_heatmap.as_ref() {
+            let data = self.insights_heatmap_data();
+            let row = state
+                .row
+                .min(INSIGHTS_HEATMAP_DEPTH_LABELS.len().saturating_sub(1));
+            let col = state
+                .col
+                .min(INSIGHTS_HEATMAP_SCORE_LABELS.len().saturating_sub(1));
+            return data.issue_ids[row][col]
+                .iter()
+                .filter_map(|issue_id| self.issue_index_for_id(issue_id))
+                .collect();
+        }
+
+        let insights = self.analyzer.insights();
+        let ids = self.insights_panel_ids(self.insights_panel, &insights);
 
         let indices = ids
             .iter()
@@ -8692,6 +8714,449 @@ impl BvrApp {
         }
     }
 
+    /// Go bv insight panel copy: (emoji, title, metric name, description).
+    fn go_insight_panel_meta(
+        panel: InsightsPanel,
+    ) -> (&'static str, &'static str, &'static str, &'static str) {
+        match panel {
+            InsightsPanel::Bottlenecks => (
+                "🚧",
+                "Bottlenecks",
+                "Betweenness Centrality",
+                "Measures how often a bead lies on shortest paths between other beads in the dependency graph.",
+            ),
+            InsightsPanel::Keystones => (
+                "🏛",
+                "Keystones",
+                "Impact Depth",
+                "Measures how deep in the dependency chain a bead sits (downstream chain length).",
+            ),
+            InsightsPanel::CriticalPath => (
+                "⚡",
+                "Critical Path",
+                "Longest dependency chain",
+                "The chain that sets the project's minimum duration; any slip here delays everything after it.",
+            ),
+            InsightsPanel::Influencers => (
+                "🌐",
+                "Influencers",
+                "Eigenvector Centrality",
+                "Scores beads by their connections to other well-connected beads.",
+            ),
+            InsightsPanel::Betweenness => (
+                "🔀",
+                "Betweenness",
+                "Shortest-path brokerage",
+                "Beads that broker the most shortest paths between other beads.",
+            ),
+            InsightsPanel::Hubs => (
+                "🛰",
+                "Hubs",
+                "HITS Hub Score",
+                "Beads that depend on many important authorities (aggregators).",
+            ),
+            InsightsPanel::Authorities => (
+                "📚",
+                "Authorities",
+                "HITS Authority Score",
+                "Beads that are depended upon by many important hubs (providers).",
+            ),
+            InsightsPanel::Cores => (
+                "🧠",
+                "Cores",
+                "k-core Cohesion",
+                "Nodes with highest k-core numbers (embedded in dense subgraphs).",
+            ),
+            InsightsPanel::CutPoints => (
+                "🪢",
+                "Cut Points",
+                "Articulation Vertices",
+                "Nodes whose removal disconnects the undirected graph.",
+            ),
+            InsightsPanel::Slack => (
+                "⏳",
+                "Slack",
+                "Longest-path slack",
+                "Distance from critical chain (0 = critical path; higher = parallel-friendly).",
+            ),
+            InsightsPanel::Cycles => (
+                "🔄",
+                "Cycles",
+                "Circular Dependencies",
+                "Groups of beads forming dependency loops (A→B→C→A).",
+            ),
+            InsightsPanel::Priority => (
+                "🎯",
+                "Priority",
+                "Agent-First Triage",
+                "Top claimable work by composite triage score.",
+            ),
+        }
+    }
+
+    /// The value badge an insight panel shows for one issue.
+    fn go_insight_value(&self, panel: InsightsPanel, id: &str) -> String {
+        let m = &self.analyzer.metrics;
+        let f = |map: &HashMap<String, f64>| map.get(id).copied().unwrap_or(0.0);
+        match panel {
+            InsightsPanel::Betweenness | InsightsPanel::Bottlenecks => {
+                let v = f(&m.betweenness);
+                if v >= 1.0 {
+                    format!("{v:.1}")
+                } else {
+                    format!("{v:.3}")
+                }
+            }
+            InsightsPanel::Keystones | InsightsPanel::CriticalPath => {
+                format!(
+                    "{:.1}",
+                    m.critical_depth.get(id).copied().unwrap_or(0) as f64
+                )
+            }
+            InsightsPanel::Influencers => format!("{:.3}", f(&m.eigenvector)),
+            InsightsPanel::Hubs => format!("{:.3}", f(&m.hubs)),
+            InsightsPanel::Authorities => format!("{:.3}", f(&m.authorities)),
+            InsightsPanel::Cores => format!("{:.1}", m.k_core.get(id).copied().unwrap_or(0)),
+            InsightsPanel::CutPoints => "cut".to_string(),
+            InsightsPanel::Slack => format!("{:.1}", f(&m.slack)),
+            InsightsPanel::Cycles | InsightsPanel::Priority => String::new(),
+        }
+    }
+
+    /// Render one bordered insight panel into `area`.
+    fn render_go_insight_panel(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        panel: InsightsPanel,
+        insights: &crate::analysis::Insights,
+    ) {
+        let focused = self.insights_panel == panel;
+        let (emoji, title, metric, description) = Self::go_insight_panel_meta(panel);
+        let ids = self.insights_panel_ids(panel, insights);
+        let count = if matches!(panel, InsightsPanel::Cycles) {
+            insights.cycles.len()
+        } else {
+            ids.len()
+        };
+        Block::bordered()
+            .border_type(ftui::widgets::borders::BorderType::Rounded)
+            .border_style(Style::new().fg(if focused {
+                tokens::FG_ACCENT
+            } else {
+                tokens::FG_MUTED
+            }))
+            .render(area, frame);
+        let inner = Rect::new(
+            area.x + 2,
+            area.y + 1,
+            area.width.saturating_sub(4),
+            area.height.saturating_sub(2),
+        );
+        if inner.width < 8 || inner.height < 2 {
+            return;
+        }
+        let width = usize::from(inner.width);
+        let mut lines = vec![
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&format!("{emoji} {title} ({count})"), width, "…"),
+                tokens::primary_bold(),
+            )]),
+            RichLine::from_spans([RichSpan::styled(metric.to_string(), tokens::row_id())]),
+        ];
+        let desc_lines = RichLine::raw(description).wrap(width, ftui::text::WrapMode::Word);
+        let desc_budget = usize::from(inner.height).saturating_sub(5).clamp(1, 3);
+        lines.extend(desc_lines.into_iter().take(desc_budget));
+
+        if matches!(panel, InsightsPanel::Cycles) {
+            if insights.cycles.is_empty() {
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    "✓ No cycles detected",
+                    Style::new().fg(tokens::FG_SUCCESS).bold(),
+                )]));
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    "Graph is acyclic (DAG)",
+                    tokens::row_id(),
+                )]));
+            } else {
+                for cycle in insights
+                    .cycles
+                    .iter()
+                    .take(usize::from(inner.height).saturating_sub(lines.len()))
+                {
+                    lines.push(RichLine::from_spans([RichSpan::styled(
+                        truncate_with_ellipsis(&format!("⟳ {}", cycle.join(" → ")), width, "…"),
+                        Style::new().fg(tokens::status_fg("blocked")),
+                    )]));
+                }
+            }
+            Paragraph::new(RichText::from_lines(lines)).render(inner, frame);
+            return;
+        }
+
+        let rows = usize::from(inner.height)
+            .saturating_sub(lines.len() + 1)
+            .max(1);
+        let selected_slot = ids
+            .iter()
+            .position(|id| self.selected_issue().is_some_and(|issue| &issue.id == id));
+        let cursor = if focused {
+            selected_slot.unwrap_or(0)
+        } else {
+            0
+        };
+        let start = cursor.saturating_sub(rows - 1);
+        for (slot, id) in ids.iter().enumerate().skip(start).take(rows) {
+            let Some(issue) = self.analyzer.graph.issue(id) else {
+                continue;
+            };
+            let selected = focused && Some(slot) == selected_slot;
+            // Bottlenecks rank by the composite bottleneck score; show it.
+            let value = if matches!(panel, InsightsPanel::Bottlenecks) {
+                insights
+                    .bottlenecks
+                    .iter()
+                    .find(|item| &item.id == id)
+                    .map_or_else(String::new, |item| format!("{:.3}", item.score))
+            } else {
+                self.go_insight_value(panel, id)
+            };
+            let status = issue.normalized_status();
+            let mut spans = vec![
+                RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+                RichSpan::styled(
+                    format!(" {value:>6} "),
+                    Style::new()
+                        .fg(tokens::FG_INFO)
+                        .bg(tokens::BG_HIGHLIGHT)
+                        .bold(),
+                ),
+                RichSpan::raw(" "),
+                RichSpan::styled(
+                    go_type_icon(&issue.issue_type),
+                    Style::new().fg(tokens::type_fg(&issue.issue_type)),
+                ),
+                RichSpan::raw(" "),
+                RichSpan::styled("● ", Style::new().fg(tokens::status_fg(&status))),
+            ];
+            let used: usize = spans
+                .iter()
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            spans.push(RichSpan::styled(
+                truncate_with_ellipsis(&issue.title, width.saturating_sub(used + 1), "…"),
+                tokens::row_title(selected),
+            ));
+            lines.push(RichLine::from_spans(spans));
+        }
+        if !ids.is_empty() {
+            let position = if focused { cursor + 1 } else { 1 };
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                format!("{:^width$}", format!("↕ {position}/{}", ids.len())),
+                tokens::muted_text(),
+            )]));
+        }
+        Paragraph::new(RichText::from_lines(lines)).render(inner, frame);
+    }
+
+    /// The Go bv priority strip: up to three triage cards with score,
+    /// status, priority, title, PageRank/betweenness bars, and unblocks.
+    fn render_go_priority_strip(&self, frame: &mut Frame, area: Rect) {
+        let focused = matches!(self.insights_panel, InsightsPanel::Priority);
+        Block::bordered()
+            .border_type(ftui::widgets::borders::BorderType::Rounded)
+            .border_style(Style::new().fg(if focused {
+                tokens::FG_ACCENT
+            } else {
+                tokens::FG_MUTED
+            }))
+            .render(area, frame);
+        let recs = self.analyzer.priority(0.0, 3, None, None);
+        Paragraph::new(RichText::from_lines([RichLine::from_spans([
+            RichSpan::styled(
+                format!("🎯 Priority ({})", recs.len().min(3)),
+                tokens::primary_bold(),
+            ),
+            RichSpan::styled("   Agent-First Triage", tokens::row_id()),
+        ])]))
+        .render(
+            Rect::new(area.x + 2, area.y + 1, area.width.saturating_sub(4), 1),
+            frame,
+        );
+        if area.height < 6 || recs.is_empty() {
+            return;
+        }
+        let cards = u16::try_from(recs.len().min(3)).unwrap_or(1);
+        let card_width = area.width.saturating_sub(4) / 3;
+        let max_pr = self
+            .analyzer
+            .metrics
+            .pagerank
+            .values()
+            .copied()
+            .fold(0.0_f64, f64::max)
+            .max(f64::EPSILON);
+        let max_bw = self
+            .analyzer
+            .metrics
+            .betweenness
+            .values()
+            .copied()
+            .fold(0.0_f64, f64::max)
+            .max(f64::EPSILON);
+        for (slot, rec) in recs.iter().take(3).enumerate() {
+            let x = area.x + 2 + card_width * u16::try_from(slot).unwrap_or(0);
+            let card = Rect::new(
+                x,
+                area.y + 2,
+                card_width.saturating_sub(1),
+                area.height.saturating_sub(3),
+            );
+            let selected = focused
+                && self
+                    .selected_issue()
+                    .is_some_and(|issue| issue.id == rec.id);
+            Block::bordered()
+                .border_type(ftui::widgets::borders::BorderType::Rounded)
+                .border_style(Style::new().fg(if selected {
+                    tokens::FG_ACCENT
+                } else {
+                    tokens::FG_MUTED
+                }))
+                .render(card, frame);
+            let inner = Rect::new(
+                card.x + 2,
+                card.y + 1,
+                card.width.saturating_sub(4),
+                card.height.saturating_sub(2),
+            );
+            let width = usize::from(inner.width);
+            let bar = |value: f64, max: f64| {
+                let cells = ((value / max) * 16.0).round().clamp(0.0, 16.0) as usize;
+                format!("{}{}", "█".repeat(cells), "░".repeat(16 - cells))
+            };
+            let pr = self
+                .analyzer
+                .metrics
+                .pagerank
+                .get(&rec.id)
+                .copied()
+                .unwrap_or(0.0);
+            let bw = self
+                .analyzer
+                .metrics
+                .betweenness
+                .get(&rec.id)
+                .copied()
+                .unwrap_or(0.0);
+            let status = rec.status.to_ascii_lowercase();
+            let lines = vec![
+                RichLine::from_spans([RichSpan::styled(
+                    format!(" {:.2} ", rec.score),
+                    Style::new()
+                        .fg(tokens::FG_INFO)
+                        .bg(tokens::BG_HIGHLIGHT)
+                        .bold(),
+                )]),
+                RichLine::from_spans([
+                    RichSpan::styled(
+                        go_type_icon(&rec.issue_type),
+                        Style::new().fg(tokens::type_fg(&rec.issue_type)),
+                    ),
+                    RichSpan::raw(" "),
+                    RichSpan::styled(
+                        status.to_ascii_uppercase(),
+                        Style::new().fg(tokens::status_fg(&status)).bold(),
+                    ),
+                    RichSpan::styled(
+                        format!(" ⚡P{}", rec.priority.clamp(0, 4)),
+                        tokens::priority_style(u8::try_from(rec.priority.clamp(0, 4)).unwrap_or(4)),
+                    ),
+                ]),
+                RichLine::from_spans([RichSpan::styled(
+                    truncate_with_ellipsis(&rec.title, width, "…"),
+                    tokens::row_title(selected),
+                )]),
+                RichLine::from_spans([
+                    RichSpan::styled("PR:", tokens::row_id()),
+                    RichSpan::styled(bar(pr, max_pr), Style::new().fg(tokens::FG_SUCCESS)),
+                    RichSpan::styled(" BW:", tokens::row_id()),
+                    RichSpan::styled(bar(bw, max_bw), Style::new().fg(tokens::FG_INFO)),
+                ]),
+                RichLine::from_spans([RichSpan::styled(
+                    format!("↳ Unblocks {}", rec.unblocks),
+                    Style::new().fg(tokens::FG_SUCCESS).bold(),
+                )]),
+            ];
+            Paragraph::new(RichText::from_lines(lines)).render(inner, frame);
+        }
+        let _ = cards;
+    }
+
+    /// Go bv insights dashboard: a 3x3 panel grid, the priority strip, and
+    /// the Markdown detail of the selection on the right.
+    fn render_go_insights(&self, frame: &mut Frame, area: Rect) {
+        let insights = self.analyzer.insights();
+        // The side detail needs room; below 140 columns the grid takes the
+        // whole width and Tab shows the detail full-screen instead.
+        let side_detail = area.width >= 140;
+        if !side_detail && matches!(self.focus, FocusPane::Detail) {
+            self.render_go_board_detail(frame, area);
+            return;
+        }
+        let detail_width = if side_detail {
+            (area.width * 28 / 100).max(36)
+        } else {
+            0
+        };
+        let grid_width = area.width.saturating_sub(detail_width);
+        let strip_height = if area.height >= 24 { 10 } else { 0 };
+        let grid_height = area.height.saturating_sub(strip_height);
+
+        // Go's nine-panel layout; Rust-only panels take a cell when focused.
+        let mut cells = [
+            InsightsPanel::Bottlenecks,
+            InsightsPanel::Keystones,
+            InsightsPanel::Influencers,
+            InsightsPanel::Hubs,
+            InsightsPanel::Authorities,
+            InsightsPanel::Cores,
+            InsightsPanel::CutPoints,
+            InsightsPanel::Slack,
+            InsightsPanel::Cycles,
+        ];
+        match self.insights_panel {
+            InsightsPanel::Betweenness => cells[0] = InsightsPanel::Betweenness,
+            InsightsPanel::CriticalPath => cells[1] = InsightsPanel::CriticalPath,
+            _ => {}
+        }
+        let cell_w = grid_width / 3;
+        let cell_h = grid_height / 3;
+        for (index, panel) in cells.iter().enumerate() {
+            let col = u16::try_from(index % 3).unwrap_or(0);
+            let row = u16::try_from(index / 3).unwrap_or(0);
+            let rect = Rect::new(area.x + col * cell_w, area.y + row * cell_h, cell_w, cell_h);
+            self.render_go_insight_panel(frame, rect, *panel, &insights);
+        }
+        if strip_height > 0 {
+            self.render_go_priority_strip(
+                frame,
+                Rect::new(
+                    area.x,
+                    area.y + cell_h * 3,
+                    cell_w * 3,
+                    area.height - cell_h * 3,
+                ),
+            );
+        }
+        if detail_width > 0 {
+            self.render_go_board_detail(
+                frame,
+                Rect::new(area.x + grid_width, area.y, detail_width, area.height),
+            );
+        }
+    }
+
     /// Go bv lane presentation for a board lane key: (emoji, title, color).
     fn go_board_lane_meta(&self, key: &str) -> (&'static str, String, PackedRgba) {
         match (self.board_grouping, key) {
@@ -9500,7 +9965,9 @@ impl BvrApp {
             ListFilter::Closed => ("✅", "CLOSED"),
             ListFilter::Ready => ("🚀", "READY"),
         };
-        let mode_hints = if matches!(self.mode, ViewMode::Board) {
+        let mode_hints = if matches!(self.mode, ViewMode::Insights) {
+            format!(" {} • L:labels • h:detail ", self.insights_panel.label())
+        } else if matches!(self.mode, ViewMode::Board) {
             if self.board_search_active || !self.board_search_query.is_empty() {
                 let matches = self.board_search_matches().len();
                 let position = if matches == 0 {
@@ -9566,7 +10033,22 @@ impl BvrApp {
 
         let sep = " │ ";
         let mut hints: Vec<(&str, &str)> = Vec::new();
-        if matches!(self.mode, ViewMode::Board) {
+        if matches!(self.mode, ViewMode::Insights) {
+            if matches!(self.focus, FocusPane::Detail) {
+                hints.push(("^j/k", " scroll"));
+                if self.should_open_selected_issue_external_ref() {
+                    hints.push(("o", " open link"));
+                    hints.push(("y", " copy link"));
+                }
+            }
+            hints.extend([
+                ("h/l", " panels"),
+                ("j/k", " items"),
+                ("/", " search"),
+                ("tab", " detail"),
+                ("?", " help"),
+            ]);
+        } else if matches!(self.mode, ViewMode::Board) {
             if matches!(self.focus, FocusPane::Detail) {
                 hints.push(("^j/k", " scroll"));
                 if self.should_open_selected_issue_external_ref() {
@@ -9587,7 +10069,7 @@ impl BvrApp {
                 hints.push(("y", " copy link"));
             }
         }
-        if !matches!(self.mode, ViewMode::Board) {
+        if matches!(self.mode, ViewMode::Main) {
             hints.extend([
                 ("tab", " focus"),
                 ("C", " copy"),
@@ -18009,17 +18491,23 @@ mod tests {
     }
 
     #[test]
-    fn insights_mode_h_l_switch_focus_panes() {
+    fn insights_mode_h_l_step_panels() {
+        // Go bv: h/l move between insight panels; Tab moves focus.
         let mut app = new_app(ViewMode::Insights, 0);
 
-        assert_eq!(app.focus, FocusPane::List);
+        assert_eq!(app.insights_panel, InsightsPanel::Bottlenecks);
         app.update(key(KeyCode::Char('l')));
-        assert_eq!(app.focus, FocusPane::Detail);
+        assert_eq!(app.insights_panel, InsightsPanel::Bottlenecks.next());
+        assert_eq!(app.focus, FocusPane::List);
         assert!(matches!(app.mode, ViewMode::Insights));
 
         app.update(key(KeyCode::Char('h')));
-        assert_eq!(app.focus, FocusPane::List);
-        assert!(matches!(app.mode, ViewMode::Insights));
+        assert_eq!(app.insights_panel, InsightsPanel::Bottlenecks);
+        app.update(key(KeyCode::Char('h')));
+        assert_eq!(app.insights_panel, InsightsPanel::Bottlenecks.prev());
+
+        app.update(key(KeyCode::Tab));
+        assert_eq!(app.focus, FocusPane::Detail);
     }
 
     #[test]
@@ -23083,9 +23571,9 @@ mod tests {
     fn insights_footer_advertises_focus_and_search_controls() {
         let app = new_app(ViewMode::Insights, 0);
 
-        let rendered = render_app(&app, 120, 40);
+        let rendered = render_app(&app, 160, 40);
         assert!(
-            rendered.contains("Tab focus"),
+            rendered.contains("tab detail"),
             "expected insights footer to advertise focus switching, got:\n{rendered}"
         );
         assert!(
@@ -24589,7 +25077,7 @@ mod tests {
         assert!(app.insights_show_calc_proof);
 
         // Switch focus
-        app.update(key(KeyCode::Char('l')));
+        app.update(key(KeyCode::Tab));
         assert_eq!(app.focus, FocusPane::Detail);
 
         // Return

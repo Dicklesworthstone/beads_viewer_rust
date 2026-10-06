@@ -3,32 +3,32 @@ source: src/tui.rs
 expression: text
 ---
 bvr 1 Main b Board i In g Graph H Hist  | 3/3 | all
-┌Insight Queue [focu┐┌Insight Detail───────────────────────┐
-│                   ││                                     │
-│ [Bottlenecks] s/S ││ Analytics Cockpit                   │
-│                   ││ System Radar | bottlenecks=2 crit-p │
-│ Signal Tiles      ││                                     │
-│ [Flow ] open=2 bl ││ Focus: A (Root)                     │
-│ [Risk ] bottlenec ││ Status: open | Priority: p0         │
-│                   ││                                     │
-│ Outlier Radar     ││ Metric Strip                        │
-│ [Lead ] bottlenec ││ [Rank ] pagerank=0.4805 betweenness │
-│ [Rank ] influence ││ [HITS ] hub=0.0000 authority=1.0000 │
-│ [Act  ] next-prio ││ [Risk ] crit-depth=2 slack=0.0000 c │
-│                   ││ [Flow ] blockers=0 dependents=1 cri │
-│ Panel Focus | Bot ││ [Lead ] top-bottleneck=yes          │
-│                   ││                                     │
-│  1. A             ││ All Metrics:                        │
-│  2. B             ││   PageRank:     0.4805              │
-│                   ││   Betweenness:  0.0000              │
-│                   ││   Eigenvector:  1.0000              │
-│                   ││   Hub (HITS):   0.0000              │
-│                   ││   Auth (HITS):  1.0000              │
-│                   ││   K-core:       1                   │
-│                   ││   Crit depth:   2                   │
-│                   ││   Slack:        0.0000              │
-│                   ││   Cut point:    no                  │
-│                   ││                                     │
-│                   ││                                     │
-└───────────────────┘└─────────────────────────────────────┘
-Insights [bottlenecks] │ Tab focus │ / search │ s/S panel
+╭──────────────────╮╭──────────────────╮╭──────────────────╮
+│ 🚧 Bottlenecks … ││ 🏛 Keystones (2)  ││ 🌐 Influencers … │
+│ Betweenness Cent ││ Impact Depth     ││ Eigenvector Cent │
+│ Measures how     ││ Measures how     ││ Scores beads by  │
+│ ▸   0.481  📋 ●  ││       2.0  📋 ●  ││     1.000  📋 ●  │
+╰──────────────────╯╰──────────────────╯╰──────────────────╯
+╭──────────────────╮╭──────────────────╮╭──────────────────╮
+│ 🛰 Hubs (3)       ││ 📚 Authorities … ││ 🧠 Cores (3)     │
+│ HITS Hub Score   ││ HITS Authority S ││ k-core Cohesion  │
+│ Beads that       ││ Beads that are   ││ Nodes with       │
+│     1.000  📋 ●  ││     1.000  📋 ●  ││         1  📋 ●  │
+╰──────────────────╯╰──────────────────╯╰──────────────────╯
+╭──────────────────╮╭──────────────────╮╭──────────────────╮
+│ 🪢 Cut Points (… ││ ⏳ Slack (2)     ││ 🔄 Cycles (0)    │
+│ Articulation Ver ││ Longest-path sla ││ Circular Depende │
+│ Nodes whose      ││ Distance from    ││ Groups of beads  │
+│                  ││       0.0  📋 ●  ││ ✓ No cycles dete │
+╰──────────────────╯╰──────────────────╯╰──────────────────╯
+╭──────────────────────────────────────────────────────────╮
+│ 🎯 Priority (2)   Agent-First Triage                     │
+│ ╭───────────────╮ ╭───────────────╮                      │
+│ │  0.69         │ │  0.43         │                      │
+│ │ 📋 OPEN ⚡P0  │ │ 📋 OPEN ⚡P0  │                      │
+│ │ Root          │ │ Dependent     │                      │
+│ │ PR:██████████ │ │ PR:█████████░ │                      │
+│ │ ↳ Unblocks 1  │ │ ↳ Unblocks 0  │                      │
+│ ╰───────────────╯ ╰───────────────╯                      │
+╰──────────────────────────────────────────────────────────╯
+ 📋 ALL  Bottlenecks • L:labels • h:detail  ○2 ◉1 ◈0 ●1

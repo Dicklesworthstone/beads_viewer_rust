@@ -1,35 +1,34 @@
 ---
 source: src/tui.rs
-assertion_line: 21678
 expression: text
 ---
 bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Insights | focus=list | issues=3/3 | filter=all | sort=d
-┌Insight Queue [focus]──────────────────────────────┐┌Insight Detail───────────────────────────────────────────────────────────────────────┐
-│                                                   ││                                                                                     │
-│ [Bottlenecks] s/S cycles panel | e explanations | ││ Analytics Cockpit                                                                   │
-│                                                   ││ System Radar | bottlenecks=2 crit-path=3 cycles=0 cut-pts=0 k-core-max=1            │
-│ Signal Tiles                                      ││                                                                                     │
-│ [Flow ] open=2 blocked=1 crit-path=3 cycles=0     ││ Focus: A (Root)                                                                     │
-│ [Risk ] bottlenecks=2 cut-points=0 zero-slack=2 m ││ Status: open | Priority: p0                                                         │
-│                                                   ││                                                                                     │
-│ Outlier Radar                                     ││ Metric Strip                                                                        │
-│ [Lead ] bottleneck=A score=0.481 blocks=1         ││ [Rank ] pagerank=0.4805 betweenness=0.0000 eigenvector=1.0000                       │
-│ [Rank ] influencer=A pr=0.4805                    ││ [HITS ] hub=0.0000 authority=1.0000 k-core=1                                        │
-│ [Act  ] next-priority=A score=0.691 p0            ││ [Risk ] crit-depth=2 slack=0.0000 cut-point=no                                      │
-│                                                   ││ [Flow ] blockers=0 dependents=1 crit-path=yes cycle=no                              │
-│ Panel Focus | Bottlenecks | blocking pressure and ││ [Lead ] top-bottleneck=yes                                                          │
-│                                                   ││                                                                                     │
-│  1. A            score=0.481 blocks=1             ││ All Metrics:                                                                        │
-│  2. B            score=0.260 blocks=0             ││   PageRank:     0.4805                                                              │
-│                                                   ││   Betweenness:  0.0000                                                              │
-│                                                   ││   Eigenvector:  1.0000                                                              │
-│                                                   ││   Hub (HITS):   0.0000                                                              │
-│                                                   ││   Auth (HITS):  1.0000                                                              │
-│                                                   ││   K-core:       1                                                                   │
-│                                                   ││   Crit depth:   2                                                                   │
-│                                                   ││   Slack:        0.0000                                                              │
-│                                                   ││   Cut point:    no                                                                  │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-└───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
-Insights [bottlenecks] │ Tab focus │ / search │ s/S panel │ e explanations=on │ x proof=off
+╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮  ┌─────────────────────────────────────┐
+│ 🚧 Bottlenecks (2)            ││ 🏛 Keystones (2)               ││ 🌐 Influencers (3)            │  │ 📋 Root                             │
+│ Betweenness Centrality        ││ Impact Depth                  ││ Eigenvector Centrality        │  │                                     │
+│ Measures how often a bead     ││ Measures how deep in the      ││ Scores beads by their         │  │ ┌───┬─────┬──────┬──────┬───────┐   │
+│ ▸   0.481  📋 ● Root          ││       2.0  📋 ● Root          ││     1.000  📋 ● Root          │  │ │ … │ St… │ Pri… │ Ass… │ Crea… │   │
+╰───────────────────────────────╯╰───────────────────────────────╯╰───────────────────────────────╯  │ ├───┼─────┼──────┼──────┼───────┤   │
+╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮  │ │ A │ OP… │ 🔥 … │ @al… │ 2026… │   │
+│ 🛰 Hubs (3)                    ││ 📚 Authorities (3)            ││ 🧠 Cores (3)                  │  │ └───┴─────┴──────┴──────┴───────┘   │
+│ HITS Hub Score                ││ HITS Authority Score          ││ k-core Cohesion               │  │                                     │
+│ Beads that depend on many     ││ Beads that are depended upon  ││ Nodes with highest k-core     │  │ Labels: core, parity                │
+│     1.000  📋 ● Dependent     ││     1.000  📋 ● Root          ││         1  📋 ● Root          │  │ C copy id • L label filter • w repo │
+╰───────────────────────────────╯╰───────────────────────────────╯╰───────────────────────────────╯  │ filter • t time-travel              │
+╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮  │                                     │
+│ 🪢 Cut Points (0)             ││ ⏳ Slack (2)                  ││ 🔄 Cycles (0)                 │  │ 🎯 Triage Insights                  │
+│ Articulation Vertices         ││ Longest-path slack            ││ Circular Dependencies         │  │ • 🔓 Unblocks: 1 downstream items   │
+│ Nodes whose removal           ││ Distance from critical chain  ││ Groups of beads forming       │  │ when completed                      │
+│                               ││       0.0  📋 ● Root          ││ ✓ No cycles detected          │  │                                     │
+╰───────────────────────────────╯╰───────────────────────────────╯╰───────────────────────────────╯  │ Graph Analysis                      │
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮  │ • Impact Depth: 2 (downstream chain │
+│ 🎯 Priority (2)   Agent-First Triage                                                            │  │ length)                             │
+│ ╭────────────────────────────╮ ╭────────────────────────────╮                                   │  │ • Centrality: PR 0.4805 • BW 0.0000 │
+│ │  0.69                      │ │  0.43                      │                                   │  │ • EV 1.0000                         │
+│ │ 📋 OPEN ⚡P0               │ │ 📋 OPEN ⚡P0               │                                   │  │ • Flow Role: Hub 0.0000 • Authority │
+│ │ Root                       │ │ Dependent                  │                                   │  │ 1.0000                              │
+│ │ PR:████████████████ BW:░░░ │ │ PR:█████████░░░░░░░ BW:░░░ │                                   │  │                                     │
+│ │ ↳ Unblocks 1               │ │ ↳ Unblocks 0               │                                   │  │ Description                         │
+│ ╰────────────────────────────╯ ╰────────────────────────────╯                                   │  │                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯  └─────────────────────────────────────┘
+ 📋 ALL  Bottlenecks • L:labels • h:detail  ○2 ◉1 ◈0 ●1                   3 issues  h/l panels │ j/k items │ / search │ tab detail │ ? help

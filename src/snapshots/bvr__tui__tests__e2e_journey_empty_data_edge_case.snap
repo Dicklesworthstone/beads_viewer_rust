@@ -102,35 +102,35 @@ h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open
 
 --- Step 4: empty_insights ---
 bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=0/0 | filter=all |
-┌Insight Queue [focus]───────────────────┐┌Insight Detail──────────────────────────────────────────┐
-│                                        ││                                                        │
-│ (no issues loaded)                     ││ No insights available.                                 │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Insights [bottlenecks] │ Tab focus │ / search │ s/S panel │ e explanations=on │ x proof=off
+╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮
+│ 🚧 Bottlenecks (0)            ││ 🏛 Keystones (0)               ││ 🌐 Influencers (0)            │
+│ Betweenness Centrality        ││ Impact Depth                  ││ Eigenvector Centrality        │
+│ Measures how often a bead     ││ Measures how deep in the      ││ Scores beads by their         │
+│                               ││                               ││                               │
+╰───────────────────────────────╯╰───────────────────────────────╯╰───────────────────────────────╯
+╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮
+│ 🛰 Hubs (0)                    ││ 📚 Authorities (0)            ││ 🧠 Cores (0)                  │
+│ HITS Hub Score                ││ HITS Authority Score          ││ k-core Cohesion               │
+│ Beads that depend on many     ││ Beads that are depended upon  ││ Nodes with highest k-core     │
+│                               ││                               ││                               │
+╰───────────────────────────────╯╰───────────────────────────────╯╰───────────────────────────────╯
+╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮
+│ 🪢 Cut Points (0)             ││ ⏳ Slack (0)                  ││ 🔄 Cycles (0)                 │
+│ Articulation Vertices         ││ Longest-path slack            ││ Circular Dependencies         │
+│ Nodes whose removal           ││ Distance from critical chain  ││ Groups of beads forming       │
+│                               ││                               ││ ✓ No cycles detected          │
+╰───────────────────────────────╯╰───────────────────────────────╯╰───────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 🎯 Priority (0)   Agent-First Triage                                                            │
+│                                                                                                 │
+│                                                                                                 │
+│                                                                                                 │
+│                                                                                                 │
+│                                                                                                 │
+│                                                                                                 │
+│                                                                                                 │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 📋 ALL  Bottlenecks • L:labels • h:detail  ○0 ◉0 ◈0 ●0            0 issues  h/l panels │ j/k items
 
 --- Step 5: empty_actionable ---
 bvr 1 Main b Board i Insights a Actionable | mode=Actionable | focus=list | issues=0/0 | filter=all
