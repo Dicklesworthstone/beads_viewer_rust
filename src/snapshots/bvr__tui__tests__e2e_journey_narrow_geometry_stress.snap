@@ -22,7 +22,6 @@ expression: artifact
  📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●
 
 --- Step 2: narrow_board ---
-bvr 1 Main b Board i In  | 3/3 | all
            BOARD [by: Status]
 📋 OPEN (2) 🔄 IN PROGR…🚫 BLOCKED …✅ …
 ╭──────────╮╭──────────╮╭──────────╮╭──╮
@@ -30,7 +29,8 @@ bvr 1 Main b Board i In  | 3/3 | all
 │ │ 📋 … │ ││          ││          ││  │
 │ │ Root │ ││          ││          ││  │
 │ │ ⚡→… │ ││          ││          ││  │
-│ ╰──────╯ ││ (empty)  ││ (empty)  ││  │
+│ ╰──────╯ ││          ││          ││  │
+│          ││ (empty)  ││ (empty)  ││  │
 │          ││          ││          ││  │
 │          ││          ││          ││  │
 │          ││          ││          ││  │
@@ -39,7 +39,6 @@ bvr 1 Main b Board i In  | 3/3 | all
  📋 ALL  1-4:col • o/c/r:filter • s:grou
 
 --- Step 3: narrow_board_nav ---
-bvr 1 Main b Board i In  | 3/3 | all
            BOARD [by: Status]
 📋 OPEN (2) 🔄 IN PROGR…🚫 BLOCKED …✅ …
 ╭──────────╮╭──────────╮╭──────────╮╭──╮
@@ -47,7 +46,8 @@ bvr 1 Main b Board i In  | 3/3 | all
 │ │ 📋 … │ ││          ││          ││  │
 │ │ Root │ ││          ││          ││  │
 │ │ ⚡→… │ ││          ││          ││  │
-│ ╰──────╯ ││ (empty)  ││ (empty)  ││  │
+│ ╰──────╯ ││          ││          ││  │
+│          ││ (empty)  ││ (empty)  ││  │
 │          ││          ││          ││  │
 │          ││          ││          ││  │
 │          ││          ││          ││  │
@@ -56,7 +56,6 @@ bvr 1 Main b Board i In  | 3/3 | all
  📋 ALL  1-4:col • o/c/r:filter • s:grou
 
 --- Step 4: narrow_graph ---
-bvr 1 Main b Board i In g Graph  | 3/3 |
 ┌Graph View [focus]────────────────────┐
 │                                      │
 │ Graph: nodes=3 edges=1 cycles=0 acti │
@@ -69,11 +68,11 @@ bvr 1 Main b Board i In g Graph  | 3/3 |
 │                   ║up:0 down:0       │
 │                   ╚═════════════════ │
 │                                      │
+│                                      │
 └──────────────────────────────────────┘
  📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●
 
 --- Step 5: narrow_insights ---
-bvr 1 Main b Board i In  | 3/3 | all
 ╭───────────╮╭───────────╮╭───────────╮
 │ 🚧 Bottl… ││ 🏛 Keysto… ││ 🌐 Influ… │
 │ Betweenne ││ Impact De ││ Eigenvect │
@@ -86,11 +85,11 @@ bvr 1 Main b Board i In  | 3/3 | all
 │ 🪢 Cut P… ││ ⏳ Slack… ││ 🔄 Cycle… │
 │ Articulat ││ Longest-p ││ Circular  │
 ╰───────────╯╰───────────╯╰───────────╯
+
 
  📋 ALL  Bottlenecks • L:labels • h:deta
 
 --- Step 6: narrow_insights_cycle ---
-bvr 1 Main b Board i In  | 3/3 | all
 ╭───────────╮╭───────────╮╭───────────╮
 │ 🚧 Bottl… ││ 🏛 Keysto… ││ 🌐 Influ… │
 │ Betweenne ││ Impact De ││ Eigenvect │
@@ -103,6 +102,7 @@ bvr 1 Main b Board i In  | 3/3 | all
 │ 🪢 Cut P… ││ ⏳ Slack… ││ 🔄 Cycle… │
 │ Articulat ││ Longest-p ││ Circular  │
 ╰───────────╯╰───────────╯╰───────────╯
+
 
  📋 ALL  Keystones • L:labels • h:detail
 

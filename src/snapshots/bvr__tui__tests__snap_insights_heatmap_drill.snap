@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=3/3 | filter=all |
 ┌Insight Queue [focus]───────────────────┐┌Insight Detail──────────────────────────────────────────┐
 │                                        ││                                                        │
 │ Priority heatmap drill | m toggle | j/ ││ Heatmap: D1-2 x .6-.8 (1 issue(s))                     │
@@ -29,6 +28,7 @@ bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=3/3 | filter
 │                                        ││   Auth (HITS):  1.0000                                 │
 │                                        ││   K-core:       1                                      │
 │                                        ││   Crit depth:   2                                      │
+│                                        ││   Slack:        0.0000                                 │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
 Insights [bottlenecks] │ Tab focus │ / search │ s/S panel │ e explanations=on │ x proof=off

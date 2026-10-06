@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i In g Graph H Hist  | 3/3 | all
 ┌Graph View [focus]────────────────────────────────────────┐
 │                                                          │
 │ Graph: nodes=3 edges=1 cycles=0 actionable=1             │
@@ -29,6 +28,7 @@ bvr 1 Main b Board i In g Graph H Hist  | 3/3 | all
 │   PageRank         0.4805  ██████  #1                    │
 │   Eigenvector      1.0000  ██████  #1                    │
 │ Flow & Connectivity                                      │
+│   Betweenness      0.0000  ░░░░░░  #1                    │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
  📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1

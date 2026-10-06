@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=3/3 | filter=all |
 ╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮
 │ 🚧 Bottlenecks (2)            ││ 🏛 Keystones (2)               ││ 🌐 Influencers (3)            │
 │ Betweenness Centrality        ││ Impact Depth                  ││ Eigenvector Centrality        │
@@ -29,6 +28,7 @@ bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=3/3 | filter
 │ │ Root                       │ │ Dependent                  │                                   │
 │ │ PR:████████████████ BW:░░░ │ │ PR:█████████░░░░░░░ BW:░░░ │                                   │
 │ │ ↳ Unblocks 1               │ │ ↳ Unblocks 0               │                                   │
+│ │                            │ │                            │                                   │
 │ ╰────────────────────────────╯ ╰────────────────────────────╯                                   │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
  📋 ALL  Bottlenecks • L:labels • h:detail  ○2 ◉1 ◈0 ●1            3 issues  h/l panels │ j/k items

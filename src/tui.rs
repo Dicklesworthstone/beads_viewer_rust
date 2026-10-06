@@ -516,10 +516,14 @@ fn splitter_rect_between(left: Rect, right: Rect) -> Rect {
     Rect::new(x, left.y, width.max(1), left.height)
 }
 
-/// Rows used by the top mode-tab header. The main view has none — like Go
-/// bv, its list column header and status bar carry the chrome.
+/// Rows used by the top mode-tab header. The Go bv views (main, board,
+/// insights, graph) have none — their own titles and the status bar carry
+/// the chrome, as in Go; the Rust-only modes keep the tab strip.
 fn header_height(app: &BvrApp) -> u16 {
-    u16::from(!matches!(app.mode, ViewMode::Main))
+    u16::from(!matches!(
+        app.mode,
+        ViewMode::Main | ViewMode::Board | ViewMode::Insights | ViewMode::Graph
+    ))
 }
 
 fn splitter_hit_boxes(app: &BvrApp, width: u16, height: u16) -> Vec<SplitterHitBox> {
@@ -23899,8 +23903,8 @@ mod tests {
 
     #[test]
     fn mouse_left_click_on_header_mode_tab_switches_mode() {
-        // The main view has no tab header (Go bv layout); other modes do.
-        let mut app = new_app(ViewMode::Board, 0);
+        // Go bv views have no tab header; the Rust-only modes do.
+        let mut app = new_app(ViewMode::Actionable, 0);
         let (x, y) =
             header_tab_click_point(&app, 120, 24, ViewMode::Graph).expect("graph header tab point");
 
@@ -27983,7 +27987,7 @@ mod tests {
         assert_eq!(app.mode, ViewMode::Board);
         let text = journey_capture(&app, w, h, "board_entry", &mut caps);
         assert!(
-            text.contains("open") || text.contains("Board"),
+            text.contains("OPEN") || text.contains("BOARD"),
             "board should show lane content: {text}"
         );
 

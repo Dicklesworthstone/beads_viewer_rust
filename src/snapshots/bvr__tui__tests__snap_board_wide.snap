@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Board | focus=list | issues=3/3 | filter=all | sort=defa
                                                              BOARD [by: Status]
        📋 OPEN (2) 2🔴 ⏱5mo                🔄 IN PROGRESS (0)                   🚫 BLOCKED (0)                 ✅ CLOSED (1) 1🔴 ⏱5mo
 ╭─────────────────────────────────╮╭─────────────────────────────────╮╭─────────────────────────────────╮╭─────────────────────────────────╮
@@ -19,6 +18,7 @@ bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | m
 │ ╰─────────────────────────────╯ ││                                 ││                                 ││                                 │
 │                                 ││                                 ││                                 ││                                 │
 │                                 ││             (empty)             ││             (empty)             ││                                 │
+│                                 ││                                 ││                                 ││                                 │
 │                                 ││                                 ││                                 ││                                 │
 │                                 ││                                 ││                                 ││                                 │
 │                                 ││                                 ││                                 ││                                 │

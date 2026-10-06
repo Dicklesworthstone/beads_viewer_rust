@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Board | focus=detail | issues=3/3 | filter=all |
                      BOARD [by: Status]                     ┌──────────────────────────────────────┐
 📋 OPEN (2) 2🔴🔄 IN PROGRESS…🚫 BLOCKED (0) ✅ CLOSED (1) …│ 📋 Dependent                         │
 ╭─────────────╮╭─────────────╮╭─────────────╮╭─────────────╮│                                      │
@@ -30,5 +29,6 @@ bvr 1 Main b Board i Insights | mode=Board | focus=detail | issues=3/3 | filter=
 │             ││             ││             ││             ││ Depends on A and should report       │
 │             ││             ││             ││             ││ blocked state clearly.               │
 │             ││             ││             ││             ││                                      │
+│             ││             ││             ││             ││ Dependencies (1)                     │
 ╰─────────────╯╰─────────────╯╰─────────────╯╰─────────────╯└──────────────────────────────────────┘
  📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1
