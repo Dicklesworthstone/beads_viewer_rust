@@ -570,5 +570,5 @@ Prerequisites: Wave 3 complete.
 All core robot commands, export surfaces, pages workflows, workspace semantics, and quality gates are passing with the current proof surface. The Rust port now has full legacy parity across robot, CLI, export, and interactive TUI behavior.
 
 ## Open Gaps to 100%
-1. Legacy `bv` kept evolving after the original parity pass. Flags it added since that are still unported: `--export-template`, `--id-pattern`, `--search-min-score`, `--robot-history-timeout-ms`, `--generate-docs`, and the `bv robot-<cmd> --json` subcommand-style invocation aliases.
+1. Legacy `bv` kept evolving after the original parity pass. Flags it added since that are still unported: `--export-template`, `--id-pattern`, `--search-min-score`, `--robot-history-timeout-ms`, and `--generate-docs`. (Agent-intent invocation aliases — `bvr triage --json`, `bvr robot-next`, `bvr search <q>` — are ported.)
 2. Future additions should keep the current proof surface green rather than reopen parity debt.

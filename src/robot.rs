@@ -893,6 +893,16 @@ pub fn generate_robot_capabilities() -> Value {
         "docs_topics": ["guide", "commands", "examples", "env", "exit-codes", "all"],
         "docs_command": "bvr --robot-docs <topic>",
         "schema_command": "bvr --robot-schema",
+        "agent_intent_aliases": {
+            "bvr <command> | bvr robot-<command>": "Same as --robot-<command> (triage, next, plan, insights, priority, alerts, suggest, capabilities, label-health, ...)",
+            "bvr <command> <value>": "Value commands take their first positional: forecast [id|all], burndown [sprint|current], related <id>, blockers <id>, impact <paths>, causality <id>, file-beads <path>",
+            "bvr search <words...>": "--search \"<words>\" --robot-search",
+            "bvr graph [json|dot|mermaid]": "--robot-graph --graph-format <fmt>",
+            "bvr diff <ref> / bvr history [id]": "--robot-diff --diff-since <ref> / --robot-history [--bead-history <id>]",
+            "bvr docs [topic] / bvr schema [command]": "--robot-docs <topic> / --robot-schema --schema-command robot-<command>",
+            "--json / --toon / -o <fmt>": "--format <fmt>; --json alone runs --robot-triage",
+            "--limit <n>": "The command's own limit flag (--robot-max-results, --search-limit, --history-limit, ...)",
+        },
         "environment_variables": robot_env_vars(),
         "exit_codes": robot_exit_codes(),
         "stream_contract": {

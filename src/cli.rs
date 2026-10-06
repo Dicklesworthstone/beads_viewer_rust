@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 
 fn parse_confidence(s: &str) -> Result<f64, String> {
     let value: f64 = s.parse().map_err(|e| format!("{e}"))?;
@@ -748,6 +748,409 @@ where
     })
 }
 
+// ---------------------------------------------------------------------------
+// Agent-intent invocation aliases
+//
+// Agents routinely guess subcommand-style forms (`bvr triage --json`,
+// `bvr robot-next`, `bvr search "oauth login" --limit 5`, `bvr graph mermaid`).
+// Legacy `bv` accepts these; `rewrite_agent_intent_args` maps them onto the
+// canonical flag surface before clap parses, so the flag contract stays the
+// single source of truth. Tokens it does not recognise pass through untouched
+// so clap still reports genuine typos.
+// ---------------------------------------------------------------------------
+
+/// Robot commands taking no value, addressable as `bvr <name>` or
+/// `bvr robot-<name>`.
+const AGENT_BOOL_COMMANDS: &[(&str, &str)] = &[
+    ("triage", "--robot-triage"),
+    ("recommend", "--robot-triage"),
+    ("recommendations", "--robot-triage"),
+    ("next", "--robot-next"),
+    ("pick", "--robot-next"),
+    ("overview", "--robot-overview"),
+    ("orient", "--robot-overview"),
+    ("plan", "--robot-plan"),
+    ("insights", "--robot-insights"),
+    ("insight", "--robot-insights"),
+    ("analysis", "--robot-insights"),
+    ("analyze", "--robot-insights"),
+    ("priority", "--robot-priority"),
+    ("priorities", "--robot-priority"),
+    ("alerts", "--robot-alerts"),
+    ("suggest", "--robot-suggest"),
+    ("suggestions", "--robot-suggest"),
+    ("recipes", "--robot-recipes"),
+    ("metrics", "--robot-metrics"),
+    ("capabilities", "--robot-capabilities"),
+    ("capability", "--robot-capabilities"),
+    ("manifest", "--robot-capabilities"),
+    ("labels", "--robot-label-health"),
+    ("label-health", "--robot-label-health"),
+    ("label-flow", "--robot-label-flow"),
+    ("label-attention", "--robot-label-attention"),
+    ("hotspots", "--robot-file-hotspots"),
+    ("file-hotspots", "--robot-file-hotspots"),
+    ("sprints", "--robot-sprint-list"),
+    ("sprint-list", "--robot-sprint-list"),
+    ("capacity", "--robot-capacity"),
+    ("orphans", "--robot-orphans"),
+    ("correlation-stats", "--robot-correlation-stats"),
+    ("triage-by-track", "--robot-triage-by-track"),
+    ("triage-by-label", "--robot-triage-by-label"),
+    ("economics", "--robot-economics"),
+    ("delivery", "--robot-delivery"),
+];
+
+/// Robot commands whose first positional is their value:
+/// (name, value flag, default when no positional is given).
+const AGENT_VALUE_COMMANDS: &[(&str, &str, Option<&str>)] = &[
+    ("file-beads", "--robot-file-beads", None),
+    ("file-relations", "--robot-file-relations", None),
+    ("impact", "--robot-impact", None),
+    ("related", "--robot-related", None),
+    ("blockers", "--robot-blocker-chain", None),
+    ("blocker-chain", "--robot-blocker-chain", None),
+    ("impact-network", "--robot-impact-network", Some("all")),
+    ("causality", "--robot-causality", None),
+    ("sprint", "--robot-sprint-show", None),
+    ("sprint-show", "--robot-sprint-show", None),
+    ("forecast", "--robot-forecast", Some("all")),
+    ("burndown", "--robot-burndown", Some("current")),
+    ("explain-correlation", "--robot-explain-correlation", None),
+    ("confirm-correlation", "--robot-confirm-correlation", None),
+    ("reject-correlation", "--robot-reject-correlation", None),
+];
+
+fn is_positional(arg: &str) -> bool {
+    !arg.is_empty() && !arg.starts_with('-')
+}
+
+fn is_output_format(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "json" | "toon")
+}
+
+/// The flag `--limit` means for a given command context.
+fn limit_flag_for(context: &str) -> &'static str {
+    match context {
+        "search" => "--search-limit",
+        "label-attention" => "--attention-limit",
+        "file-beads" => "--file-beads-limit",
+        "hotspots" | "file-hotspots" => "--hotspots-limit",
+        "history" => "--history-limit",
+        "related" => "--related-max-results",
+        "file-relations" => "--relations-limit",
+        "emit-script" => "--script-limit",
+        _ => "--robot-max-results",
+    }
+}
+
+/// Rewrite agent output/limit aliases inside an argument list:
+/// `--json`/`--toon`/`--output <fmt>`/`-o <fmt>` → `--format <fmt>`,
+/// `--limit <n>` → the context's limit flag, `--name` → `--label`.
+fn rewrite_flag_aliases(args: &[String], context: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len() + 2);
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        let next = args.get(index + 1).map(String::as_str);
+        match arg {
+            "--json" | "--json=true" | "--json=false" | "--toon=false" => {
+                out.extend(["--format".to_string(), "json".to_string()]);
+            }
+            "--toon" | "--toon=true" => {
+                out.extend(["--format".to_string(), "toon".to_string()]);
+            }
+            "--output" | "-o" if next.is_some_and(is_output_format) => {
+                out.extend([
+                    "--format".to_string(),
+                    next.unwrap_or_default().to_ascii_lowercase(),
+                ]);
+                index += 1;
+            }
+            "--limit" => out.push(limit_flag_for(context).to_string()),
+            "--name" => out.push("--label".to_string()),
+            _ => {
+                if let Some(value) = arg
+                    .strip_prefix("--output=")
+                    .or_else(|| arg.strip_prefix("-o="))
+                    .filter(|value| is_output_format(value))
+                {
+                    out.push(format!("--format={}", value.to_ascii_lowercase()));
+                } else if let Some(value) = arg.strip_prefix("--limit=") {
+                    out.push(format!("{}={value}", limit_flag_for(context)));
+                } else if let Some(value) = arg.strip_prefix("--name=") {
+                    out.push(format!("--label={value}"));
+                } else {
+                    out.push(arg.to_string());
+                }
+            }
+        }
+        index += 1;
+    }
+    out
+}
+
+fn has_structured_output_alias(args: &[String]) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        let lower = arg.to_ascii_lowercase();
+        matches!(
+            lower.as_str(),
+            "--json" | "--json=true" | "--json=false" | "--toon" | "--toon=true" | "--toon=false"
+        ) || lower
+            .strip_prefix("--output=")
+            .is_some_and(is_output_format)
+            || lower.strip_prefix("-o=").is_some_and(is_output_format)
+            || ((lower == "--output" || lower == "-o")
+                && args.get(index + 1).is_some_and(|v| is_output_format(v)))
+    })
+}
+
+/// True when the args already select a primary action (a robot command or a
+/// non-robot verb such as export/pages/version), so `--json` alone must not
+/// imply `--robot-triage`.
+fn has_primary_action(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        let name = arg.split('=').next().unwrap_or_default();
+        (name.starts_with("--robot-")
+            && !matches!(
+                name,
+                "--robot-max-results"
+                    | "--robot-min-confidence"
+                    | "--robot-by-label"
+                    | "--robot-by-assignee"
+                    | "--robot-not-ready-labels"
+                    | "--robot-full-stats"
+            ))
+            || matches!(
+                name,
+                "--version"
+                    | "-V"
+                    | "--help"
+                    | "-h"
+                    | "--check-update"
+                    | "--pages"
+                    | "--export-pages"
+                    | "--preview-pages"
+                    | "--export"
+                    | "--export-md"
+                    | "--export-graph"
+                    | "--priority-brief"
+                    | "--agent-brief"
+                    | "--emit-script"
+                    | "--search"
+                    | "--save-baseline"
+                    | "--baseline-info"
+                    | "--check-drift"
+                    | "--feedback-show"
+                    | "--feedback-reset"
+                    | "--feedback-accept"
+                    | "--feedback-ignore"
+                    | "--debug-render"
+                    | "--agents-check"
+                    | "--agents-add"
+                    | "--agents-update"
+                    | "--agents-remove"
+                    | "--stats"
+            )
+    })
+}
+
+/// Map agent-style invocations onto the canonical flag surface. `args`
+/// excludes the program name.
+#[must_use]
+pub fn rewrite_agent_intent_args(args: &[String]) -> Vec<String> {
+    let Some(first) = args.first() else {
+        return Vec::new();
+    };
+
+    if is_positional(first) {
+        let command = first.trim().to_ascii_lowercase();
+        let bare = command.strip_prefix("robot-").unwrap_or(&command);
+        let rest = &args[1..];
+        if let Some(rewritten) = rewrite_command(bare, &command, rest) {
+            return rewritten;
+        }
+        return args.to_vec();
+    }
+
+    let rewritten = rewrite_flag_aliases(args, "");
+    if has_structured_output_alias(args) && !has_primary_action(&rewritten) {
+        let mut out = vec!["--robot-triage".to_string()];
+        out.extend(rewritten);
+        return out;
+    }
+    rewritten
+}
+
+fn rewrite_command(bare: &str, command: &str, rest: &[String]) -> Option<Vec<String>> {
+    let with_prefix = |prefix: Vec<String>, context: &str, rest: &[String]| {
+        let mut out = prefix;
+        out.extend(rewrite_flag_aliases(rest, context));
+        out
+    };
+    let take_positional = |rest: &[String]| -> (Option<String>, Vec<String>) {
+        // The first positional (skipping leading output/limit aliases) is
+        // the command's value; everything else is passed through.
+        let mut remaining = rest.to_vec();
+        let position = remaining.iter().position(|arg| is_positional(arg));
+        let value = position.and_then(|index| {
+            let prior_takes_value =
+                index > 0 && matches!(remaining[index - 1].as_str(), "--limit" | "--output" | "-o");
+            (!prior_takes_value).then(|| remaining.remove(index))
+        });
+        (value, remaining)
+    };
+
+    if let Some((_, flag)) = AGENT_BOOL_COMMANDS.iter().find(|(name, _)| *name == bare) {
+        return Some(with_prefix(vec![(*flag).to_string()], bare, rest));
+    }
+
+    if let Some((_, flag, default)) = AGENT_VALUE_COMMANDS
+        .iter()
+        .find(|(name, _, _)| *name == bare)
+    {
+        let (value, remaining) = take_positional(rest);
+        let mut prefix = vec![(*flag).to_string()];
+        match value.or_else(|| default.map(str::to_string)) {
+            Some(value) => prefix.push(value),
+            // No value: leave the flag last so clap reports the missing value.
+            None => {
+                let mut out = rewrite_flag_aliases(&remaining, bare);
+                out.push((*flag).to_string());
+                return Some(out);
+            }
+        }
+        return Some(with_prefix(prefix, bare, &remaining));
+    }
+
+    match bare {
+        "help" if command == "robot-help" => {
+            if has_structured_output_alias(rest) {
+                Some(with_prefix(
+                    vec!["--robot-docs".to_string(), "guide".to_string()],
+                    "docs",
+                    rest,
+                ))
+            } else {
+                Some(with_prefix(vec!["--robot-help".to_string()], "help", rest))
+            }
+        }
+        "docs" | "doc" => {
+            let (topic, remaining) = take_positional(rest);
+            Some(with_prefix(
+                vec![
+                    "--robot-docs".to_string(),
+                    topic.unwrap_or_else(|| "guide".to_string()),
+                ],
+                "docs",
+                &remaining,
+            ))
+        }
+        "schema" | "schemas" => {
+            let (target, remaining) = take_positional(rest);
+            let mut prefix = vec!["--robot-schema".to_string()];
+            if let Some(target) = target {
+                let target = target.to_ascii_lowercase();
+                prefix.push("--schema-command".to_string());
+                prefix.push(if target.starts_with("robot-") {
+                    target
+                } else {
+                    format!("robot-{target}")
+                });
+            }
+            Some(with_prefix(prefix, "schema", &remaining))
+        }
+        "search" | "find" => {
+            let mut query = Vec::new();
+            let mut remaining = Vec::new();
+            let mut index = 0;
+            while index < rest.len() {
+                let arg = &rest[index];
+                if is_positional(arg) {
+                    query.push(arg.clone());
+                } else {
+                    remaining.push(arg.clone());
+                    if matches!(arg.as_str(), "--limit" | "--output" | "-o")
+                        || (arg.starts_with("--") && !arg.contains('=') && takes_value(arg))
+                    {
+                        if let Some(value) = rest.get(index + 1) {
+                            remaining.push(value.clone());
+                            index += 1;
+                        }
+                    }
+                }
+                index += 1;
+            }
+            let mut prefix = Vec::new();
+            if !query.is_empty() {
+                prefix.push("--search".to_string());
+                prefix.push(query.join(" "));
+            }
+            prefix.push("--robot-search".to_string());
+            Some(with_prefix(prefix, "search", &remaining))
+        }
+        "graph" => {
+            let mut prefix = vec!["--robot-graph".to_string()];
+            let mut remaining = rest.to_vec();
+            if let Some(index) = remaining.iter().position(|arg| is_positional(arg))
+                && matches!(
+                    remaining[index].to_ascii_lowercase().as_str(),
+                    "json" | "dot" | "mermaid"
+                )
+            {
+                let format = remaining.remove(index).to_ascii_lowercase();
+                prefix.push("--graph-format".to_string());
+                prefix.push(format);
+            }
+            Some(with_prefix(prefix, "graph", &remaining))
+        }
+        "diff" | "changes" => {
+            let (since, remaining) = take_positional(rest);
+            let mut prefix = vec!["--robot-diff".to_string()];
+            if let Some(since) = since {
+                prefix.push("--diff-since".to_string());
+                prefix.push(since);
+            }
+            Some(with_prefix(prefix, "diff", &remaining))
+        }
+        "history" => {
+            let (bead, remaining) = take_positional(rest);
+            let mut prefix = vec!["--robot-history".to_string()];
+            if let Some(bead) = bead {
+                prefix.push("--bead-history".to_string());
+                prefix.push(bead);
+            }
+            Some(with_prefix(prefix, "history", &remaining))
+        }
+        "drift" => Some(with_prefix(
+            vec!["--check-drift".to_string(), "--robot-drift".to_string()],
+            "drift",
+            rest,
+        )),
+        "self-update" | "selfupdate" => {
+            let mut out = vec!["upgrade".to_string()];
+            out.extend(rest.iter().cloned());
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a long flag consumes the following argument (used to keep flag
+/// values out of a free-text search query).
+fn takes_value(flag: &str) -> bool {
+    let name = flag.trim_start_matches('-').replace('-', "_");
+    Cli::command()
+        .get_arguments()
+        .find(|arg| arg.get_id().as_str() == name)
+        .is_some_and(|arg| {
+            arg.get_action().takes_values()
+                && arg
+                    .get_num_args()
+                    .is_none_or(|range| range.min_values() > 0)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -756,6 +1159,151 @@ mod tests {
         Cli, OutputFormat, format_flag_was_explicit_in_args, resolve_optional_string_choice,
         resolve_output_format_choice,
     };
+
+    fn rw(args: &[&str]) -> Vec<String> {
+        let owned: Vec<String> = args.iter().map(ToString::to_string).collect();
+        super::rewrite_agent_intent_args(&owned)
+    }
+
+    #[test]
+    fn agent_intent_bare_and_robot_prefixed_commands() {
+        assert_eq!(
+            rw(&["triage", "--json"]),
+            ["--robot-triage", "--format", "json"]
+        );
+        assert_eq!(
+            rw(&["robot-next", "--toon"]),
+            ["--robot-next", "--format", "toon"]
+        );
+        assert_eq!(
+            rw(&["plan", "-o", "json"]),
+            ["--robot-plan", "--format", "json"]
+        );
+        assert_eq!(rw(&["capabilities"]), ["--robot-capabilities"]);
+        assert_eq!(
+            rw(&["triage", "--limit", "5", "--name", "api"]),
+            [
+                "--robot-triage",
+                "--robot-max-results",
+                "5",
+                "--label",
+                "api"
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_intent_value_commands_take_first_positional() {
+        assert_eq!(rw(&["forecast"]), ["--robot-forecast", "all"]);
+        assert_eq!(
+            rw(&["forecast", "bd-1", "--json"]),
+            ["--robot-forecast", "bd-1", "--format", "json"]
+        );
+        assert_eq!(rw(&["burndown"]), ["--robot-burndown", "current"]);
+        assert_eq!(
+            rw(&["related", "--json", "bd-7"]),
+            ["--robot-related", "bd-7", "--format", "json"]
+        );
+        // Missing required value: flag left last so clap reports it.
+        assert_eq!(
+            rw(&["blockers", "--json"]),
+            ["--format", "json", "--robot-blocker-chain"]
+        );
+        assert_eq!(
+            rw(&["diff", "HEAD~3"]),
+            ["--robot-diff", "--diff-since", "HEAD~3"]
+        );
+        assert_eq!(
+            rw(&["history", "bd-2"]),
+            ["--robot-history", "--bead-history", "bd-2"]
+        );
+        assert_eq!(rw(&["history"]), ["--robot-history"]);
+    }
+
+    #[test]
+    fn agent_intent_search_graph_docs_schema() {
+        assert_eq!(
+            rw(&["search", "oauth", "login", "--limit", "3", "--json"]),
+            [
+                "--search",
+                "oauth login",
+                "--robot-search",
+                "--search-limit",
+                "3",
+                "--format",
+                "json"
+            ]
+        );
+        assert_eq!(
+            rw(&["search", "--search-mode", "hybrid", "auth"]),
+            [
+                "--search",
+                "auth",
+                "--robot-search",
+                "--search-mode",
+                "hybrid"
+            ]
+        );
+        assert_eq!(
+            rw(&["graph", "mermaid"]),
+            ["--robot-graph", "--graph-format", "mermaid"]
+        );
+        assert_eq!(rw(&["docs"]), ["--robot-docs", "guide"]);
+        assert_eq!(rw(&["docs", "env"]), ["--robot-docs", "env"]);
+        assert_eq!(
+            rw(&["schema", "triage"]),
+            ["--robot-schema", "--schema-command", "robot-triage"]
+        );
+        assert_eq!(rw(&["drift"]), ["--check-drift", "--robot-drift"]);
+    }
+
+    #[test]
+    fn agent_intent_json_alone_implies_triage_only_without_primary_action() {
+        assert_eq!(rw(&["--json"]), ["--robot-triage", "--format", "json"]);
+        assert_eq!(
+            rw(&["--robot-plan", "--json"]),
+            ["--robot-plan", "--format", "json"]
+        );
+        assert_eq!(
+            rw(&["--json", "--robot-max-results", "3"]),
+            [
+                "--robot-triage",
+                "--format",
+                "json",
+                "--robot-max-results",
+                "3"
+            ]
+        );
+        assert_eq!(
+            rw(&["--export", "r.json", "--json"]),
+            ["--export", "r.json", "--format", "json"]
+        );
+    }
+
+    #[test]
+    fn agent_intent_leaves_unknown_and_canonical_args_alone() {
+        assert_eq!(rw(&["upgrade", "--dry-run"]), ["upgrade", "--dry-run"]);
+        assert_eq!(rw(&["self-update"]), ["upgrade"]);
+        assert_eq!(rw(&["--robot-triage"]), ["--robot-triage"]);
+        assert_eq!(rw(&["frobnicate"]), ["frobnicate"]);
+        assert_eq!(rw(&[]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn agent_intent_rewrites_parse_with_clap() {
+        for args in [
+            vec!["triage", "--json"],
+            vec!["search", "auth", "--limit", "2"],
+            vec!["forecast", "--json"],
+            vec!["graph", "dot"],
+            vec!["schema", "next"],
+            vec!["--json"],
+        ] {
+            let mut argv = vec!["bvr".to_string()];
+            argv.extend(rw(&args));
+            Cli::try_parse_from(&argv).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+        }
+    }
 
     #[test]
     fn parse_operational_flags() {

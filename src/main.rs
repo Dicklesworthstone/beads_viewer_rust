@@ -446,7 +446,7 @@ fn main() -> ExitCode {
         eprintln!("warning: tracing init failed: {error}");
     }
 
-    let mut cli = Cli::parse();
+    let mut cli = Cli::parse_from(agent_intent_argv());
 
     cli.format = match cli.resolve_output_format() {
         Ok(format) => format,
@@ -6607,6 +6607,30 @@ fn build_triage_brief_output(
             .map(|blocker| blocker.id)
             .collect(),
     }
+}
+
+/// The process argv with agent-intent aliases (`bvr triage --json`,
+/// `bvr robot-next`, `bvr search "q"`) rewritten onto canonical flags. A
+/// non-UTF-8 argument disables the rewrite so clap sees argv untouched.
+fn agent_intent_argv() -> Vec<std::ffi::OsString> {
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let Some((program, rest)) = raw.split_first() else {
+        return raw;
+    };
+    let Some(utf8) = rest
+        .iter()
+        .map(|arg| arg.to_str().map(str::to_string))
+        .collect::<Option<Vec<String>>>()
+    else {
+        return raw;
+    };
+    std::iter::once(program.clone())
+        .chain(
+            bvr::cli::rewrite_agent_intent_args(&utf8)
+                .into_iter()
+                .map(std::ffi::OsString::from),
+        )
+        .collect()
 }
 
 /// Resolve the opt-in not-ready label class: `--robot-not-ready-labels`

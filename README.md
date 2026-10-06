@@ -502,6 +502,8 @@ bvr --robot-capabilities                            # one-call manifest of the r
 
 Use these when you want a fast orientation snapshot, ranked recommendations, quick wins, blockers to clear, grouped tracks, or priority mismatch detection.
 
+Agent-style invocations are accepted too and rewritten onto these flags: `bvr triage --json`, `bvr robot-next`, `bvr forecast all`, `bvr search "oauth login" --limit 5`, `bvr graph mermaid`, `bvr docs env`, `bvr schema triage`. `--json`, `--toon`, and `-o <fmt>` map to `--format`. `--limit` maps to the command's own limit flag. `--json` with no other command runs `--robot-triage`.
+
 Top picks (`--robot-next`, `quick_ref.top_picks`, per-track and per-label `top_pick`) only include beads that can be claimed now. A claimable bead is `open`, unassigned, not an epic, not a parent with open children, not deferred, and has none of the not-ready labels (`--robot-not-ready-labels` or `BV_ROBOT_NOT_READY_LABELS`).
 
 ### Graph analysis and forecasting
