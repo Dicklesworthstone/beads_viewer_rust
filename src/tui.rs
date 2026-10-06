@@ -8163,7 +8163,9 @@ impl BvrApp {
             return None;
         }
 
-        if matches!(self.mode, ViewMode::Main | ViewMode::Board) {
+        let go_detail = matches!(self.mode, ViewMode::Main | ViewMode::Board)
+            || (matches!(self.mode, ViewMode::Insights) && self.insights_heatmap.is_none());
+        if go_detail {
             // The Go-style detail pane word-wraps, so the link's visual row is
             // the sum of the wrapped heights of the lines above it.
             let detail_text = self.main_go_detail_text(area.width);
@@ -8184,12 +8186,7 @@ impl BvrApp {
                     .max(1);
             }
             let line = link_line?;
-            let scroll = if matches!(self.mode, ViewMode::Board) {
-                self.board_detail_scroll_offset
-            } else {
-                usize::from(saturating_scroll_offset(self.detail_scroll_offset))
-            };
-            let visible = row.checked_sub(scroll)?;
+            let visible = row.checked_sub(self.go_detail_scroll_offset())?;
             let y = area.y.saturating_add(saturating_scroll_offset(visible));
             let line_width = u16::try_from(display_width(&line.to_plain_text()))
                 .unwrap_or(u16::MAX)
@@ -9498,9 +9495,19 @@ impl BvrApp {
         );
         Paragraph::new(self.main_go_detail_text(body.width))
             .wrap(ftui::text::WrapMode::WordChar)
-            .scroll((saturating_scroll_offset(self.board_detail_scroll_offset), 0))
+            .scroll((saturating_scroll_offset(self.go_detail_scroll_offset()), 0))
             .render(body, frame);
         record_detail_content_area(body);
+    }
+
+    /// Scroll offset of the Go-style detail pane in the current view: the
+    /// board keeps its own; every other view uses the shared detail offset.
+    fn go_detail_scroll_offset(&self) -> usize {
+        if matches!(self.mode, ViewMode::Board) {
+            self.board_detail_scroll_offset
+        } else {
+            usize::from(saturating_scroll_offset(self.detail_scroll_offset))
+        }
     }
 
     /// One Go bv board card: type glyph, priority, ID, age; title; first
@@ -24476,27 +24483,17 @@ mod tests {
             issue.external_ref = Some("https://github.com/org/repo/issues/42".into());
         }
 
-        let _ = render_app(&app, 120, 40);
+        let rendered = render_app(&app, 120, 40);
         let link_area = app
             .current_detail_link_row_area()
             .expect("insights detail link row area");
-        let detail_area = cached_detail_content_area();
-        let detail = app.insights_detail_render_text();
-        let expected_row = detail
+        let row = rendered
             .lines()
-            .iter()
-            .position(|line| {
-                ftui::text::Line::spans(line)
-                    .iter()
-                    .any(|span| span.link.is_some())
-            })
-            .expect("insights detail hyperlink row");
-
-        assert_eq!(
-            link_area.y,
-            detail_area
-                .y
-                .saturating_add(saturating_scroll_offset(expected_row)),
+            .nth(usize::from(link_area.y))
+            .expect("rendered link row");
+        assert!(
+            row.contains("🔗 External:"),
+            "link row area must point at the rendered hyperlink row: {row}"
         );
     }
 
@@ -24540,6 +24537,34 @@ mod tests {
             "expected click to trigger copy-link status"
         );
         assert_ne!(app.status_msg, "No external issue reference");
+    }
+
+    #[test]
+    fn insights_side_detail_link_row_tracks_shared_detail_scroll() {
+        // At 160 columns the insights grid shows the detail beside it; it
+        // scrolls with the shared detail offset, and the link hit area must
+        // follow the rendered row.
+        let mut app = new_app(ViewMode::Insights, 0);
+        app.focus = FocusPane::Detail;
+        for issue in &mut app.analyzer.issues {
+            issue.external_ref = Some("https://github.com/org/repo/issues/42".into());
+        }
+        let rendered = render_app(&app, 160, 40);
+        let initial = app
+            .current_detail_link_row_area()
+            .expect("insights side detail link area");
+        let row = rendered
+            .lines()
+            .nth(usize::from(initial.y))
+            .expect("link row");
+        assert!(row.contains("🔗 External:"), "{row}");
+
+        app.detail_scroll_offset = 1;
+        let _ = render_app(&app, 160, 40);
+        let scrolled = app
+            .current_detail_link_row_area()
+            .expect("scrolled insights link area");
+        assert_eq!(scrolled.y, initial.y.saturating_sub(1));
     }
 
     #[test]
