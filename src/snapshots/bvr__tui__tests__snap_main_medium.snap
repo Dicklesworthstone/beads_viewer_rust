@@ -31,4 +31,4 @@ expression: text
 │                                        ││ Design Notes                                           │
 │           Page 1 of 1 (items 1-3 of 3) ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1        3 issues  tab focus │ C copy │ x export │ / search
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1   3 issues  tab focus │ C copy │ x export │ / search │ ? help

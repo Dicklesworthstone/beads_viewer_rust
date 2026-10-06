@@ -31,4 +31,4 @@ expression: text
 │                                                   ││ Keep the main flow lean, surface the most important context first, and let          │
 │                      Page 1 of 1 (items 1-3 of 3) ││ supporting sections trail after the summary.                                        │
 └───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1                                       3 issues  tab focus │ C copy │ x export │ / search │ ? help
+ 📋 ALL  L:labels • h:detail  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                      3 issues  tab focus │ C copy │ x export │ / search │ ? help

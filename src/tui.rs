@@ -438,6 +438,9 @@ thread_local! {
     static LAST_VIEW_HEIGHT: Cell<u16> = const { Cell::new(24) };
     static LAST_DETAIL_CONTENT_AREA: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
     static LAST_MAIN_LIST_AREA: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
+    /// Alert counts for the status bar, keyed by the loaded issue set
+    /// (vector address and length) so they are computed once per load.
+    static ALERT_COUNTS: Cell<Option<(u64, usize, usize, usize)>> = const { Cell::new(None) };
     static PANE_SPLIT_STATE: Cell<PaneSplitState> = const { Cell::new(PaneSplitState {
         narrow_list_pct: 35.0,
         medium_list_pct: 42.0,
@@ -10060,6 +10063,44 @@ impl BvrApp {
         text
     }
 
+    /// (total, critical, warning) alert counts for the status bar, computed
+    /// once per loaded issue set.
+    fn status_alert_counts(&self) -> (usize, usize, usize) {
+        // Cheap fingerprint of what alerts depend on (ids, statuses, update
+        // times, dependency counts) so a reload or a different data set in
+        // the same thread never reuses stale counts.
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for issue in &self.analyzer.issues {
+                issue.id.hash(&mut hasher);
+                issue.status.hash(&mut hasher);
+                issue.priority.hash(&mut hasher);
+                issue.updated_at.map(|t| t.timestamp()).hash(&mut hasher);
+                issue.dependencies.len().hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+        if let Some((cached, total, critical, warning)) = ALERT_COUNTS.with(Cell::get)
+            && cached == key
+        {
+            return (total, critical, warning);
+        }
+        let summary = self
+            .analyzer
+            .alerts(&crate::analysis::alerts::AlertOptions::default())
+            .summary;
+        ALERT_COUNTS.with(|cell| {
+            cell.set(Some((
+                key,
+                summary.total,
+                summary.critical,
+                summary.warning,
+            )));
+        });
+        (summary.total, summary.critical, summary.warning)
+    }
+
     /// Go bv's status bar: filter badge, hints, status stats on the left;
     /// issue count and key hints on the right (or a one-shot message).
     fn main_go_status_bar(&self, width: u16) -> RichLine {
@@ -10136,6 +10177,30 @@ impl BvrApp {
         }
         if let Some(repo) = self.modal_repo_filter.as_deref() {
             spans.push(RichSpan::styled(format!(" 🗂 {repo} "), tokens::info_text()));
+        }
+        let (total_alerts, critical_alerts, warning_alerts) = self.status_alert_counts();
+        if total_alerts > 0 {
+            let (icon, style) = if critical_alerts > 0 {
+                ("⚠", tokens::status_message(true))
+            } else if warning_alerts > 0 {
+                (
+                    "⚠",
+                    Style::new()
+                        .fg(tokens::FG_WARNING)
+                        .bg(tokens::BG_HIGHLIGHT)
+                        .bold(),
+                )
+            } else {
+                (
+                    "ℹ",
+                    Style::new().fg(tokens::FG_INFO).bg(tokens::BG_HIGHLIGHT),
+                )
+            };
+            spans.push(RichSpan::styled(
+                format!(" {icon} {total_alerts} alerts (!) "),
+                style,
+            ));
+            spans.push(RichSpan::raw(" "));
         }
         let issues = &self.analyzer.issues;
         let not_closed = issues.iter().filter(|issue| issue.is_open_like()).count();
@@ -10238,10 +10303,22 @@ impl BvrApp {
                 ("?", " help"),
             ]);
         }
-        let left_width: usize = spans
+        let mut left_width: usize = spans
             .iter()
             .map(|span| display_width(span.content.as_ref()))
             .sum();
+        // Key hints matter more than the generic mode hints: when everything
+        // does not fit, the mode-hint segment (span 1) gives way first.
+        let full_right: usize = hints
+            .iter()
+            .map(|(key, desc)| display_width(key) + display_width(desc) + 3)
+            .sum::<usize>()
+            + display_width(&format!("{} issues  ", self.analyzer.issues.len()))
+            + 1;
+        if left_width + full_right >= width && spans.len() > 1 {
+            left_width -= display_width(spans[1].content.as_ref());
+            spans[1] = RichSpan::raw("");
+        }
         // Drop trailing hints (then the count) until the right side fits.
         let count = format!("{} issues  ", self.visible_issue_indices().len());
         for keep in (0..=hints.len()).rev() {

@@ -39,7 +39,7 @@ expression: artifact
 │                                            ││ • Detail summary shows triage and graph context.                       │
 │               Page 1 of 1 (items 1-3 of 3) ││ • Rich body sections stay readable across narrow and wide panes.       │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1                   3 issues  tab focus │ C copy │ x export │ / search │ ? help
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                       3 issues  tab focus │ C copy │ x export │ / search │ ? help
 
 --- Step 2: main_detail_focus ---
 ┌────────────────────────────────────────────┐┌────────────────────────────────────────────────────────────────────────┐
@@ -76,7 +76,7 @@ expression: artifact
 │                                            ││                                                                        │
 │               Page 1 of 1 (items 1-3 of 3) ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1     3 issues  ^j/k scroll │ tab focus │ C copy │ x export │ / search │ ? help
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1         3 issues  ^j/k scroll │ tab focus │ C copy │ x export │ / search │ ? help
 
 --- Step 3: board_entry ---
                                                    BOARD [by: Status]
@@ -113,7 +113,7 @@ expression: artifact
 │                            ││                            ││                            ││                            │
 │                            ││                            ││                            ││                            │
 ╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯
- 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1     3 issues  hjkl nav │ G bottom
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                               3 issues  hjkl nav │ G bottom │ tab detail │ b list
 
 --- Step 4: board_navigate ---
                                                    BOARD [by: Status]
@@ -150,7 +150,7 @@ expression: artifact
 │                            ││                            ││                            ││                            │
 │                            ││                            ││                            ││                            │
 ╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯
- 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1     3 issues  hjkl nav │ G bottom
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                               3 issues  hjkl nav │ G bottom │ tab detail │ b list
 
 --- Step 5: graph_entry_from_board ---
 ┌Graph Nodes [focus]─────────────────────────┐┌Graph Focus─────────────────────────────────────────────────────────────┐
@@ -187,7 +187,7 @@ expression: artifact
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1   3 issues  h/l nodes │ j/k nodes │ tab edges │ / search │ ⏎ details │ g list
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1       3 issues  h/l nodes │ j/k nodes │ tab edges │ / search │ ⏎ details │ g list
 
 --- Step 6: graph_detail_focus ---
 ┌Graph Nodes─────────────────────────────────┐┌Graph Focus [focus]─────────────────────────────────────────────────────┐
@@ -224,7 +224,7 @@ expression: artifact
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1          3 issues  ^j/k scroll │ h/l nodes │ j/k nodes │ tab edges │ / search
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1  3 issues  ^j/k scroll │ h/l nodes │ j/k nodes │ tab edges │ / search │ ⏎ details
 
 --- Step 7: insights_entry ---
 ╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
@@ -261,7 +261,7 @@ expression: artifact
 │ │ ↳ Unblocks 1                      │ │ ↳ Unblocks 0                      │                                          │
 │ ╰───────────────────────────────────╯ ╰───────────────────────────────────╯                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- 📋 ALL  Bottlenecks • L:labels • h:detail  ○2 ◉1 ◈0 ●1        3 issues  h/l panels │ j/k items │ / search │ tab detail
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                 3 issues  h/l panels │ j/k items │ / search │ tab detail │ ? help
 
 --- Step 8: insights_panel_cycle ---
 ╭──────────────────────────────────────╮╭──────────────────────────────────────╮╭──────────────────────────────────────╮
@@ -298,7 +298,7 @@ expression: artifact
 │ │ ↳ Unblocks 1                      │ │ ↳ Unblocks 0                      │                                          │
 │ ╰───────────────────────────────────╯ ╰───────────────────────────────────╯                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- 📋 ALL  Keystones • L:labels • h:detail  ○2 ◉1 ◈0 ●1          3 issues  h/l panels │ j/k items │ / search │ tab detail
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                 3 issues  h/l panels │ j/k items │ / search │ tab detail │ ? help
 
 --- Step 9: main_return ---
 ┌────────────────────────────────────────────┐┌────────────────────────────────────────────────────────────────────────┐
@@ -335,4 +335,4 @@ expression: artifact
 │                                            ││                                                                        │
 │               Page 1 of 1 (items 1-3 of 3) ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1                   3 issues  tab focus │ C copy │ x export │ / search │ ? help
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                       3 issues  tab focus │ C copy │ x export │ / search │ ? help

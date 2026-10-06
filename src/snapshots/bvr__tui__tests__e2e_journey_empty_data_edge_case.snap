@@ -34,7 +34,7 @@ expression: artifact
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0        0 issues  tab focus │ C copy │ x export │ / search
+ 📋 ALL  ○0 ◉0 ◈0 ●0                    0 issues  tab focus │ C copy │ x export │ / search │ ? help
 
 --- Step 2: empty_board ---
                                          BOARD [by: Status]
@@ -66,7 +66,7 @@ expression: artifact
 │                       ││                       ││                       ││                       │
 │                       ││                       ││                       ││                       │
 ╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯
- 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○0 ◉0 ◈0 ●0
+ 📋 ALL  ○0 ◉0 ◈0 ●0                            0 issues  hjkl nav │ G bottom │ tab detail │ b list
 
 --- Step 3: empty_graph ---
 ┌Graph Nodes [focus]─────────────────────┐┌Graph Focus─────────────────────────────────────────────┐
@@ -98,7 +98,7 @@ expression: artifact
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0    0 issues  h/l nodes │ j/k nodes │ tab edges │ / search
+ 📋 ALL  ○0 ◉0 ◈0 ●0    0 issues  h/l nodes │ j/k nodes │ tab edges │ / search │ ⏎ details │ g list
 
 --- Step 4: empty_insights ---
 ╭───────────────────────────────╮╭───────────────────────────────╮╭───────────────────────────────╮
@@ -130,7 +130,7 @@ expression: artifact
 │                                                                                                 │
 │                                                                                                 │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯
- 📋 ALL  Bottlenecks • L:labels • h:detail  ○0 ◉0 ◈0 ●0            0 issues  h/l panels │ j/k items
+ 📋 ALL  ○0 ◉0 ◈0 ●0              0 issues  h/l panels │ j/k items │ / search │ tab detail │ ? help
 
 --- Step 5: empty_actionable ---
  ⚡ ACTIONABLE ITEMS  │  0 items in 0 tracks
@@ -162,7 +162,7 @@ expression: artifact
 
 
 
- 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0    0 issues  j/k nav │ tab tracks/items │ ⏎ view │ a list
+ 📋 ALL  ○0 ◉0 ◈0 ●0                0 issues  j/k nav │ tab tracks/items │ ⏎ view │ a list │ ? help
 
 --- Step 6: empty_tree ---
 bvr 1 Main b Board i Insights T Tree | mode=Tree | focus=list | issues=0/0 | filter=all |
@@ -226,4 +226,4 @@ Tree: 0 nodes │ j/k navigate │ Enter expand/collapse │ Tab focus │ T/Esc
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
- 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0        0 issues  tab focus │ C copy │ x export │ / search
+ 📋 ALL  ○0 ◉0 ◈0 ●0                    0 issues  tab focus │ C copy │ x export │ / search │ ? help

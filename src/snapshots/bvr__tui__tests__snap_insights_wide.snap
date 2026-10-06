@@ -31,4 +31,4 @@ expression: text
 │ │                            │ │                            │                                   │  │                                     │
 │ ╰────────────────────────────╯ ╰────────────────────────────╯                                   │  │ Top-level issue that unblocks       │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────╯  └─────────────────────────────────────┘
- 📋 ALL  Bottlenecks • L:labels • h:detail  ○2 ◉1 ◈0 ●1                   3 issues  h/l panels │ j/k items │ / search │ tab detail │ ? help
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                                     3 issues  h/l panels │ j/k items │ / search │ tab detail │ ? help

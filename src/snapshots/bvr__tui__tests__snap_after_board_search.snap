@@ -31,4 +31,4 @@ expression: text
 │                       ││                       ││                       ││                       │
 │                       ││                       ││                       ││                       │
 ╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯
- 📋 ALL  /B [1/1] • n/N:match • enter:done • esc:cancel  ○2 ◉1 ◈0 ●1  3 issues  hjkl nav │ G bottom
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1           3 issues  hjkl nav │ G bottom │ tab detail │ b list
