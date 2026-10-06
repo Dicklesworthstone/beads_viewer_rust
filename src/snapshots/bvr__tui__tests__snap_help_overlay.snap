@@ -21,7 +21,7 @@ expression: text
 │   J/K          Navigate deps in detail           |                                               │
 │   Enter        Return to main / drill            | [History]                                     │
 │   scroll       Mouse wheel scrolls list          |   c            Cycle confidence filter        │
-│   splitter click/scroll Mouse-resize active div… |   y            Copy SHA/ID                    │
+│   divider click Mouse-resize active divider      |   y            Copy SHA/ID                    │
 │                                                  |   o            Open commit in browser         │
 │ [Views]                                          |   f            Toggle file tree               │
 │   a            Toggle actionable mode            |                                               │

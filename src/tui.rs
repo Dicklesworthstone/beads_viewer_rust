@@ -2860,6 +2860,14 @@ impl Model for BvrApp {
         }
 
         // -- Help overlay ----------------------------------------------------
+        if self.show_help && self.render_go_help(frame, rows[1]) {
+            Paragraph::new(RichText::from_lines([RichLine::from_spans([
+                RichSpan::styled(" ? / Esc ", tokens::status_filter_badge()),
+                RichSpan::styled("  close help", tokens::footer_hint()),
+            ])]))
+            .render(rows[2], frame);
+            return;
+        }
         if self.show_help {
             let inner_width = rows[1].width.saturating_sub(2) as usize;
             let full_help = self.help_overlay_text(inner_width);
@@ -8399,130 +8407,10 @@ impl BvrApp {
     }
 
     fn help_overlay_text(&self, width: usize) -> String {
-        // Define keybinding sections.
-        struct Section {
-            title: &'static str,
-            bindings: Vec<(&'static str, &'static str)>,
-        }
-
-        let sections = vec![
-            Section {
-                title: "Navigation",
-                bindings: vec![
-                    ("j/k", "Move selection up/down"),
-                    ("arrows", "Move selection up/down"),
-                    ("h/l", "Lateral nav (lanes, peers)"),
-                    ("Ctrl+d/u", "Jump down/up by 10"),
-                    ("Ctrl+j/k", "Scroll detail pane"),
-                    ("Ctrl+←/→", "Resize active pane split"),
-                    ("Ctrl+0", "Reset pane splits"),
-                    ("PgUp/PgDn", "Jump by 10"),
-                    ("Home/End", "Jump to top/bottom"),
-                    ("gg", "Jump to top (any view)"),
-                    ("G", "Jump to bottom"),
-                    ("Ctrl+f/b", "Full page down/up"),
-                    ("Tab / Shift+Tab", "Toggle focus forward/back"),
-                    ("J/K", "Navigate deps in detail"),
-                    ("Enter", "Return to main / drill"),
-                    ("scroll", "Mouse wheel scrolls list"),
-                    ("splitter click/scroll", "Mouse-resize active divider"),
-                ],
-            },
-            Section {
-                title: "Views",
-                bindings: vec![
-                    ("a", "Toggle actionable mode"),
-                    ("b", "Toggle board mode"),
-                    ("i", "Toggle insights mode"),
-                    ("g", "Toggle graph mode"),
-                    ("H", "Toggle history mode"),
-                    ("!", "Toggle attention mode"),
-                    ("T", "Toggle tree view"),
-                    ("[", "Toggle label dashboard"),
-                    ("]", "Toggle flow matrix"),
-                    ("v", "History: bead/git toggle"),
-                ],
-            },
-            Section {
-                title: "Filters",
-                bindings: vec![
-                    ("o", "Filter: open only"),
-                    ("c", "Filter: closed only"),
-                    ("r", "Filter: ready only"),
-                    ("s", "Cycle sort/grouping/panel"),
-                ],
-            },
-            Section {
-                title: "Search",
-                bindings: vec![
-                    ("/", "Start search"),
-                    ("n/N", "Next/prev search match"),
-                    ("Tab", "Cycle search mode (in /)"),
-                    ("Esc", "Cancel search"),
-                    ("Enter", "Confirm search"),
-                ],
-            },
-            Section {
-                title: "Actions",
-                bindings: vec![
-                    ("p", "Toggle priority hints"),
-                    ("P", "Pages export wizard"),
-                    ("C", "Copy issue ID"),
-                    ("x", "Export issue markdown"),
-                    ("O", "Open in editor"),
-                    ("Ctrl+R/F5", "Refresh from disk"),
-                ],
-            },
-            Section {
-                title: "History",
-                bindings: vec![
-                    ("c", "Cycle confidence filter"),
-                    ("y", "Copy SHA/ID"),
-                    ("o", "Open commit in browser"),
-                    ("f", "Toggle file tree"),
-                ],
-            },
-            Section {
-                title: "Board",
-                bindings: vec![
-                    ("1-4", "Jump to lane"),
-                    ("L", "Jump to last lane"),
-                    ("0/$", "First/last in lane"),
-                    ("e", "Toggle empty lanes"),
-                ],
-            },
-            Section {
-                title: "Tree",
-                bindings: vec![
-                    ("Enter/za", "Toggle fold"),
-                    ("zo/zc", "Open/close fold"),
-                    ("zR/zM", "Open/close all folds"),
-                    ("zz", "Recenter cursor"),
-                ],
-            },
-            Section {
-                title: "Insights",
-                bindings: vec![
-                    ("s/S", "Cycle panel fwd/back"),
-                    ("m", "Toggle heatmap"),
-                    ("e", "Toggle explanations"),
-                    ("x", "Toggle calc-proof"),
-                ],
-            },
-            Section {
-                title: "Global",
-                bindings: vec![
-                    ("?/F1", "Toggle this help"),
-                    ("Esc", "Back / clear / quit"),
-                    ("q", "Quit / back to main"),
-                    ("Ctrl+T", "Tutorial"),
-                    ("Ctrl+C", "Quit immediately"),
-                ],
-            },
-        ];
+        let sections = help_sections();
 
         // Render each section as a block of lines.
-        let render_section = |sec: &Section| -> Vec<String> {
+        let render_section = |sec: &HelpSection| -> Vec<String> {
             let mut block = vec![format!("[{}]", sec.title)];
             for (key, desc) in &sec.bindings {
                 block.push(format!("  {:<12} {}", key, desc));
@@ -9077,6 +8965,128 @@ impl BvrApp {
                 Rect::new(area.x + grid_width, area.y, detail_width, area.height),
             );
         }
+    }
+
+    /// Render `?` help as Go bv's keyboard-shortcut modal: a titled frame of
+    /// color-coded rounded section boxes in balanced columns. Returns false
+    /// when the sections do not fit, so the caller can use the scrollable
+    /// text rendering instead.
+    fn render_go_help(&self, frame: &mut Frame, area: Rect) -> bool {
+        let sections = help_sections();
+        let columns = if area.width >= 120 {
+            3
+        } else if area.width >= 80 {
+            2
+        } else {
+            1
+        };
+        // Greedy balance: each section goes to the currently shortest column.
+        // A section box is its bindings + title + two border rows, plus a gap.
+        let heights: Vec<u16> = sections
+            .iter()
+            .map(|section| {
+                u16::try_from(section.bindings.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(4)
+            })
+            .collect();
+        let mut column_items: Vec<Vec<usize>> = vec![Vec::new(); columns];
+        let mut column_heights = vec![0u16; columns];
+        for (index, height) in heights.iter().enumerate() {
+            let target = (0..columns)
+                .min_by_key(|col| column_heights[*col])
+                .unwrap_or(0);
+            column_items[target].push(index);
+            column_heights[target] = column_heights[target].saturating_add(*height);
+        }
+        let inner_height = area.height.saturating_sub(4);
+        if column_heights.iter().any(|height| *height > inner_height) {
+            return false;
+        }
+
+        Block::bordered()
+            .border_type(ftui::widgets::borders::BorderType::Rounded)
+            .border_style(Style::new().fg(tokens::FG_ACCENT))
+            .render(area, frame);
+        Paragraph::new(RichText::from_lines([RichLine::from_spans([
+            RichSpan::styled("⌨  Keyboard Shortcuts", tokens::primary_bold()),
+            RichSpan::styled(
+                "    Ctrl+T: Tutorial │ ? or Esc to close",
+                tokens::muted_text(),
+            ),
+        ])]))
+        .alignment(ftui::widgets::block::Alignment::Center)
+        .render(
+            Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), 1),
+            frame,
+        );
+
+        let palette = |title: &str| -> (&'static str, PackedRgba) {
+            match title {
+                "Navigation" => ("🧭", tokens::FG_ACCENT),
+                "Views" => ("👁", PackedRgba::rgb(255, 121, 198)),
+                "Filters" => ("🔍", tokens::FG_SUCCESS),
+                "Search" => ("🔎", tokens::FG_INFO),
+                "Actions" => ("⚡", tokens::FG_WARNING),
+                "History" => ("📜", PackedRgba::rgb(255, 183, 108)),
+                "Board" => ("📋", PackedRgba::rgb(100, 181, 246)),
+                "Tree" => ("🌳", PackedRgba::rgb(129, 199, 132)),
+                "Insights" => ("💡", PackedRgba::rgb(241, 250, 140)),
+                _ => ("🌐", tokens::FG_INFO),
+            }
+        };
+        let content_width = area.width.saturating_sub(4);
+        let column_width = content_width / u16::try_from(columns).unwrap_or(1);
+        for (col, items) in column_items.iter().enumerate() {
+            let x = area.x + 2 + column_width * u16::try_from(col).unwrap_or(0);
+            let mut y = area.y + 3;
+            for &index in items {
+                let section = &sections[index];
+                let height = heights[index];
+                let (emoji, color) = palette(section.title);
+                let rect = Rect::new(
+                    x,
+                    y,
+                    column_width.saturating_sub(1),
+                    height.saturating_sub(1),
+                );
+                Block::bordered()
+                    .border_type(ftui::widgets::borders::BorderType::Rounded)
+                    .border_style(Style::new().fg(color))
+                    .render(rect, frame);
+                let key_width = section
+                    .bindings
+                    .iter()
+                    .map(|(key, _)| display_width(key))
+                    .max()
+                    .unwrap_or(4)
+                    .clamp(4, 16);
+                let mut lines = vec![RichLine::from_spans([RichSpan::styled(
+                    format!("{emoji} {}", section.title),
+                    Style::new().fg(color).bold(),
+                )])];
+                for (key, desc) in &section.bindings {
+                    lines.push(RichLine::from_spans([
+                        RichSpan::styled(
+                            format!("{key:<key_width$}  "),
+                            Style::new().fg(color).bold(),
+                        ),
+                        RichSpan::raw((*desc).to_string()),
+                    ]));
+                }
+                Paragraph::new(RichText::from_lines(lines)).render(
+                    Rect::new(
+                        rect.x + 2,
+                        rect.y + 1,
+                        rect.width.saturating_sub(4),
+                        rect.height.saturating_sub(2),
+                    ),
+                    frame,
+                );
+                y = y.saturating_add(height);
+            }
+        }
+        true
     }
 
     /// Go bv lane presentation for a board lane key: (emoji, title, color).
@@ -15897,6 +15907,132 @@ fn open_url_in_browser(url: &str) -> bool {
     }
 }
 
+/// One help-overlay section: title and (key, description) bindings.
+struct HelpSection {
+    title: &'static str,
+    bindings: Vec<(&'static str, &'static str)>,
+}
+
+/// The keyboard reference shown by `?`, shared by the boxed (Go-style)
+/// and scrollable text renderings.
+fn help_sections() -> Vec<HelpSection> {
+    vec![
+        HelpSection {
+            title: "Navigation",
+            bindings: vec![
+                ("j/k", "Move selection up/down"),
+                ("arrows", "Move selection up/down"),
+                ("h/l", "Lateral nav (lanes, peers)"),
+                ("Ctrl+d/u", "Jump down/up by 10"),
+                ("Ctrl+j/k", "Scroll detail pane"),
+                ("Ctrl+←/→", "Resize active pane split"),
+                ("Ctrl+0", "Reset pane splits"),
+                ("PgUp/PgDn", "Jump by 10"),
+                ("Home/End", "Jump to top/bottom"),
+                ("gg", "Jump to top (any view)"),
+                ("G", "Jump to bottom"),
+                ("Ctrl+f/b", "Full page down/up"),
+                ("Tab / Shift+Tab", "Toggle focus forward/back"),
+                ("J/K", "Navigate deps in detail"),
+                ("Enter", "Return to main / drill"),
+                ("scroll", "Mouse wheel scrolls list"),
+                ("divider click", "Mouse-resize active divider"),
+            ],
+        },
+        HelpSection {
+            title: "Views",
+            bindings: vec![
+                ("a", "Toggle actionable mode"),
+                ("b", "Toggle board mode"),
+                ("i", "Toggle insights mode"),
+                ("g", "Toggle graph mode"),
+                ("H", "Toggle history mode"),
+                ("!", "Toggle attention mode"),
+                ("T", "Toggle tree view"),
+                ("[", "Toggle label dashboard"),
+                ("]", "Toggle flow matrix"),
+                ("v", "History: bead/git toggle"),
+            ],
+        },
+        HelpSection {
+            title: "Filters",
+            bindings: vec![
+                ("o", "Filter: open only"),
+                ("c", "Filter: closed only"),
+                ("r", "Filter: ready only"),
+                ("s", "Cycle sort/grouping/panel"),
+            ],
+        },
+        HelpSection {
+            title: "Search",
+            bindings: vec![
+                ("/", "Start search"),
+                ("n/N", "Next/prev search match"),
+                ("Tab", "Cycle search mode (in /)"),
+                ("Esc", "Cancel search"),
+                ("Enter", "Confirm search"),
+            ],
+        },
+        HelpSection {
+            title: "Actions",
+            bindings: vec![
+                ("p", "Toggle priority hints"),
+                ("P", "Pages export wizard"),
+                ("C", "Copy issue ID"),
+                ("x", "Export issue markdown"),
+                ("O", "Open in editor"),
+                ("Ctrl+R/F5", "Refresh from disk"),
+            ],
+        },
+        HelpSection {
+            title: "History",
+            bindings: vec![
+                ("c", "Cycle confidence filter"),
+                ("y", "Copy SHA/ID"),
+                ("o", "Open commit in browser"),
+                ("f", "Toggle file tree"),
+            ],
+        },
+        HelpSection {
+            title: "Board",
+            bindings: vec![
+                ("1-4", "Jump to lane"),
+                ("L", "Jump to last lane"),
+                ("0/$", "First/last in lane"),
+                ("e", "Toggle empty lanes"),
+            ],
+        },
+        HelpSection {
+            title: "Tree",
+            bindings: vec![
+                ("Enter/za", "Toggle fold"),
+                ("zo/zc", "Open/close fold"),
+                ("zR/zM", "Open/close all folds"),
+                ("zz", "Recenter cursor"),
+            ],
+        },
+        HelpSection {
+            title: "Insights",
+            bindings: vec![
+                ("h/l s/S", "Step panels back/fwd"),
+                ("m", "Toggle heatmap"),
+                ("e", "Toggle explanations"),
+                ("x", "Toggle calc-proof"),
+            ],
+        },
+        HelpSection {
+            title: "Global",
+            bindings: vec![
+                ("?/F1", "Toggle this help"),
+                ("Esc", "Back / clear / quit"),
+                ("q", "Quit / back to main"),
+                ("Ctrl+T", "Tutorial"),
+                ("Ctrl+C", "Quit immediately"),
+            ],
+        },
+    ]
+}
+
 fn mini_bar(value: f64, max: f64) -> String {
     let width: usize = 6;
     let ratio = if max > 0.0 { value / max } else { 0.0 };
@@ -21689,7 +21825,7 @@ mod tests {
         let help = app.help_overlay_text(120);
         assert!(help.contains("Ctrl+\u{2190}/\u{2192}"));
         assert!(help.contains("Ctrl+0"));
-        assert!(help.contains("splitter click/scroll"));
+        assert!(help.contains("divider click"));
     }
 
     #[test]
@@ -22012,6 +22148,31 @@ mod tests {
         assert!(auto.should_show_empty(BoardGrouping::Status));
         assert!(!auto.should_show_empty(BoardGrouping::Priority));
         assert!(!auto.should_show_empty(BoardGrouping::Type));
+    }
+
+    #[test]
+    fn help_renders_go_style_section_boxes_with_every_binding() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_help = true;
+        let rendered = render_app(&app, 160, 50);
+        assert!(rendered.contains("Keyboard Shortcuts"), "{rendered}");
+        for section in super::help_sections() {
+            assert!(
+                rendered.contains(section.title),
+                "missing section {}",
+                section.title
+            );
+            let (_, last) = section.bindings.last().expect("section bindings");
+            assert!(
+                rendered.contains(last),
+                "{} lost its last binding {last}",
+                section.title
+            );
+        }
+
+        // Too short for the boxes: the scrollable text rendering is used.
+        let compact = render_app(&app, 160, 20);
+        assert!(compact.contains("[Navigation]"), "{compact}");
     }
 
     #[test]
