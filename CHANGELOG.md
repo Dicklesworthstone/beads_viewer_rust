@@ -12,6 +12,67 @@ Binary name: **`bvr`**
 
 ---
 
+## [Unreleased]
+
+Catch-up with the current legacy `bv` (beads_viewer, October 2026). This covers
+its data-source authority, robot contract, and TUI look and feel.
+
+### Data source authority
+
+- Reads br's SQLite database directly (read-only) when `.beads/metadata.json`
+  declares it, picking whichever is fresher: the database (including its `-wal`)
+  or the JSONL export. A corrupt database falls back to the export.
+  `BV_DATA_SOURCE=auto|sqlite|jsonl` forces a store.
+  ([1a35456](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/1a35456))
+- Follows `.beads/redirect` chains like `br where`. Honors `BEADS_DB` (a file
+  or `.beads` directory) ahead of `BEADS_DIR`. `--db` accepts a SQLite
+  database, a JSONL file, or a directory.
+- Dolt-native `bd` workspaces are read only through `.beads/issues.jsonl`
+  (running `bd export` when it is missing), so a stray JSONL is never taken
+  for the issue store.
+- New `defer_until` support: deferred beads are kept out of ready work. br's
+  `due_at` now loads as the due date (it was silently dropped).
+
+### Robot contract
+
+- Claimable top picks match legacy: open, unassigned, not an epic, not a parent
+  with open children, not deferred, and none of the opt-in not-ready labels
+  (`--robot-not-ready-labels` / `BV_ROBOT_NOT_READY_LABELS`). Every
+  recommendation carries `claimable` and `defer_until`.
+  ([1a35456](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/1a35456), [18d7259](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/18d7259))
+- Strict triage counts (#165): `open_count`/`blocked_count` count exact
+  statuses. The old aggregates now live in `not_closed_count` and
+  `not_actionable_count`. **Breaking** for consumers that relied on the old
+  meanings. ([a8799c4](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/a8799c4))
+- New: `--brief` (compact triage), `--robot-capabilities` (one-call manifest),
+  `--export` with `--export-format markdown|json|csv|mermaid`, and
+  `--graph-root` scoping for triage. ([1a35456](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/1a35456), [ad6e75e](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/ad6e75e))
+- Agent-style invocations are accepted: `bvr triage --json`, `bvr robot-next`,
+  `bvr search "q" --limit 5`, `bvr graph mermaid`, `bvr --workspace w.yaml next`.
+  ([4901d36](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/4901d36))
+- In workspace mode, claim/show commands `cd` into the issue's repository and
+  use its local ID. ([383ce0d](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/383ce0d))
+- `--export-graph graph.html` writes legacy's self-contained interactive force
+  graph. ([ad6e75e](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/ad6e75e))
+
+### TUI: legacy look and feel on frankentui
+
+Each view was compared side by side with the Go binary in a real terminal.
+
+- **Main**: Go's column-header list with type glyphs, P0–P4 badges, status
+  badges, ages, comment counts, and paging; a Markdown detail pane rendered by
+  ftui-extras; the Go status bar; click-to-select. ([cfb50d8](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/cfb50d8))
+- **Board**: Go's kanban with rounded lane columns, colored headers, and
+  state-colored cards. ([09aa9fd](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/09aa9fd))
+- **Insights**: Go's 3×3 metric-panel grid plus the priority strip.
+  ([8691b51](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/8691b51))
+- **Graph**: Go's GRAPH METRICS styling and status bar. ([a3d5f2b](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/a3d5f2b))
+- **Help**: Go's color-coded keyboard-shortcut modal. ([6b893b4](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/6b893b4))
+- No tab strip in the Go-styled views. `--theme light|dark|auto`.
+  ([2b32917](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/2b32917))
+
+---
+
 ## [v0.3.0] -- 2026-08-22
 
 ### Self-update: new `bvr upgrade` command (#23)
