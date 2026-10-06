@@ -5,21 +5,21 @@ expression: artifact
 === E2E Journey: narrow-geometry-stress | 40x15 ===
 
 --- Step 1: narrow_main ---
-bvr 1 Main b Board i In  | 3/3 | all
-┌Issues [focu┐┌Details─────────────────┐
-│            ││                        │
-│ Focus: lis ││ ────────────────────── │
-│ scope=all  ││ Summary  ready to exec │
-│ Guide: / s ││ T A  Root  (C copy id) │
-│            ││ Status: open | Priorit │
-│ ▸ #01 read ││ Action: Pull now | Dow │
-│   #02 bloc ││ Assignee: alice | Repo │
-│   #03 clos ││ Closed: n/a | Labels:  │
-│            ││ Created: 2026-01-01 |  │
-│            ││                        │
-│            ││                        │
-└────────────┘└────────────────────────┘
-b/i/g/H modes │ / search │ s default
+┌──────────────────────────────────────┐
+│  TYPE PRI STATUS      ID             │
+│▸ 📋 P0 🔓1 OPEN A Root               │
+│  📋 P0 OPEN B Dependent              │
+│  📋 P0 DONE C Closed                 │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│         Page 1 of 1 (items 1-3 of 3) │
+└──────────────────────────────────────┘
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●
 
 --- Step 2: narrow_board ---
 bvr 1 Main b Board i In  | 3/3 | all
@@ -141,18 +141,18 @@ bvr 1 Main b Board i In T Tree  | 3/3 |
 Tree: 3 nodes │ j/k navigate
 
 --- Step 9: narrow_main_return ---
-bvr 1 Main b Board i In  | 3/3 | all
-┌Issues [focu┐┌Details─────────────────┐
-│            ││                        │
-│ Focus: lis ││ ────────────────────── │
-│ scope=all  ││ Summary  reference sta │
-│ Guide: / s ││ T C  Closed  (C copy i │
-│            ││ Status: closed | Prior │
-│   #01 read ││ Action: Closed work it │
-│   #02 bloc ││ Assignee: unassigned | │
-│ ▸ #03 clos ││ Closed: 2026-01-06 | L │
-│            ││ Created: 2026-01-01 |  │
-│            ││                        │
-│            ││                        │
-└────────────┘└────────────────────────┘
-b/i/g/H modes │ / search │ s default
+┌──────────────────────────────────────┐
+│  TYPE PRI STATUS      ID             │
+│  📋 P0 🔓1 OPEN A Root               │
+│  📋 P0 OPEN B Dependent              │
+│▸ 📋 P0 DONE C Closed                 │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│         Page 1 of 1 (items 1-3 of 3) │
+└──────────────────────────────────────┘
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●

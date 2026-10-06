@@ -5,16 +5,16 @@ expression: artifact
 === E2E Journey: empty-data-edge-case | 100x30 ===
 
 --- Step 1: empty_main ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=0/0 | filter=all |
-┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+┌────────────────────────────────────────┐┌────────────────────────────────────────────────────────┐
+│  TYPE PRI STATUS      ID               ││ No issues selected                                     │
+│No issues in the current triage slice   ││                                                        │
+│Scope: filter=all                       ││                                                        │
+│Recover: a all | o open | I in-progress ││                                                        │
 │                                        ││                                                        │
-│ Focus: list owns selection, / s…       ││ No issues to display. Create or load a .beads/*.jsonl  │
-│ scope=all | label=any | repo=any | pos ││                                                        │
-│ Guide: / search-as-you-type | o/c/r/B/ ││                                                        │
 │                                        ││                                                        │
-│ No issues in the current triage slice  ││                                                        │
-│ Scope: filter=all                      ││                                                        │
-│ Recover: a all | o open | I in-progres ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
@@ -34,7 +34,7 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=0/0 | filter=all
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+ 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0        0 issues  tab focus │ C copy │ x export │ / search
 
 --- Step 2: empty_board ---
 bvr 1 Main b Board i Insights | mode=Board | focus=list | issues=0/0 | filter=all |
@@ -197,16 +197,16 @@ bvr 1 Main b Board i Insights T Tree | mode=Tree | focus=list | issues=0/0 | fil
 Tree: 0 nodes │ j/k navigate │ Enter expand/collapse │ Tab focus │ T/Esc back
 
 --- Step 7: empty_main_return ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=0/0 | filter=all |
-┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+┌────────────────────────────────────────┐┌────────────────────────────────────────────────────────┐
+│  TYPE PRI STATUS      ID               ││ No issues selected                                     │
+│No issues in the current triage slice   ││                                                        │
+│Scope: filter=all                       ││                                                        │
+│Recover: a all | o open | I in-progress ││                                                        │
 │                                        ││                                                        │
-│ Focus: list owns selection, / s…       ││ No issues to display. Create or load a .beads/*.jsonl  │
-│ scope=all | label=any | repo=any | pos ││                                                        │
-│ Guide: / search-as-you-type | o/c/r/B/ ││                                                        │
 │                                        ││                                                        │
-│ No issues in the current triage slice  ││                                                        │
-│ Scope: filter=all                      ││                                                        │
-│ Recover: a all | o open | I in-progres ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
@@ -226,4 +226,4 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=0/0 | filter=all
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+ 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0        0 issues  tab focus │ C copy │ x export │ / search

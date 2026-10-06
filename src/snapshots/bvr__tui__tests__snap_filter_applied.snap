@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=2/3 | filter=open |
-┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+┌────────────────────────────────────────┐┌────────────────────────────────────────────────────────┐
+│  TYPE PRI STATUS      ID               ││ 📋 Root                                                │
+│▸ 📋 P0 🔓1 OPEN A Root                 ││                                                        │
+│  📋 P0 OPEN B Dependent                ││ ┌────┬────────┬──────────┬──────────┬────────────┐     │
+│                                        ││ │ ID │ Status │ Priority │ Assignee │ Created    │     │
+│                                        ││ ├────┼────────┼──────────┼──────────┼────────────┤     │
+│                                        ││ │ A  │ OPEN   │ 🔥 P0    │ @alice   │ 2026-01-01 │     │
+│                                        ││ └────┴────────┴──────────┴──────────┴────────────┘     │
 │                                        ││                                                        │
-│ Focus: list owns selection, / s…       ││ ────────────────────────────────────────────────       │
-│ scope=open | label=any | repo=any | po ││ Summary  ready to execute                              │
-│ Guide: / search-as-you-type | o/c/r/B/ ││ T A  Root  (C copy id)                                 │
-│                                        ││ Status: open | Priority: p0 | Type: task | State: read │
-│ ▸ #01 ready   P0 A Root @alice         ││ Action: Pull now | Downstream impact: 1 | Critical dep │
-│   #02 blocked P0 B Dependent ⊘1        ││ Assignee: alice | Repo: viewer | Estimate: 90m  (w rep │
-│                                        ││ Closed: n/a | Labels: [core] [parity]  (L label filter │
-│                                        ││ Created: 2026-01-01 | Updated: 2026-01-02 | Due: n/a   │
+│                                        ││ Labels: core, parity                                   │
+│                                        ││ C copy id • L label filter • w repo filter • t         │
+│                                        ││ time-travel                                            │
 │                                        ││                                                        │
-│                                        ││ ────────────────────────────────────────────────       │
-│                                        ││ Signals  rank and graph pressure                       │
-│                                        ││ Depth 2 | k-core 1 | slack 0.0000 | cut-point no       │
-│                                        ││ PR ██████ 0.48  BW ░░░░░░ 0.00                         │
-│                                        ││ EV ██████ 1.00  blockers=0 | unblocks=1                │
+│                                        ││ 🎯 Triage Insights                                     │
+│                                        ││ • 🔓 Unblocks: 1 downstream items when completed       │
 │                                        ││                                                        │
-│                                        ││ ────────────────────────────────────────────────       │
-│                                        ││ Dependencies  upstream, gates, downstream              │
-│                                        ││ Upstream: none                                         │
-│                                        ││ Open Gate: none                                        │
-│                                        ││ Downstream: B                                          │
+│                                        ││ Graph Analysis                                         │
+│                                        ││ • Impact Depth: 2 (downstream chain length)            │
+│                                        ││ • Centrality: PR 0.4805 • BW 0.0000 • EV 1.0000        │
+│                                        ││ • Flow Role: Hub 0.0000 • Authority 1.0000             │
 │                                        ││                                                        │
+│                                        ││ Description                                            │
 │                                        ││                                                        │
+│                                        ││ Top-level issue that unblocks downstream work once the │
+│                                        ││ shared baseline is solid.                              │
 │                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
+│                                        ││ Design Notes                                           │
+│           Page 1 of 1 (items 1-2 of 2) ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+ 📂 OPEN  L:labels • h:detail  ○2 ◉1 ◈0 ●1       2 issues  tab focus │ C copy │ x export │ / search

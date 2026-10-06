@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all |
 ┌Recipe Picker─────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 │  ▸ actionable       Issues ready to work on (no open blockers)                                   │
@@ -12,6 +11,7 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all
 │    quick-wins       Easy low-priority actionable items                                           │
 │    stale            Issues not updated in 30+ days                                               │
 │    triage           Sorted by computed triage score                                              │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

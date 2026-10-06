@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all |
-┌Issues [focus]──────────────────────────┐┌Details─────────────────────────────────────────────────┐
+┌────────────────────────────────────────┐┌────────────────────────────────────────────────────────┐
+│  TYPE PRI STATUS      ID               ││ ✨ Feature work                                        │
+│▸ ✨ P1 OPEN A Feature work             ││                                                        │
+│  🐛 P2 OPEN B Bug fix                  ││ ┌────┬────────┬──────────┬──────────┬─────────┐        │
+│  📋 P3 OPEN C UI polish                ││ │ ID │ Status │ Priority │ Assignee │ Created │        │
+│                                        ││ ├────┼────────┼──────────┼──────────┼─────────┤        │
+│                                        ││ │ A  │ OPEN   │ ⚡ P1    │ —        │ —       │        │
+│                                        ││ └────┴────────┴──────────┴──────────┴─────────┘        │
 │                                        ││                                                        │
-│ Focus: list owns selection, / s…       ││ ────────────────────────────────────────────────       │
-│ scope=all | label=any | repo=any | pos ││ Summary  ready to execute                              │
-│ Guide: / search-as-you-type | o/c/r/B/ ││ F A  Feature work  (C copy id)                         │
-│                                        ││ Status: open | Priority: p1 | Type: feature | State: r │
-│ ▸ #01 ready P1 A Feature work          ││ Action: Pull now | Downstream impact: 0 | Critical dep │
-│   #02 ready P2 B Bug fix               ││ Assignee: unassigned | Repo: local | Estimate: n/a  (w │
-│   #03 ready P3 C UI polish             ││ Closed: n/a | Labels: [backend] [urgent]  (L label fil │
-│                                        ││ Created: n/a | Updated: n/a | Due: n/a  (t time-travel │
+│                                        ││ Labels: backend, urgent                                │
+│                                        ││ C copy id • L label filter • w repo filter • t         │
+│                                        ││ time-travel                                            │
 │                                        ││                                                        │
-│                                        ││ ────────────────────────────────────────────────       │
-│                                        ││ Signals  rank and graph pressure                       │
-│                                        ││ Depth 1 | k-core 0 | slack 0.0000 | cut-point no       │
-│                                        ││ PR ██████ 0.33  BW ░░░░░░ 0.00                         │
-│                                        ││ EV ██████ 0.58  blockers=0 | unblocks=0                │
-│                                        ││                                                        │
-│                                        ││ ────────────────────────────────────────────────       │
-│                                        ││ Dependencies  upstream, gates, downstream              │
-│                                        ││ Upstream: none                                         │
-│                                        ││ Open Gate: none                                        │
-│                                        ││ Downstream: none                                       │
-│                                        ││                                                        │
-│                                        ││ ────────────────────────────────────────────────       │
-│                                        ││ Priority Hints  scoring rationale                      │
+│                                        ││ Graph Analysis                                         │
+│                                        ││ • Impact Depth: 1 (downstream chain length)            │
+│                                        ││ • Centrality: PR 0.3333 • BW 0.0000 • EV 0.5774        │
+│                                        ││ • Flow Role: Hub 0.0000 • Authority 0.0000             │
 │                                        ││                                                        │
 │                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│           Page 1 of 1 (items 1-3 of 3) ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-b/i/g/H modes │ / search │ s default │ p hints │ C copy │ x export │ O edit │ ^←/→ resize
+ 📋 ALL  L:labels • h:detail  ○3 ◉3 ◈0 ●0        3 issues  tab focus │ C copy │ x export │ / search

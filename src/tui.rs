@@ -1,7 +1,7 @@
 use std::cell::Cell;
-use std::collections::BTreeMap;
 #[cfg(not(test))]
 use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -20,6 +20,7 @@ use crate::model::{Issue, Sprint};
 use crate::robot::compute_data_hash;
 use crate::{BvrError, Result};
 use chrono::{DateTime, Utc};
+use ftui::Style;
 use ftui::core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -436,6 +437,7 @@ thread_local! {
     static LAST_VIEW_WIDTH: Cell<u16> = const { Cell::new(80) };
     static LAST_VIEW_HEIGHT: Cell<u16> = const { Cell::new(24) };
     static LAST_DETAIL_CONTENT_AREA: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
+    static LAST_MAIN_LIST_AREA: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
     static PANE_SPLIT_STATE: Cell<PaneSplitState> = const { Cell::new(PaneSplitState {
         narrow_list_pct: 35.0,
         medium_list_pct: 42.0,
@@ -453,6 +455,14 @@ fn record_view_size(width: u16, height: u16) {
 
 fn record_detail_content_area(area: Rect) {
     LAST_DETAIL_CONTENT_AREA.with(|cell| cell.set(area));
+}
+
+fn record_main_list_area(area: Rect) {
+    LAST_MAIN_LIST_AREA.with(|cell| cell.set(area));
+}
+
+fn cached_main_list_area() -> Rect {
+    LAST_MAIN_LIST_AREA.with(Cell::get)
 }
 
 fn cached_detail_content_area() -> Rect {
@@ -506,11 +516,17 @@ fn splitter_rect_between(left: Rect, right: Rect) -> Rect {
     Rect::new(x, left.y, width.max(1), left.height)
 }
 
+/// Rows used by the top mode-tab header. The main view has none — like Go
+/// bv, its list column header and status bar carry the chrome.
+fn header_height(app: &BvrApp) -> u16 {
+    u16::from(!matches!(app.mode, ViewMode::Main))
+}
+
 fn splitter_hit_boxes(app: &BvrApp, width: u16, height: u16) -> Vec<SplitterHitBox> {
     let full = Rect::from_size(width, height);
     let rows = Flex::vertical()
         .constraints([
-            Constraint::Fixed(1),
+            Constraint::Fixed(header_height(app)),
             Constraint::Min(3),
             Constraint::Fixed(1),
         ])
@@ -924,6 +940,111 @@ mod tokens {
     }
 
     // ── Footer tokens (4 distinct styles matching Go bv) ─────────────
+
+    // ── Go bv main-view chrome ───────────────────────────────────────
+
+    /// Column header bar of the issue list (primary background, dark bold
+    /// text), as in Go bv's `renderListWithHeader`.
+    pub fn list_column_header() -> Style {
+        Style::new()
+            .fg(p(
+                PackedRgba::rgb(255, 255, 255),
+                PackedRgba::rgb(40, 42, 54),
+            ))
+            .bg(p(FG_ACCENT_LIGHT, FG_ACCENT))
+            .bold()
+    }
+
+    /// Background of the selected list row.
+    pub fn row_highlight_bg() -> PackedRgba {
+        p(BG_HIGHLIGHT_LIGHT, BG_HIGHLIGHT)
+    }
+
+    /// Issue ID text in list rows (secondary).
+    pub fn row_id() -> Style {
+        Style::new().fg(p(FG_SUBTEXT_LIGHT, FG_MUTED))
+    }
+
+    /// Issue title text in list rows; primary + bold when selected.
+    pub fn row_title(selected: bool) -> Style {
+        if selected {
+            Style::new().fg(p(FG_ACCENT_LIGHT, FG_ACCENT)).bold()
+        } else {
+            Style::new().fg(p(
+                PackedRgba::rgb(51, 51, 51),
+                PackedRgba::rgb(232, 232, 232),
+            ))
+        }
+    }
+
+    /// Selection caret / primary bold accent.
+    pub fn primary_bold() -> Style {
+        Style::new().fg(p(FG_ACCENT_LIGHT, FG_ACCENT)).bold()
+    }
+
+    /// Muted text (ages, page info).
+    pub fn muted_text() -> Style {
+        Style::new().fg(p(FG_MUTED_LIGHT, FG_MUTED))
+    }
+
+    /// Info text (comment counts).
+    pub fn info_text() -> Style {
+        Style::new().fg(p(FG_INFO_LIGHT, FG_INFO))
+    }
+
+    /// Triage marker for a blocker that unblocks work.
+    pub fn triage_unblocks() -> Style {
+        Style::new().fg(p(FG_WARNING_LIGHT, FG_WARNING)).bold()
+    }
+
+    /// Status-bar filter badge (primary background).
+    pub fn status_filter_badge() -> Style {
+        Style::new()
+            .fg(p(
+                PackedRgba::rgb(26, 26, 26),
+                PackedRgba::rgb(248, 248, 242),
+            ))
+            .bg(p(FG_ACCENT_LIGHT, FG_ACCENT))
+            .bold()
+    }
+
+    /// Status-bar stats section background.
+    pub fn status_stats_bg() -> PackedRgba {
+        p(BG_HIGHLIGHT_LIGHT, BG_HIGHLIGHT)
+    }
+
+    /// Status-bar one-shot message (success / error).
+    pub fn status_message(error: bool) -> Style {
+        if error {
+            Style::new()
+                .fg(p(FG_ERROR_LIGHT, FG_ERROR))
+                .bg(p(BG_SURFACE_DANGER_L, BG_SURFACE_DANGER))
+                .bold()
+        } else {
+            Style::new()
+                .fg(p(FG_SUCCESS_LIGHT, FG_SUCCESS))
+                .bg(p(BG_SURFACE_SUCCESS_L, BG_SURFACE_SUCCESS))
+                .bold()
+        }
+    }
+
+    /// Markdown theme for the detail pane, matching Go bv's glamour styling
+    /// (purple headings, cyan inline code, muted quotes).
+    pub fn detail_markdown_theme() -> ftui_extras::markdown::MarkdownTheme {
+        let accent = p(FG_ACCENT_LIGHT, FG_ACCENT);
+        ftui_extras::markdown::MarkdownTheme {
+            h1: Style::new().fg(accent).bold(),
+            h2: Style::new().fg(accent).bold(),
+            h3: Style::new().fg(accent).bold(),
+            h4: Style::new().fg(accent).bold(),
+            code_inline: Style::new().fg(p(FG_INFO_LIGHT, FG_INFO)),
+            code_block: Style::new().fg(p(FG_SUBTEXT_LIGHT, FG_SUBTEXT)),
+            blockquote: Style::new().fg(p(FG_MUTED_LIGHT, FG_MUTED)).italic(),
+            strong: Style::new().fg(p(FG_WARNING_LIGHT, FG_WARNING)).bold(),
+            list_bullet: Style::new().fg(accent),
+            ..ftui_extras::markdown::MarkdownTheme::default()
+        }
+    }
 
     /// Footer keybinding label (bright, bold).
     pub fn footer_key() -> Style {
@@ -1605,6 +1726,71 @@ fn issue_label_summary(issue: &crate::model::Issue) -> Option<String> {
             format!("[{}]", truncate_display(label, 12))
         }
     })
+}
+
+/// Go bv's issue-type glyphs (`GetTypeIcon`).
+fn go_type_icon(issue_type: &str) -> &'static str {
+    match issue_type.trim().to_ascii_lowercase().as_str() {
+        "bug" => "🐛",
+        "feature" => "✨",
+        "task" => "📋",
+        "epic" => "🚀",
+        "chore" => "🧹",
+        "docs" => "📝",
+        "question" => "❓",
+        _ => "• ",
+    }
+}
+
+/// Go bv's priority glyphs for the detail table (`GetPriorityIcon`).
+fn go_priority_icon(priority: i32) -> &'static str {
+    match priority {
+        0 => "🔥 P0",
+        1 => "⚡ P1",
+        2 => "🔹 P2",
+        3 => "☕ P3",
+        _ => "💤 P4",
+    }
+}
+
+/// Clock for relative ages in the TUI. Pinned under test so rendered
+/// snapshots do not drift with wall time.
+fn tui_now() -> DateTime<Utc> {
+    #[cfg(test)]
+    {
+        DateTime::parse_from_rfc3339("2026-06-01T00:00:00Z")
+            .map(|t| t.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+    }
+    #[cfg(not(test))]
+    {
+        Utc::now()
+    }
+}
+
+/// Go bv's relative age (`FormatTimeRel`): now, 5m ago, 3h ago, 2d ago,
+/// 1w ago, 4mo ago.
+fn go_time_rel(time: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    let Some(time) = time else {
+        return "unknown".to_string();
+    };
+    let delta = now - time;
+    let minutes = delta.num_minutes();
+    let hours = delta.num_hours();
+    let days = delta.num_days();
+    if minutes < 1 {
+        "now".to_string()
+    } else if hours < 1 {
+        format!("{minutes}m ago")
+    } else if days < 1 {
+        format!("{hours}h ago")
+    } else if days < 7 {
+        format!("{days}d ago")
+    } else if days < 30 {
+        format!("{}w ago", days / 7)
+    } else {
+        format!("{}mo ago", days / 30)
+    }
 }
 
 /// Issue scan line: dense single-line summary for list views.
@@ -2655,17 +2841,19 @@ impl Model for BvrApp {
 
         let rows = Flex::vertical()
             .constraints([
-                Constraint::Fixed(1),
+                Constraint::Fixed(header_height(self)),
                 Constraint::Min(3),
                 Constraint::Fixed(1),
             ])
             .split(full);
 
         // -- Header ----------------------------------------------------------
-        let header_text = build_header_text(self, full.width);
-        Paragraph::new(header_text)
-            .style(tokens::header_bg())
-            .render(rows[0], frame);
+        if rows[0].height > 0 {
+            let header_text = build_header_text(self, full.width);
+            Paragraph::new(header_text)
+                .style(tokens::header_bg())
+                .render(rows[0], frame);
+        }
 
         // -- Help overlay ----------------------------------------------------
         if self.show_help {
@@ -3048,6 +3236,46 @@ impl Model for BvrApp {
                 ])
                 .split(body);
 
+            if matches!(self.mode, ViewMode::Main) {
+                let list_focused = self.focus == FocusPane::List;
+                // Narrow terminals get one full-width pane, as in Go bv: the
+                // list, or the detail when it has focus.
+                let panes = if matches!(bp, Breakpoint::Narrow) {
+                    let hidden = Rect::new(body.x, body.y, 0, 0);
+                    if list_focused {
+                        [body, hidden]
+                    } else {
+                        [hidden, body]
+                    }
+                } else {
+                    [panes[0], panes[1]]
+                };
+                let list_inner = block_inner_rect(panes[0]);
+                semantic_panel_block("", list_focused, SemanticTone::Accent)
+                    .render(panes[0], frame);
+                Paragraph::new(self.main_go_list_text(list_inner.width, list_inner.height))
+                    .render(list_inner, frame);
+                record_main_list_area(list_inner);
+                let detail_inner = block_inner_rect(panes[1]);
+                semantic_panel_block("", !list_focused, SemanticTone::Accent)
+                    .render(panes[1], frame);
+                let detail_body = Rect::new(
+                    detail_inner.x.saturating_add(1),
+                    detail_inner.y,
+                    detail_inner.width.saturating_sub(2),
+                    detail_inner.height,
+                );
+                Paragraph::new(self.main_go_detail_text(detail_body.width))
+                    .wrap(ftui::text::WrapMode::WordChar)
+                    .scroll((saturating_scroll_offset(self.detail_scroll_offset), 0))
+                    .render(detail_body, frame);
+                record_detail_content_area(detail_inner);
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
             let list_text = self.list_panel_render_text(panes[0].width);
             let list_title = match self.mode {
                 ViewMode::Board => "Board Lanes",
@@ -3754,6 +3982,9 @@ impl BvrApp {
             return None;
         }
 
+        if header_height(self) == 0 {
+            return None;
+        }
         let mode = self.header_mode_tab_at(event.x, event.y)?;
         self.activate_mode_tab(mode);
         Some(Cmd::None)
@@ -4289,6 +4520,11 @@ impl BvrApp {
         match event.kind {
             MouseEventKind::ScrollUp => self.handle_key(KeyCode::Up, Modifiers::NONE),
             MouseEventKind::ScrollDown => self.handle_key(KeyCode::Down, Modifiers::NONE),
+            MouseEventKind::Down(MouseButton::Left)
+                if self.mouse_select_main_row(event.x, event.y) =>
+            {
+                Cmd::None
+            }
             MouseEventKind::Down(MouseButton::Left)
                 if self.mouse_open_detail_link(event.x, event.y) =>
             {
@@ -8426,6 +8662,532 @@ impl BvrApp {
             ViewMode::Tree => self.tree_list_render_text(width),
             _ => RichText::raw(self.list_panel_text()),
         }
+    }
+
+    /// Left-click on a main-list row selects it and focuses the list
+    /// (Go bv bv-162). Returns false when the click is not on a row.
+    fn mouse_select_main_row(&mut self, x: u16, y: u16) -> bool {
+        if !matches!(self.mode, ViewMode::Main) {
+            return false;
+        }
+        let area = cached_main_list_area();
+        if !rect_contains(area, x, y) {
+            return false;
+        }
+        let chrome = 1 + usize::from(self.main_search_active || !self.main_search_query.is_empty());
+        let Some(row) = usize::from(y - area.y).checked_sub(chrome) else {
+            return false;
+        };
+        let rows = self.list_viewport_height.get();
+        if row >= rows {
+            return false;
+        }
+        let visible = self.visible_issue_indices();
+        let (start, end, ..) = self.main_list_window(&visible, rows);
+        match visible.get(start + row) {
+            Some(&index) if start + row < end => {
+                self.selected = index;
+                self.focus = FocusPane::List;
+                self.detail_scroll_offset = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Column header of the Go-style issue list.
+    const MAIN_LIST_COLUMNS: &'static str =
+        "  TYPE PRI STATUS      ID                                   TITLE";
+
+    /// The visible window of the main list for a viewport of `rows` rows:
+    /// `(start, end, page, pages, total)`, paged so the selection's page is
+    /// shown (Go bv pages rather than scrolls).
+    fn main_list_window(
+        &self,
+        visible: &[usize],
+        rows: usize,
+    ) -> (usize, usize, usize, usize, usize) {
+        let total = visible.len();
+        let per_page = rows.max(1);
+        let slot = self.selected_visible_slot(visible).unwrap_or(0);
+        let page = slot / per_page;
+        let pages = total.div_ceil(per_page).max(1);
+        let start = (page * per_page).min(total);
+        let end = (start + per_page).min(total);
+        (start, end, page + 1, pages, total)
+    }
+
+    /// One Go bv-style list row: caret, type icon, priority badge, triage
+    /// marker, status badge, ID, title, then right-aligned age, comment
+    /// count, and (wider panes) assignee and labels.
+    fn main_go_row(
+        &self,
+        issue: &Issue,
+        selected: bool,
+        width: usize,
+        now: DateTime<Utc>,
+    ) -> RichLine {
+        // One spare column keeps wide glyphs (emoji) off the pane border.
+        let width = width.saturating_sub(1);
+        let mut right: Vec<RichSpan<'static>> = Vec::new();
+        let mut right_width = 0usize;
+        if width > 60 {
+            let age = format!("{:>8}", go_time_rel(issue.created_at, now));
+            right_width += display_width(&age);
+            right.push(RichSpan::styled(age, tokens::muted_text()));
+            right.push(RichSpan::raw(" "));
+            right_width += 1;
+            if issue.comments.is_empty() {
+                right.push(RichSpan::raw("   "));
+                right_width += 3;
+            } else {
+                let comments = format!("💬{}", issue.comments.len());
+                right_width += display_width(&comments);
+                right.push(RichSpan::styled(comments, tokens::info_text()));
+            }
+        }
+        if width > 100 && !issue.assignee.trim().is_empty() {
+            let assignee = format!(
+                " @{:<12}",
+                truncate_with_ellipsis(issue.assignee.trim(), 12, "…")
+            );
+            right_width += display_width(&assignee);
+            right.push(RichSpan::styled(assignee, tokens::row_id()));
+        }
+        if width > 140 && !issue.labels.is_empty() {
+            let labels = format!(
+                " {} ",
+                truncate_with_ellipsis(&issue.labels.join(","), 20, "…")
+            );
+            right_width += display_width(&labels) + 1;
+            right.push(RichSpan::raw(" "));
+            right.push(RichSpan::styled(
+                labels,
+                Style::new().fg(tokens::FG_ACCENT).bg(tokens::BG_SURFACE),
+            ));
+        }
+
+        let mut left: Vec<RichSpan<'static>> = Vec::new();
+        left.push(if selected {
+            RichSpan::styled("▸ ", tokens::primary_bold())
+        } else {
+            RichSpan::raw("  ")
+        });
+        left.push(RichSpan::styled(
+            go_type_icon(&issue.issue_type),
+            Style::new().fg(tokens::type_fg(&issue.issue_type)),
+        ));
+        left.push(RichSpan::raw(" "));
+        let prio = u8::try_from(issue.priority.clamp(0, 4)).unwrap_or(4);
+        left.push(RichSpan::styled(
+            format!("P{prio}"),
+            tokens::priority_badge(prio),
+        ));
+        left.push(RichSpan::raw(" "));
+
+        let open_dependents = self
+            .analyzer
+            .graph
+            .dependents(&issue.id)
+            .into_iter()
+            .filter(|dep| {
+                self.analyzer
+                    .graph
+                    .issue(dep)
+                    .is_some_and(Issue::is_open_like)
+            })
+            .count();
+        if open_dependents > 0 && issue.is_open_like() {
+            let blocker = self.analyzer.graph.open_blockers(&issue.id).is_empty();
+            let marker = if blocker {
+                format!("🔓{open_dependents}")
+            } else {
+                format!("↪{open_dependents}")
+            };
+            left.push(RichSpan::styled(marker, tokens::triage_unblocks()));
+            left.push(RichSpan::raw(" "));
+        }
+
+        let status = issue.normalized_status();
+        left.push(RichSpan::styled(
+            tokens::status_badge_label(&status).to_string(),
+            Style::new()
+                .fg(tokens::status_fg(&status))
+                .bg(tokens::status_bg(&status)),
+        ));
+        left.push(RichSpan::raw(" "));
+        let id = truncate_with_ellipsis(&issue.id, 35, "…");
+        let id_style = if selected {
+            tokens::row_id().bold()
+        } else {
+            tokens::row_id()
+        };
+        left.push(RichSpan::styled(id, id_style));
+        left.push(RichSpan::raw(" "));
+
+        let left_width: usize = left
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum();
+        let title_width = width.saturating_sub(left_width + right_width + 1).max(5);
+        let title = truncate_with_ellipsis(&issue.title, title_width, "…");
+        let pad = width.saturating_sub(left_width + display_width(&title) + right_width);
+        left.push(RichSpan::styled(title, tokens::row_title(selected)));
+        left.push(RichSpan::raw(" ".repeat(pad)));
+        left.extend(right);
+
+        let mut line = RichLine::new();
+        for span in left {
+            if selected {
+                let style = span
+                    .style
+                    .unwrap_or_default()
+                    .bg(tokens::row_highlight_bg());
+                line.push_span(RichSpan::styled(span.content.into_owned(), style));
+            } else {
+                line.push_span(span);
+            }
+        }
+        line
+    }
+
+    /// The Go bv-style main list: a column header bar, one page of rows, and
+    /// a right-aligned page indicator, sized to `width` x `height` (inner).
+    fn main_go_list_text(&self, width: u16, height: u16) -> RichText {
+        let width = usize::from(width);
+        let mut lines = Vec::new();
+        let header = format!(
+            "{:<width$}",
+            truncate_to_width(Self::MAIN_LIST_COLUMNS, width),
+            width = width
+        );
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            header,
+            tokens::list_column_header(),
+        )]));
+        if self.main_search_active || !self.main_search_query.is_empty() {
+            let matches = self.main_search_matches().len();
+            let status = if self.main_search_query.is_empty() {
+                String::new()
+            } else if matches == 0 {
+                "  no matches".to_string()
+            } else {
+                let position = self.main_search_match_cursor.min(matches - 1) + 1;
+                format!("  match {position}/{matches}  (n/N cycle)")
+            };
+            let prompt = format!(
+                " 🔎 /{}{}{status}",
+                self.main_search_query,
+                if self.main_search_active { "▏" } else { "" },
+            );
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                prompt,
+                tokens::info_text(),
+            )]));
+        }
+
+        let visible = self.visible_issue_indices();
+        let chrome = lines.len() + 1; // header (+ search line) + page line
+        let rows = usize::from(height).saturating_sub(chrome).max(1);
+        self.list_viewport_height.set(rows);
+        if visible.is_empty() {
+            lines.extend(self.main_list_empty_state_lines());
+            return RichText::from_lines(lines);
+        }
+        let (start, end, page, pages, total) = self.main_list_window(&visible, rows);
+        let now = tui_now();
+        for index in &visible[start..end] {
+            if let Some(issue) = self.analyzer.issues.get(*index) {
+                lines.push(self.main_go_row(issue, *index == self.selected, width, now));
+            }
+        }
+        for _ in end - start..rows {
+            lines.push(RichLine::raw(""));
+        }
+        let page_info = format!(
+            " Page {page} of {pages} (items {}-{end} of {total}) ",
+            start + 1
+        );
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            format!("{page_info:>width$}"),
+            tokens::row_id(),
+        )]));
+        RichText::from_lines(lines)
+    }
+
+    /// Markdown source for the Go bv-style detail pane of the selection.
+    fn main_go_detail_markdown(&self) -> (String, String) {
+        let Some(issue) = self.selected_issue() else {
+            return ("No issues selected".to_string(), String::new());
+        };
+        let mut md = String::new();
+        let _ = writeln!(md, "# {} {}", go_type_icon(&issue.issue_type), issue.title);
+        md.push_str("| ID | Status | Priority | Assignee | Created |\n|---|---|---|---|---|\n");
+        let _ = writeln!(
+            md,
+            "| **{}** | **{}** | {} | {} | {} |\n",
+            issue.id,
+            issue.normalized_status().to_ascii_uppercase(),
+            go_priority_icon(issue.priority),
+            if issue.assignee.trim().is_empty() {
+                "—".to_string()
+            } else {
+                format!("@{}", issue.assignee.trim())
+            },
+            issue
+                .created_at
+                .map_or_else(|| "—".to_string(), |t| t.format("%Y-%m-%d").to_string()),
+        );
+        if !issue.labels.is_empty() {
+            let _ = writeln!(md, "**Labels:** {}\n", issue.labels.join(", "));
+        }
+        if let Some(until) = issue.defer_until {
+            let _ = writeln!(
+                md,
+                "**Deferred until:** {}\n",
+                until.format("%Y-%m-%d %H:%M UTC")
+            );
+        }
+        let head = std::mem::take(&mut md);
+
+        let metrics = &self.analyzer.metrics;
+        let float = |map: &HashMap<String, f64>| map.get(&issue.id).copied().unwrap_or(0.0);
+        let unblocks = metrics.blocks_count.get(&issue.id).copied().unwrap_or(0);
+        let open_blockers = self.analyzer.graph.open_blockers(&issue.id);
+        if unblocks > 0 || !open_blockers.is_empty() {
+            md.push_str("### 🎯 Triage Insights\n");
+            if unblocks > 0 {
+                let _ = writeln!(
+                    md,
+                    "- **🔓 Unblocks:** {unblocks} downstream items when completed"
+                );
+            }
+            if !open_blockers.is_empty() {
+                let _ = writeln!(md, "- **⛔ Blocked by:** {}", open_blockers.join(", "));
+            }
+            md.push('\n');
+        }
+        md.push_str("### Graph Analysis\n");
+        let _ = writeln!(
+            md,
+            "- **Impact Depth**: {} (downstream chain length)",
+            metrics.critical_depth.get(&issue.id).copied().unwrap_or(0)
+        );
+        let _ = writeln!(
+            md,
+            "- **Centrality**: PR {:.4} • BW {:.4} • EV {:.4}",
+            float(&metrics.pagerank),
+            float(&metrics.betweenness),
+            float(&metrics.eigenvector)
+        );
+        let _ = writeln!(
+            md,
+            "- **Flow Role**: Hub {:.4} • Authority {:.4}\n",
+            float(&metrics.hubs),
+            float(&metrics.authorities)
+        );
+        for (heading, body) in [
+            ("Description", &issue.description),
+            ("Design Notes", &issue.design),
+            ("Acceptance Criteria", &issue.acceptance_criteria),
+            ("Notes", &issue.notes),
+        ] {
+            if !body.trim().is_empty() {
+                let _ = writeln!(md, "### {heading}\n{}\n", body.trim_end());
+            }
+        }
+        let deps: Vec<String> = issue
+            .dependencies
+            .iter()
+            .filter(|dep| !dep.depends_on_id.trim().is_empty())
+            .map(|dep| {
+                let target = self.analyzer.graph.issue(&dep.depends_on_id);
+                let kind = if dep.dep_type.trim().is_empty() {
+                    "blocks"
+                } else {
+                    dep.dep_type.trim()
+                };
+                match target {
+                    Some(t) => format!(
+                        "- **{}** {} {} {} _({kind})_",
+                        t.id,
+                        go_type_icon(&t.issue_type),
+                        t.normalized_status().to_ascii_uppercase(),
+                        t.title
+                    ),
+                    None => format!("- **{}** _({kind}, not loaded)_", dep.depends_on_id),
+                }
+            })
+            .collect();
+        if !deps.is_empty() {
+            let _ = writeln!(
+                md,
+                "### Dependencies ({})\n{}\n",
+                deps.len(),
+                deps.join("\n")
+            );
+        }
+        if !issue.comments.is_empty() {
+            let now = tui_now();
+            let _ = writeln!(md, "### Comments ({})", issue.comments.len());
+            for comment in &issue.comments {
+                let _ = writeln!(
+                    md,
+                    "> **{}** ({})\n> \n> {}\n",
+                    comment.author,
+                    go_time_rel(comment.created_at, now),
+                    comment.text.replace('\n', "\n> ")
+                );
+            }
+        }
+        (head, md)
+    }
+
+    /// The detail pane rendered from [`Self::main_go_detail_markdown`].
+    /// The external reference is a real OSC-8 hyperlink line between the
+    /// metadata block and the body, followed by the pane's action keys.
+    fn main_go_detail_text(&self, width: u16) -> RichText {
+        let renderer =
+            ftui_extras::markdown::MarkdownRenderer::new(tokens::detail_markdown_theme())
+                .rule_width(width.saturating_sub(2).max(10))
+                .table_max_width(width.saturating_sub(2).max(10));
+        let (head, body) = self.main_go_detail_markdown();
+        let mut text = renderer.render(&head);
+        if let Some(issue) = self.selected_issue() {
+            if let Some(url) = issue
+                .external_ref
+                .as_deref()
+                .filter(|url| !url.trim().is_empty())
+            {
+                text.push_line(RichLine::from_spans([
+                    RichSpan::styled("🔗 External: ", tokens::primary_bold()),
+                    RichSpan::styled(url.to_string(), tokens::panel_title_focused())
+                        .link(url.to_string()),
+                    RichSpan::styled("  (o open, y copy)", tokens::muted_text()),
+                ]));
+            }
+            text.push_line(RichLine::from_spans([RichSpan::styled(
+                "C copy id • L label filter • w repo filter • t time-travel",
+                tokens::muted_text(),
+            )]));
+            text.push_line(RichLine::raw(""));
+        }
+        for line in renderer.render(&body).lines() {
+            text.push_line(line.clone());
+        }
+        text
+    }
+
+    /// Go bv's status bar: filter badge, hints, status stats on the left;
+    /// issue count and key hints on the right (or a one-shot message).
+    fn main_go_status_bar(&self, width: u16) -> RichLine {
+        let width = usize::from(width);
+        if !self.status_msg.is_empty() {
+            let error = self.status_msg.to_ascii_lowercase().contains("error")
+                || self.status_msg.to_ascii_lowercase().contains("fail");
+            let text = format!("  {} {}  ", if error { "✗" } else { "✓" }, self.status_msg);
+            return RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&text, width, "…"),
+                tokens::status_message(error),
+            )]);
+        }
+        let (icon, name) = match self.list_filter {
+            ListFilter::All => ("📋", "ALL"),
+            ListFilter::Open => ("📂", "OPEN"),
+            ListFilter::InProgress => ("🔧", "IN PROGRESS"),
+            ListFilter::Blocked => ("⛔", "BLOCKED"),
+            ListFilter::Closed => ("✅", "CLOSED"),
+            ListFilter::Ready => ("🚀", "READY"),
+        };
+        let mut spans = vec![
+            RichSpan::styled(format!(" {icon} {name} "), tokens::status_filter_badge()),
+            RichSpan::styled(" L:labels • h:detail ", tokens::footer_hint()),
+        ];
+        if let Some(label) = self.modal_label_filter.as_deref() {
+            spans.push(RichSpan::styled(
+                format!(" 🏷 {label} "),
+                tokens::info_text(),
+            ));
+        }
+        if let Some(repo) = self.modal_repo_filter.as_deref() {
+            spans.push(RichSpan::styled(format!(" 🗂 {repo} "), tokens::info_text()));
+        }
+        let issues = &self.analyzer.issues;
+        let not_closed = issues.iter().filter(|issue| issue.is_open_like()).count();
+        let closed = issues.len() - not_closed;
+        let blocked = issues
+            .iter()
+            .filter(|issue| issue.normalized_status() == "blocked")
+            .count();
+        let ready = self.analyzer.graph.actionable_ids().len();
+        let stats_bg = tokens::status_stats_bg();
+        spans.push(RichSpan::styled(" ", Style::new().bg(stats_bg)));
+        for (glyph, color, count) in [
+            ("○", tokens::status_fg("open"), not_closed),
+            ("◉", tokens::FG_SUCCESS, ready),
+            ("◈", tokens::FG_WARNING, blocked),
+            ("●", tokens::FG_MUTED, closed),
+        ] {
+            spans.push(RichSpan::styled(glyph, Style::new().fg(color).bg(stats_bg)));
+            spans.push(RichSpan::styled(
+                format!("{count} "),
+                Style::new().fg(tokens::status_fg("")).bg(stats_bg),
+            ));
+        }
+
+        if self.slow_metrics_pending {
+            spans.push(RichSpan::styled(
+                " ◌ computing metrics… ",
+                tokens::info_text(),
+            ));
+        }
+
+        let sep = " │ ";
+        let mut hints: Vec<(&str, &str)> = Vec::new();
+        if matches!(self.focus, FocusPane::Detail) {
+            hints.push(("^j/k", " scroll"));
+            if self.should_open_selected_issue_external_ref() {
+                hints.push(("o", " open link"));
+                hints.push(("y", " copy link"));
+            }
+        }
+        hints.extend([
+            ("tab", " focus"),
+            ("C", " copy"),
+            ("x", " export"),
+            ("/", " search"),
+            ("?", " help"),
+        ]);
+        let left_width: usize = spans
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum();
+        // Drop trailing hints (then the count) until the right side fits.
+        let count = format!("{} issues  ", self.visible_issue_indices().len());
+        for keep in (0..=hints.len()).rev() {
+            let mut right = Vec::new();
+            if keep == hints.len() || keep > 0 {
+                right.push(RichSpan::styled(count.clone(), tokens::footer_dim()));
+            }
+            for (i, (key, desc)) in hints.iter().take(keep).enumerate() {
+                if i > 0 {
+                    right.push(RichSpan::styled(sep, tokens::footer_sep()));
+                }
+                right.push(RichSpan::styled(*key, tokens::footer_key()));
+                right.push(RichSpan::styled(*desc, tokens::footer_hint()));
+            }
+            right.push(RichSpan::raw(" "));
+            let right_width: usize = right
+                .iter()
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            if left_width + right_width < width {
+                spans.push(RichSpan::raw(" ".repeat(width - left_width - right_width)));
+                spans.extend(right);
+                break;
+            }
+        }
+        RichLine::from_spans(spans)
     }
 
     fn main_list_text(&self) -> String {
@@ -21526,20 +22288,8 @@ mod tests {
             "expected inline external-ref action hint, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("(C copy id)"),
-            "expected issue-id action hint, got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("(w repo filter)"),
-            "expected repo-filter action hint, got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("(L label filter)"),
-            "expected label-filter action hint, got:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("(t time-travel)"),
-            "expected time-travel action hint, got:\n{rendered}"
+            rendered.contains("C copy id • L label filter • w repo filter • t time-travel"),
+            "expected detail action hints, got:\n{rendered}"
         );
     }
 
@@ -22205,7 +22955,8 @@ mod tests {
 
     #[test]
     fn mouse_left_click_on_header_mode_tab_switches_mode() {
-        let mut app = new_app(ViewMode::Main, 0);
+        // The main view has no tab header (Go bv layout); other modes do.
+        let mut app = new_app(ViewMode::Board, 0);
         let (x, y) =
             header_tab_click_point(&app, 120, 24, ViewMode::Graph).expect("graph header tab point");
 
@@ -25299,14 +26050,19 @@ mod tests {
     }
 
     #[test]
-    fn header_shows_combined_filters() {
+    fn main_status_bar_shows_combined_filters() {
         let mut app = new_app(ViewMode::Main, 0);
         app.modal_label_filter = Some("core".to_string());
         app.modal_repo_filter = Some("viewer".to_string());
-        let text = render_app(&app, 100, 3);
+        let text = render_app(&app, 140, 12);
+        let status = text.lines().last().unwrap_or_default();
         assert!(
-            text.contains("label:core") || text.contains("core"),
-            "header should mention label filter: {text}"
+            status.contains("🏷 core"),
+            "status bar should show label filter: {status}"
+        );
+        assert!(
+            status.contains("🗂 viewer"),
+            "status bar should show repo filter: {status}"
         );
     }
 
@@ -25322,13 +26078,16 @@ mod tests {
     }
 
     #[test]
-    fn slow_metrics_pending_shows_in_header() {
+    fn slow_metrics_pending_shows_in_main_status_bar() {
         let mut app = new_app(ViewMode::Main, 0);
         app.slow_metrics_pending = true;
-        let text = render_app(&app, 120, 3);
+        let text = render_app(&app, 160, 12);
         assert!(
-            text.contains("computing"),
-            "header should show metrics computing indicator: {text}"
+            text.lines()
+                .last()
+                .unwrap_or_default()
+                .contains("computing metrics"),
+            "status bar should show metrics computing indicator: {text}"
         );
     }
 
@@ -26271,7 +27030,7 @@ mod tests {
         // Step 1: Start in Main — verify issue list
         let text = journey_capture(&app, w, h, "main_list_start", &mut caps);
         assert!(
-            text.contains("mode=Main") || text.contains("Issues"),
+            text.contains("TYPE PRI STATUS"),
             "main should show issue list: {text}"
         );
 
@@ -26280,7 +27039,7 @@ mod tests {
         app.update(key(KeyCode::Tab));
         let text = journey_capture(&app, w, h, "main_detail_focus", &mut caps);
         assert!(
-            text.contains("ID:") || text.contains("Status:"),
+            text.contains("Status") && text.contains("Graph Analysis"),
             "detail should show issue: {text}"
         );
 
@@ -26331,7 +27090,7 @@ mod tests {
         app.update(key(KeyCode::Escape));
         assert_eq!(app.mode, ViewMode::Main);
         let text = journey_capture(&app, w, h, "main_return", &mut caps);
-        assert!(text.contains("mode=Main") || text.contains("Issues"));
+        assert!(text.contains("TYPE PRI STATUS"));
 
         // Snapshot the full journey artifact
         let artifact = journey_artifact("main→board→graph→insights→main", w, h, &caps);
@@ -26419,26 +27178,24 @@ mod tests {
         let mut caps: Vec<(String, String)> = Vec::new();
 
         let text = journey_capture(&app, w, h, "main_start", &mut caps);
-        assert!(text.contains("Focus: list owns selection"));
+        assert!(text.contains("TYPE PRI STATUS"));
 
         app.update(key(KeyCode::Char('/')));
         app.update(key(KeyCode::Char('d')));
         let text = journey_capture(&app, w, h, "search_active", &mut caps);
-        assert!(text.contains("Search (active): /d"));
+        assert!(text.contains("🔎 /d▏"), "search active frame: {text}");
 
         app.update(key(KeyCode::Enter));
         let text = journey_capture(&app, w, h, "search_committed", &mut caps);
-        assert!(text.contains("Matches: 1/3"));
-        assert!(text.contains("hit 1/3"), "search committed frame: {text}");
+        assert!(text.contains("match 1/3"), "search committed frame: {text}");
 
         app.update(key(KeyCode::Char('n')));
         let text = journey_capture(&app, w, h, "search_cycle_second_hit", &mut caps);
-        assert!(text.contains("Matches: 2/3"));
-        assert!(text.contains("hit 2/3"), "search cycled frame: {text}");
+        assert!(text.contains("match 2/3"), "search cycled frame: {text}");
 
         app.update(key(KeyCode::Tab));
         let text = journey_capture(&app, w, h, "detail_focus", &mut caps);
-        assert!(text.contains("Focus: detail owns J/K deps"));
+        assert!(text.contains("^j/k scroll"), "detail focus frame: {text}");
 
         app.update(key(KeyCode::Escape));
         let text = journey_capture(&app, w, h, "focus_recovered", &mut caps);
@@ -26448,7 +27205,7 @@ mod tests {
         app.update(key(KeyCode::Char('z')));
         app.update(key(KeyCode::Enter));
         let text = journey_capture(&app, w, h, "search_no_hit", &mut caps);
-        assert!(text.contains("Matches: none in visible issues"));
+        assert!(text.contains("no matches"), "no-hit frame: {text}");
 
         app.update(key(KeyCode::Escape));
         let text = journey_capture(&app, w, h, "search_cleared", &mut caps);
@@ -26456,11 +27213,11 @@ mod tests {
 
         app.update(key(KeyCode::Char('o')));
         let text = journey_capture(&app, w, h, "open_filter", &mut caps);
-        assert!(text.contains("scope=open"));
+        assert!(text.contains("📂 OPEN"), "open filter frame: {text}");
 
         app.update(key(KeyCode::Escape));
         let text = journey_capture(&app, w, h, "filter_cleared", &mut caps);
-        assert!(text.contains("scope=all"));
+        assert!(text.contains("📋 ALL"), "filter cleared frame: {text}");
     }
 
     #[test]

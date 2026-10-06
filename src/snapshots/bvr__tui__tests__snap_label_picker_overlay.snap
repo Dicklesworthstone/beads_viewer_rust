@@ -2,11 +2,11 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all |
 ┌Label Picker──────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 │  ▸ core                     (1 issues)                                                           │
 │    parity                   (1 issues)                                                           │
+│                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │

@@ -2,7 +2,6 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all |
 ┌Help──────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                  │
 │ [Navigation]                                     | [Search]                                      │
@@ -29,6 +28,7 @@ bvr 1 Main b Board i Insights | mode=Main | focus=list | issues=3/3 | filter=all
 │   b            Toggle board mode                 | [Board]                                       │
 │   i            Toggle insights mode              |   1-4          Jump to lane                   │
 │   g            Toggle graph mode                 |   L            Jump to last lane              │
+│   H            Toggle history mode               |   0/$          First/last in lane             │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ? or Esc close | j/k scroll | Ctrl+d/u page | line 1/45
