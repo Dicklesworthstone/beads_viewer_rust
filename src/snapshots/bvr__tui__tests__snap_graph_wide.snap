@@ -23,12 +23,12 @@ bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | m
 │                                                   ││                           │Dependent         │                                      │
 │                                                   ││                           └──────────────────┘                                      │
 │                                                   ││                                                                                     │
-│                                                   ││ GRAPH METRICS                                                                       │
-│                                                   ││ Importance:                                                                         │
+│                                                   ││  📊 GRAPH METRICS                                                                   │
+│                                                   ││ Importance                                                                          │
 │                                                   ││   Critical Path         2  ██████  #1                                               │
 │                                                   ││   PageRank         0.4805  ██████  #1                                               │
 │                                                   ││   Eigenvector      1.0000  ██████  #1                                               │
-│                                                   ││ Flow & Connectivity:                                                                │
+│                                                   ││ Flow & Connectivity                                                                 │
 │                                                   ││                                                                                     │
 └───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back │ ^←/→ resize │ ^0 reset split
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1                       3 issues  h/l nodes │ j/k nodes │ tab edges │ / search │ ⏎ details │ g list

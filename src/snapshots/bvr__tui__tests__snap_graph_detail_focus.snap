@@ -23,12 +23,12 @@ bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=detail | issues=3/3 |
 │                                        ││                   ║up:1 down:0                       ║ │
 │                                        ││                   ╚══════════════════════════════════╝ │
 │                                        ││                                                        │
-│                                        ││ GRAPH METRICS                                          │
-│                                        ││ Importance:                                            │
+│                                        ││  📊 GRAPH METRICS                                      │
+│                                        ││ Importance                                             │
 │                                        ││   Critical Path         1  ███░░░  #2                  │
 │                                        ││   PageRank         0.2597  ███░░░  #2                  │
 │                                        ││   Eigenvector      0.0000  ░░░░░░  #2                  │
-│                                        ││ Flow & Connectivity:                                   │
+│                                        ││ Flow & Connectivity                                    │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-h/Tab list │ Enter open details │ j/k deps │ ^j/k scroll │ g/Esc back │ ^←/→ resize
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1             3 issues  ^j/k scroll │ h/l nodes │ j/k nodes

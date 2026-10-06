@@ -70,7 +70,7 @@ bvr 1 Main b Board i In g Graph  | 3/3 |
 │                   ╚═════════════════ │
 │                                      │
 └──────────────────────────────────────┘
-h/l nodes │ j/k nodes │ ^u/L jump
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●
 
 --- Step 5: narrow_insights ---
 bvr 1 Main b Board i In  | 3/3 | all

@@ -98,7 +98,7 @@ bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=list | issues=0/0 | f
 │                                        ││                                                        │
 │                                        ││                                                        │
 └────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back
+ 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0    0 issues  h/l nodes │ j/k nodes │ tab edges │ / search
 
 --- Step 4: empty_insights ---
 bvr 1 Main b Board i Insights | mode=Insights | focus=list | issues=0/0 | filter=all |

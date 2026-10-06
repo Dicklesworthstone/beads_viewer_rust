@@ -166,16 +166,16 @@ bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=list | issu
 │                                            ││                   ║up:0 down:0                       ║                 │
 │                                            ││                   ╚══════════════════════════════════╝                 │
 │                                            ││                                                                        │
-│                                            ││ GRAPH METRICS                                                          │
-│                                            ││ Importance:                                                            │
+│                                            ││  📊 GRAPH METRICS                                                      │
+│                                            ││ Importance                                                             │
 │                                            ││   Critical Path         1  ███░░░  #2                                  │
 │                                            ││   PageRank         0.2597  ███░░░  #2                                  │
 │                                            ││   Eigenvector      0.0000  ░░░░░░  #2                                  │
-│                                            ││ Flow & Connectivity:                                                   │
+│                                            ││ Flow & Connectivity                                                    │
 │                                            ││   Betweenness      0.0000  ░░░░░░  #1                                  │
 │                                            ││   Hub Score        0.0000  ░░░░░░  #2                                  │
 │                                            ││   Authority        0.0000  ░░░░░░  #2                                  │
-│                                            ││ Connections:                                                           │
+│                                            ││ Connections                                                            │
 │                                            ││   In-Degree             0  ░░░░░░                                      │
 │                                            ││   Out-Degree            0  ░░░░░░                                      │
 │                                            ││   K-core: 0  Slack: 1.0000  Cut: no                                    │
@@ -187,7 +187,7 @@ bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=list | issu
 │                                            ││   C            0.2597                                                  │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search │ Enter open details │ g/Esc back │ ^←/→ resize
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1   3 issues  h/l nodes │ j/k nodes │ tab edges │ / search │ ⏎ details │ g list
 
 --- Step 6: graph_detail_focus ---
 bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=detail | issues=3/3 | filter=all | sort=default |
@@ -203,16 +203,16 @@ bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=detail | is
 │                                            ││                   ║up:0 down:0                       ║                 │
 │                                            ││                   ╚══════════════════════════════════╝                 │
 │                                            ││                                                                        │
-│                                            ││ GRAPH METRICS                                                          │
-│                                            ││ Importance:                                                            │
+│                                            ││  📊 GRAPH METRICS                                                      │
+│                                            ││ Importance                                                             │
 │                                            ││   Critical Path         1  ███░░░  #2                                  │
 │                                            ││   PageRank         0.2597  ███░░░  #2                                  │
 │                                            ││   Eigenvector      0.0000  ░░░░░░  #2                                  │
-│                                            ││ Flow & Connectivity:                                                   │
+│                                            ││ Flow & Connectivity                                                    │
 │                                            ││   Betweenness      0.0000  ░░░░░░  #1                                  │
 │                                            ││   Hub Score        0.0000  ░░░░░░  #2                                  │
 │                                            ││   Authority        0.0000  ░░░░░░  #2                                  │
-│                                            ││ Connections:                                                           │
+│                                            ││ Connections                                                            │
 │                                            ││   In-Degree             0  ░░░░░░                                      │
 │                                            ││   Out-Degree            0  ░░░░░░                                      │
 │                                            ││   K-core: 0  Slack: 1.0000  Cut: no                                    │
@@ -224,7 +224,7 @@ bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=detail | is
 │                                            ││   C            0.2597                                                  │
 │                                            ││                                                                        │
 └────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-h/Tab list │ Enter open details │ ^j/k scroll │ g/Esc back │ ^←/→ resize │ ^0 reset split
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1          3 issues  ^j/k scroll │ h/l nodes │ j/k nodes │ tab edges │ / search
 
 --- Step 7: insights_entry ---
 bvr 1 Main b Board i Insights g Graph H History | mode=Insights | focus=list | issues=3/3 | filter=all | sort=default |

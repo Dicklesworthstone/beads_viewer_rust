@@ -23,12 +23,12 @@ bvr 1 Main b Board i In g Graph H Hist  | 3/3 | all
 │                           │Dependent         │           │
 │                           └──────────────────┘           │
 │                                                          │
-│ GRAPH METRICS                                            │
-│ Importance:                                              │
+│  📊 GRAPH METRICS                                        │
+│ Importance                                               │
 │   Critical Path         2  ██████  #1                    │
 │   PageRank         0.4805  ██████  #1                    │
 │   Eigenvector      1.0000  ██████  #1                    │
-│ Flow & Connectivity:                                     │
+│ Flow & Connectivity                                      │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
-h/l nodes │ j/k nodes │ ^u/L jump │ Tab detail │ / search
+ 📋 ALL  L:labels • h:detail  ○2 ◉1 ◈0 ●1

@@ -3737,10 +3737,7 @@ impl Model for BvrApp {
                 let hints = self.main_footer_command_hints();
                 wrap_command_hints(&hints, rows[2].width.saturating_sub(1) as usize)
             }
-            ViewMode::Graph => {
-                let hints = self.graph_footer_command_hints();
-                wrap_command_hints(&hints, rows[2].width.saturating_sub(1) as usize)
-            }
+            ViewMode::Graph => RichText::from_lines([self.main_go_status_bar(rows[2].width)]),
             ViewMode::History => {
                 if self.history_file_tree_focus {
                     let mut hints = vec![
@@ -8081,85 +8078,6 @@ impl BvrApp {
         hints
     }
 
-    fn graph_footer_command_hints(&self) -> Vec<CommandHint<'static>> {
-        let mut hints = match self.focus {
-            FocusPane::List => vec![
-                CommandHint {
-                    key: "h/l",
-                    desc: "nodes",
-                },
-                CommandHint {
-                    key: "j/k",
-                    desc: "nodes",
-                },
-                CommandHint {
-                    key: "^u/L",
-                    desc: "jump",
-                },
-                CommandHint {
-                    key: "Tab",
-                    desc: "detail",
-                },
-                CommandHint {
-                    key: "/",
-                    desc: "search",
-                },
-                CommandHint {
-                    key: "Enter",
-                    desc: "open details",
-                },
-            ],
-            FocusPane::Detail | FocusPane::Middle => {
-                let mut hints = vec![
-                    CommandHint {
-                        key: "h/Tab",
-                        desc: "list",
-                    },
-                    CommandHint {
-                        key: "Enter",
-                        desc: "open details",
-                    },
-                ];
-                if !self.detail_dep_list().is_empty() {
-                    hints.push(CommandHint {
-                        key: "j/k",
-                        desc: "deps",
-                    });
-                }
-                hints.push(CommandHint {
-                    key: "^j/k",
-                    desc: "scroll",
-                });
-                hints
-            }
-        };
-        if self.selected_issue_external_ref_url().is_some()
-            && matches!(self.focus, FocusPane::Detail)
-        {
-            hints.push(CommandHint {
-                key: "o",
-                desc: "open link",
-            });
-            hints.push(CommandHint {
-                key: "y",
-                desc: "copy link",
-            });
-        }
-        hints.push(CommandHint {
-            key: "g/Esc",
-            desc: "back",
-        });
-        hints.push(CommandHint {
-            key: "^←/→",
-            desc: "resize",
-        });
-        hints.push(CommandHint {
-            key: "^0",
-            desc: "reset split",
-        });
-        hints
-    }
-
     fn should_open_selected_issue_external_ref(&self) -> bool {
         matches!(
             self.mode,
@@ -9965,7 +9883,25 @@ impl BvrApp {
             ListFilter::Closed => ("✅", "CLOSED"),
             ListFilter::Ready => ("🚀", "READY"),
         };
-        let mode_hints = if matches!(self.mode, ViewMode::Insights) {
+        let mode_hints = if matches!(self.mode, ViewMode::Graph) {
+            if self.graph_search_active || !self.graph_search_query.is_empty() {
+                let matches = self.graph_search_matches().len();
+                let position = if matches == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " [{}/{matches}]",
+                        self.graph_search_match_cursor.min(matches - 1) + 1
+                    )
+                };
+                format!(
+                    " /{}{position} • n/N:match • enter:done • esc:cancel ",
+                    self.graph_search_query
+                )
+            } else {
+                " L:labels • h:detail ".to_string()
+            }
+        } else if matches!(self.mode, ViewMode::Insights) {
             format!(" {} • L:labels • h:detail ", self.insights_panel.label())
         } else if matches!(self.mode, ViewMode::Board) {
             if self.board_search_active || !self.board_search_query.is_empty() {
@@ -10033,7 +9969,23 @@ impl BvrApp {
 
         let sep = " │ ";
         let mut hints: Vec<(&str, &str)> = Vec::new();
-        if matches!(self.mode, ViewMode::Insights) {
+        if matches!(self.mode, ViewMode::Graph) {
+            if matches!(self.focus, FocusPane::Detail) {
+                hints.push(("^j/k", " scroll"));
+            }
+            if self.should_open_selected_issue_external_ref() {
+                hints.push(("o", " open link"));
+                hints.push(("y", " copy link"));
+            }
+            hints.extend([
+                ("h/l", " nodes"),
+                ("j/k", " nodes"),
+                ("tab", " edges"),
+                ("/", " search"),
+                ("⏎", " details"),
+                ("g", " list"),
+            ]);
+        } else if matches!(self.mode, ViewMode::Insights) {
             if matches!(self.focus, FocusPane::Detail) {
                 hints.push(("^j/k", " scroll"));
                 if self.should_open_selected_issue_external_ref() {
@@ -14135,6 +14087,9 @@ impl BvrApp {
                     .is_some_and(|rendered| rendered == url || rendered.ends_with('…'))
             {
                 continue;
+            } else if let Some(styled_line) = go_graph_metric_line(line) {
+                lines.push(styled_line);
+                continue;
             } else if let Some(styled_line) = styled_detail_summary_line(line) {
                 lines.push(styled_line);
                 continue;
@@ -16523,6 +16478,69 @@ fn summary_line_from_pairs(
         wrote_any = true;
     }
     wrote_any.then_some(out)
+}
+
+/// Go bv styling for the graph-metrics block: the "GRAPH METRICS" banner,
+/// section headings, and metric rows whose bar and rank are colored by
+/// strength (green strong, orange middling, muted weak).
+fn go_graph_metric_line(line: &str) -> Option<RichLine> {
+    if line == "GRAPH METRICS" {
+        return Some(RichLine::from_spans([RichSpan::styled(
+            format!(" 📊 GRAPH METRICS{}", " ".repeat(60)),
+            tokens::list_column_header(),
+        )]));
+    }
+    if matches!(
+        line,
+        "Importance:" | "Flow & Connectivity:" | "Connections:"
+    ) {
+        return Some(RichLine::from_spans([RichSpan::styled(
+            line.trim_end_matches(':').to_string(),
+            tokens::primary_bold(),
+        )]));
+    }
+    let bar_start = line.find(['\u{2588}', '\u{2591}'])?;
+    if !line.starts_with("  ") {
+        return None;
+    }
+    let bar_end = line[bar_start..]
+        .char_indices()
+        .find(|(_, ch)| !matches!(ch, '\u{2588}' | '\u{2591}'))
+        .map_or(line.len(), |(offset, _)| bar_start + offset);
+    let bar = &line[bar_start..bar_end];
+    let filled = bar.chars().filter(|ch| *ch == '\u{2588}').count();
+    let total = bar.chars().count().max(1);
+    let strength = filled as f64 / total as f64;
+    let bar_color = if strength >= 0.66 {
+        tokens::FG_SUCCESS
+    } else if strength >= 0.33 {
+        tokens::FG_WARNING
+    } else {
+        tokens::FG_MUTED
+    };
+    let (label, value) = line[..bar_start].trim_end().split_at(
+        line[..bar_start]
+            .trim_end()
+            .rfind(' ')
+            .map_or(0, |index| index + 1),
+    );
+    let rest = &line[bar_end..];
+    let rank_color = rest
+        .trim()
+        .strip_prefix('#')
+        .and_then(|rank| rank.parse::<usize>().ok())
+        .map_or(tokens::FG_MUTED, |rank| match rank {
+            1..=3 => tokens::FG_SUCCESS,
+            4..=50 => tokens::FG_WARNING,
+            _ => tokens::FG_MUTED,
+        });
+    Some(RichLine::from_spans([
+        RichSpan::styled(label.to_string(), tokens::row_id()),
+        RichSpan::styled(value.to_string(), Style::new().bold()),
+        RichSpan::raw("  "),
+        RichSpan::styled(bar.to_string(), Style::new().fg(bar_color)),
+        RichSpan::styled(rest.to_string(), Style::new().fg(rank_color)),
+    ]))
 }
 
 fn styled_detail_summary_line(line: &str) -> Option<RichLine> {
@@ -23623,7 +23641,7 @@ mod tests {
     fn graph_footer_keeps_open_details_wording() {
         let rendered = render_frame(ViewMode::Graph, 120, 40);
         assert!(
-            rendered.contains("Enter open details"),
+            rendered.contains("⏎ details"),
             "expected graph footer to describe Enter accurately, got:\n{rendered}"
         );
     }
