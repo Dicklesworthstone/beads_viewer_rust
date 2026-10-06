@@ -404,18 +404,15 @@ pub fn emit_script(
         if !rec.reasons.is_empty() {
             lines.push(format!("#    Reason: {}", rec.reasons.join("; ")));
         }
-        lines.push(format!("br show {}", rec.id));
-        lines.push(format!(
-            "# To claim: br update {} --status=in_progress",
-            rec.id
-        ));
+        lines.push(rec.show_command.clone());
+        lines.push(format!("# To claim: {}", rec.claim_command));
         lines.push(String::new());
     }
 
     if let Some(top) = items.first() {
         lines.push("# === Quick Actions ===".to_string());
         lines.push("# To claim the top pick:".to_string());
-        lines.push(format!("# br update {} --status=in_progress", top.id));
+        lines.push(format!("# {}", top.claim_command));
     }
 
     lines.join("\n")
@@ -635,8 +632,8 @@ mod tests {
             unblocks_ids: Vec::new(),
             blocked_by: Vec::new(),
             assignee: String::new(),
-            claim_command: String::new(),
-            show_command: String::new(),
+            claim_command: format!("br update {id} --status=in_progress"),
+            show_command: format!("br show {id}"),
             breakdown: None,
         }
     }

@@ -66,6 +66,10 @@ pub struct Issue {
     /// workspace issues. Computed during workspace loading and never emitted.
     #[serde(skip)]
     pub workspace_prefix: Option<String>,
+    /// Internal repository root a workspace issue was loaded from. Tracker
+    /// commands for workspace issues run there, against the local ID.
+    #[serde(skip)]
+    pub workspace_repo_path: Option<std::path::PathBuf>,
     /// Internal content hash for dedup — computed, not serialized to JSON output.
     #[serde(default, skip_serializing)]
     pub content_hash: Option<String>,
@@ -225,6 +229,54 @@ impl Issue {
         self.defer_until.is_some_and(|until| until > now)
     }
 
+    /// The ID the issue's own tracker knows it by: workspace loading prefixes
+    /// IDs (`api-bd-12`), but `br` in that repository only knows `bd-12`.
+    #[must_use]
+    pub fn local_id(&self) -> &str {
+        self.workspace_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|prefix| !prefix.is_empty())
+            .and_then(|prefix| {
+                let id = self.id.as_str();
+                id.get(..prefix.len())
+                    .filter(|head| head.eq_ignore_ascii_case(prefix))
+                    .map(|_| &id[prefix.len()..])
+            })
+            .filter(|local| !local.is_empty())
+            .unwrap_or(&self.id)
+    }
+
+    /// A runnable `br` command line for this issue. `args` uses `{id}` as
+    /// the placeholder for the (shell-quoted) local ID; `env` is an optional
+    /// environment prefix such as `CI=1`. Workspace issues `cd` into their
+    /// repository first so `br` resolves the right tracker.
+    #[must_use]
+    pub fn tracker_command(&self, env: &str, args: &str) -> String {
+        let command = args.replace("{id}", &shell_quote(self.local_id()));
+        let command = if env.trim().is_empty() {
+            format!("br {command}")
+        } else {
+            format!("{} br {command}", env.trim())
+        };
+        match &self.workspace_repo_path {
+            Some(repo) => format!("cd {} && {command}", shell_quote(&repo.to_string_lossy())),
+            None => command,
+        }
+    }
+
+    /// `br update <id> --status=in_progress`, workspace-aware.
+    #[must_use]
+    pub fn claim_command(&self) -> String {
+        self.tracker_command("", "update {id} --status=in_progress")
+    }
+
+    /// `br show <id>`, workspace-aware.
+    #[must_use]
+    pub fn show_command(&self) -> String {
+        self.tracker_command("", "show {id}")
+    }
+
     /// Returns true when the issue carries any of `labels`, compared
     /// case-insensitively after trimming. An empty `labels` set never matches.
     #[must_use]
@@ -300,6 +352,41 @@ impl Issue {
 
         Ok(())
     }
+}
+
+/// Quote a value for POSIX shells only when it holds characters outside the
+/// conservative safe set, so ordinary bead IDs stay unquoted and readable.
+#[must_use]
+pub fn shell_quote(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, '-' | '_' | '.' | '/' | ':' | '+' | '@' | '=')
+        });
+    if safe {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+/// Claim command for `id`, looked up in `issues` (workspace-aware); falls
+/// back to the plain form when the ID is unknown.
+#[must_use]
+pub fn claim_command_for(issues: &[Issue], id: &str) -> String {
+    issues.iter().find(|issue| issue.id == id).map_or_else(
+        || format!("br update {} --status=in_progress", shell_quote(id)),
+        Issue::claim_command,
+    )
+}
+
+/// Show command for `id`, looked up in `issues` (workspace-aware).
+#[must_use]
+pub fn show_command_for(issues: &[Issue], id: &str) -> String {
+    issues.iter().find(|issue| issue.id == id).map_or_else(
+        || format!("br show {}", shell_quote(id)),
+        Issue::show_command,
+    )
 }
 
 const fn default_priority() -> i32 {
@@ -548,6 +635,53 @@ mod tests {
                 "{status} should not be closed-like"
             );
         }
+    }
+
+    #[test]
+    fn tracker_commands_use_local_id_and_repo_for_workspace_issues() {
+        let plain = Issue {
+            id: "bd-12".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(plain.local_id(), "bd-12");
+        assert_eq!(
+            plain.claim_command(),
+            "br update bd-12 --status=in_progress"
+        );
+        assert_eq!(plain.show_command(), "br show bd-12");
+
+        let workspace = Issue {
+            id: "api-bd-12".to_string(),
+            workspace_prefix: Some("api-".to_string()),
+            workspace_repo_path: Some(std::path::PathBuf::from("/work/my api")),
+            ..Default::default()
+        };
+        assert_eq!(workspace.local_id(), "bd-12");
+        assert_eq!(
+            workspace.claim_command(),
+            "cd '/work/my api' && br update bd-12 --status=in_progress"
+        );
+        assert_eq!(
+            workspace.tracker_command("CI=1", "show {id} --json"),
+            "cd '/work/my api' && CI=1 br show bd-12 --json"
+        );
+
+        // A prefix that does not match leaves the ID intact.
+        let mismatched = Issue {
+            id: "bd-3".to_string(),
+            workspace_prefix: Some("web-".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(mismatched.local_id(), "bd-3");
+    }
+
+    #[test]
+    fn shell_quote_only_quotes_unsafe_values() {
+        assert_eq!(shell_quote("bd-1.2"), "bd-1.2");
+        assert_eq!(shell_quote("a b"), "'a b'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote("x;rm -rf /"), "'x;rm -rf /'");
+        assert_eq!(shell_quote(""), "''");
     }
 
     #[test]

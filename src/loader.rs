@@ -1419,6 +1419,9 @@ pub fn load_workspace_issues_with_summary(
             let beads_dir = resolve_beads_redirect(&beads_dir)?;
             let mut issues = load_issues_from_beads_dir(&beads_dir)?;
             namespace_workspace_issues(&mut issues, &prefix, &repo_name, &known_prefixes);
+            for issue in &mut issues {
+                issue.workspace_repo_path = Some(repo_path.clone());
+            }
             Ok(issues)
         })();
 

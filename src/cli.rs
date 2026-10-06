@@ -959,18 +959,28 @@ fn has_primary_action(args: &[String]) -> bool {
 /// excludes the program name.
 #[must_use]
 pub fn rewrite_agent_intent_args(args: &[String]) -> Vec<String> {
-    let Some(first) = args.first() else {
+    if args.is_empty() {
         return Vec::new();
-    };
+    }
 
-    if is_positional(first) {
-        let command = first.trim().to_ascii_lowercase();
-        let bare = command.strip_prefix("robot-").unwrap_or(&command);
-        let rest = &args[1..];
-        if let Some(rewritten) = rewrite_command(bare, &command, rest) {
-            return rewritten;
+    // The command word is the first positional that is not a flag's value,
+    // so `bvr --workspace w.yaml next` works as well as `bvr next`.
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if is_positional(arg) {
+            let command = arg.trim().to_ascii_lowercase();
+            let bare = command.strip_prefix("robot-").unwrap_or(&command);
+            if let Some(rewritten) = rewrite_command(bare, &command, &args[index + 1..]) {
+                let mut out = rewrite_flag_aliases(&args[..index], bare);
+                out.extend(rewritten);
+                return out;
+            }
+            return args.to_vec();
         }
-        return args.to_vec();
+        let flag_takes_next = arg.starts_with("--") && !arg.contains('=') && takes_value(arg)
+            || matches!(arg, "-r" | "-l" | "--limit" | "--output" | "-o");
+        index += if flag_takes_next { 2 } else { 1 };
     }
 
     let rewritten = rewrite_flag_aliases(args, "");
@@ -1284,6 +1294,11 @@ mod tests {
     fn agent_intent_leaves_unknown_and_canonical_args_alone() {
         assert_eq!(rw(&["upgrade", "--dry-run"]), ["upgrade", "--dry-run"]);
         assert_eq!(rw(&["self-update"]), ["upgrade"]);
+        assert_eq!(
+            rw(&["--workspace", "w.yaml", "next", "--json"]),
+            ["--workspace", "w.yaml", "--robot-next", "--format", "json"]
+        );
+        assert_eq!(rw(&["--beads-file", "triage"]), ["--beads-file", "triage"]);
         assert_eq!(rw(&["--robot-triage"]), ["--robot-triage"]);
         assert_eq!(rw(&["frobnicate"]), ["frobnicate"]);
         assert_eq!(rw(&[]), Vec::<String>::new());

@@ -774,8 +774,8 @@ pub fn compute_triage(
             unblocks_ids,
             blocked_by: open_blocker_ids,
             assignee: issue.assignee.clone(),
-            claim_command: format!("br update {} --status=in_progress", issue.id),
-            show_command: format!("br show {}", issue.id),
+            claim_command: issue.claim_command(),
+            show_command: issue.show_command(),
             breakdown: Some(impact.breakdown),
         });
     }
@@ -872,10 +872,12 @@ pub fn compute_triage(
 
     let claim_top = top_picks
         .first()
-        .map(|pick| format!("CI=1 br update {} --status in_progress --json", pick.id));
+        .and_then(|pick| lookups.issue_by_id.get(pick.id.as_str()))
+        .map(|issue| issue.tracker_command("CI=1", "update {id} --status in_progress --json"));
     let show_top = top_picks
         .first()
-        .map(|pick| format!("CI=1 br show {} --json", pick.id));
+        .and_then(|pick| lookups.issue_by_id.get(pick.id.as_str()))
+        .map(|issue| issue.tracker_command("CI=1", "show {id} --json"));
 
     let result = TriageResult {
         meta: TriageMeta {

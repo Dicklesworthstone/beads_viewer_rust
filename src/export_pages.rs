@@ -1096,6 +1096,7 @@ mod tests {
             dependencies: Vec::new(),
             source_repo: ".".to_string(),
             workspace_prefix: None,
+            workspace_repo_path: None,
             content_hash: None,
             external_ref: None,
         }

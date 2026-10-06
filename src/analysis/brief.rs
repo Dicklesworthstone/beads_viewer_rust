@@ -88,7 +88,7 @@ pub fn generate_priority_brief(
     let _ = writeln!(out, "```bash");
     let _ = writeln!(out, "# Claim the top pick:");
     if let Some(top) = recs.first() {
-        let _ = writeln!(out, "br update {} --status=in_progress", top.id);
+        let _ = writeln!(out, "{}", top.claim_command);
     }
     let _ = writeln!(out, "\n# Refresh triage:");
     let _ = writeln!(out, "bvr --robot-triage");

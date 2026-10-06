@@ -877,8 +877,8 @@ fn main() -> ExitCode {
                     score: Some(top.score),
                     reasons: top.reasons.clone(),
                     unblocks: Some(top.unblocks),
-                    claim_command: Some(format!("br update {} --status=in_progress", top.id)),
-                    show_command: Some(format!("br show {}", top.id)),
+                    claim_command: Some(bvr::model::claim_command_for(&issues, &top.id)),
+                    show_command: Some(bvr::model::show_command_for(&issues, &top.id)),
                     message: None,
                 }
             } else {
@@ -6396,7 +6396,7 @@ fn build_robot_overview_output(
             title: pick.title.clone(),
             score: pick.score,
             reasons: pick.reasons.clone(),
-            claim_command: format!("br update {} --status=in_progress", pick.id),
+            claim_command: bvr::model::claim_command_for(issues, &pick.id),
         });
 
     let top_blocker = triage
@@ -6406,7 +6406,7 @@ fn build_robot_overview_output(
             id: blocker.id.clone(),
             title: blocker.title.clone(),
             unblocks: blocker.unblocks,
-            show_command: format!("br show {}", blocker.id),
+            show_command: bvr::model::show_command_for(issues, &blocker.id),
         });
 
     // Build diverse work fronts from label-grouped recommendations.
@@ -6436,7 +6436,7 @@ fn build_robot_overview_output(
                     title: rec.title.clone(),
                     score: rec.score,
                     reasons: rec.reasons.clone(),
-                    claim_command: format!("br update {} --status=in_progress", rec.id),
+                    claim_command: rec.claim_command.clone(),
                 },
             })
         })
@@ -6486,7 +6486,7 @@ fn build_robot_overview_output(
                 .unwrap_or_default(),
             marginal_unlocks: item.marginal_unlocks,
             cumulative_unlocks: item.cumulative_unlocks,
-            claim_command: format!("br update {} --status=in_progress", item.id),
+            claim_command: bvr::model::claim_command_for(issues, &item.id),
         })
         .collect();
 

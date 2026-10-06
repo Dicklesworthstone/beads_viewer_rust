@@ -579,8 +579,8 @@ impl Analyzer {
                 unblocks_ids: Vec::new(),
                 blocked_by: Vec::new(),
                 assignee: issue.assignee.clone(),
-                claim_command: format!("br update {} --status=in_progress", issue.id),
-                show_command: format!("br show {}", issue.id),
+                claim_command: issue.claim_command(),
+                show_command: issue.show_command(),
                 breakdown: None,
             });
         }
