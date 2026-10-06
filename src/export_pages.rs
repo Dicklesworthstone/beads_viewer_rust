@@ -1089,6 +1089,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             due_date: None,
+            defer_until: None,
             closed_at: None,
             labels: Vec::new(),
             comments: Vec::new(),

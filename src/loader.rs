@@ -604,13 +604,36 @@ pub fn find_workspace_config_from(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Resolve the `.beads` directory, in priority order:
+/// 1. `BEADS_DB` (a database/JSONL file — its parent — or a `.beads` dir);
+/// 2. `BEADS_DIR`;
+/// 3. the nearest `.beads` at or above `repo_path` (or the cwd);
+/// 4. the main repository's `.beads` when running inside a git worktree.
+///
+/// Every route then follows a `.beads/redirect` chain (see
+/// [`resolve_beads_redirect`]) so bvr reads the store br writes.
 pub fn get_beads_dir(repo_path: Option<&Path>) -> Result<PathBuf> {
+    if let Ok(db) = std::env::var(BEADS_DB_ENV)
+        && !db.trim().is_empty()
+    {
+        let candidate = PathBuf::from(db.trim());
+        if candidate.is_dir() {
+            return resolve_beads_redirect(&candidate);
+        }
+        if candidate.is_file()
+            && let Some(parent) = candidate.parent()
+        {
+            return Ok(parent.to_path_buf());
+        }
+        return Err(BvrError::MissingBeadsDir(candidate));
+    }
+
     if let Ok(dir) = std::env::var(BEADS_DIR_ENV)
         && !dir.trim().is_empty()
     {
         let candidate = PathBuf::from(dir);
         if candidate.is_dir() {
-            return Ok(candidate);
+            return resolve_beads_redirect(&candidate);
         }
 
         return Err(BvrError::MissingBeadsDir(candidate));
@@ -623,11 +646,11 @@ pub fn get_beads_dir(repo_path: Option<&Path>) -> Result<PathBuf> {
     };
 
     if let Some(beads_dir) = find_beads_dir_from(&root) {
-        return Ok(beads_dir);
+        return resolve_beads_redirect(&beads_dir);
     }
 
     if let Some(beads_dir) = find_worktree_main_repo_beads_dir_from(&root) {
-        return Ok(beads_dir);
+        return resolve_beads_redirect(&beads_dir);
     }
 
     Err(BvrError::MissingBeadsDir(root.join(".beads")))
@@ -702,9 +725,606 @@ pub fn find_jsonl_path(beads_dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn load_issues(repo_path: Option<&Path>) -> Result<Vec<Issue>> {
+    if let Some(path) = beads_db_env_file() {
+        return load_issues_from_path(&path);
+    }
     let beads_dir = get_beads_dir(repo_path)?;
-    let path = find_jsonl_path(&beads_dir)?;
-    load_issues_from_file(&path)
+    load_issues_from_beads_dir(&beads_dir)
+}
+
+// ---------------------------------------------------------------------------
+// Source authority: which on-disk store a `.beads` directory is read from.
+//
+// beads_rust (`br`) keeps its live state in a SQLite database and mirrors it to
+// a JSONL export; `metadata.json` names both. The export can lag the database
+// (no `br sync --flush-only` yet) and the database can lag the export (a `git
+// pull` before `br sync --import-only`), so the freshest declared store wins.
+// Dolt-native `bd` workspaces are read through their `issues.jsonl`
+// compatibility export only; a stray JSONL there (memories, interactions) is
+// never mistaken for the issue store.
+// ---------------------------------------------------------------------------
+
+/// Env var naming a specific database/JSONL file or a `.beads` directory.
+/// Takes priority over `BEADS_DIR`.
+pub const BEADS_DB_ENV: &str = "BEADS_DB";
+
+/// Env var forcing the store read from a br `.beads` directory:
+/// `jsonl`, `sqlite`, or `auto` (default: freshest declared store).
+pub const DATA_SOURCE_ENV: &str = "BV_DATA_SOURCE";
+
+/// Bounds for `.beads/redirect` resolution, matching br's routing limits so
+/// bvr and br agree on the target store.
+const MAX_REDIRECT_BYTES: u64 = 4096;
+const MAX_REDIRECT_DEPTH: usize = 10;
+
+/// `.beads/metadata.json` as written by br and bd.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BeadsMetadata {
+    #[serde(default)]
+    pub database: String,
+    #[serde(default)]
+    pub jsonl_export: String,
+    #[serde(default)]
+    pub backend: String,
+}
+
+#[must_use]
+pub fn read_beads_metadata(beads_dir: &Path) -> Option<BeadsMetadata> {
+    let text = std::fs::read_to_string(beads_dir.join("metadata.json")).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// A concrete store issues are read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IssueSource {
+    Jsonl(PathBuf),
+    Sqlite(PathBuf),
+}
+
+impl IssueSource {
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Jsonl(path) | Self::Sqlite(path) => path,
+        }
+    }
+
+    /// Files whose change means the issue data may have changed (the
+    /// database plus its WAL sidecar, or the JSONL file).
+    #[must_use]
+    pub fn watch_paths(&self) -> Vec<PathBuf> {
+        match self {
+            Self::Jsonl(path) => vec![path.clone()],
+            Self::Sqlite(path) => vec![path.clone(), sqlite_wal_path(path)],
+        }
+    }
+}
+
+fn sqlite_wal_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push("-wal");
+    PathBuf::from(name)
+}
+
+/// True for a Dolt-native `bd` workspace: `.beads/dolt/` (server mode) or
+/// `.beads/embeddeddolt/` (embedded, bd 1.1+), or metadata declaring
+/// `backend: dolt`.
+#[must_use]
+pub fn is_bd_workspace(beads_dir: &Path) -> bool {
+    if ["dolt", "embeddeddolt"]
+        .iter()
+        .any(|dir| beads_dir.join(dir).is_dir())
+    {
+        return true;
+    }
+    read_beads_metadata(beads_dir)
+        .is_some_and(|meta| meta.backend.trim().eq_ignore_ascii_case("dolt"))
+}
+
+fn is_sqlite_path(path: &Path) -> bool {
+    path.extension().and_then(OsStr::to_str).is_some_and(|ext| {
+        matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "db" | "sqlite" | "sqlite3"
+        )
+    })
+}
+
+/// `BEADS_DB` when it names an existing file: that exact file is the source.
+fn beads_db_env_file() -> Option<PathBuf> {
+    let raw = std::env::var(BEADS_DB_ENV).ok()?;
+    let path = PathBuf::from(raw.trim());
+    (!raw.trim().is_empty() && path.is_file()).then_some(path)
+}
+
+/// Follow a `.beads/redirect` chain to its terminal beads directory.
+///
+/// This mirrors `br where`, so bvr reads the store br writes. Without a redirect file
+/// the directory is returned unchanged. A malformed chain (oversized, loop,
+/// missing target, or a target that is not a `.beads`/`_beads` directory) is
+/// an error rather than a silent fall back to the stale local directory.
+pub fn resolve_beads_redirect(beads_dir: &Path) -> Result<PathBuf> {
+    let mut current = beads_dir.to_path_buf();
+    let mut visited = HashSet::<PathBuf>::new();
+    visited.insert(current.clone());
+
+    for depth in 0.. {
+        let redirect = current.join("redirect");
+        let Ok(meta) = std::fs::metadata(&redirect) else {
+            break;
+        };
+        if !meta.is_file() {
+            return Err(BvrError::InvalidArgument(format!(
+                "redirect path is not a regular file: {}",
+                redirect.display()
+            )));
+        }
+        if meta.len() > MAX_REDIRECT_BYTES {
+            return Err(BvrError::InvalidArgument(format!(
+                "redirect file exceeds {MAX_REDIRECT_BYTES} bytes: {}",
+                redirect.display()
+            )));
+        }
+        let text = std::fs::read_to_string(&redirect).map_err(|error| {
+            BvrError::InvalidArgument(format!(
+                "failed to read redirect file {}: {error}",
+                redirect.display()
+            ))
+        })?;
+        let target = text.trim();
+        if target.is_empty() {
+            break;
+        }
+        if depth >= MAX_REDIRECT_DEPTH {
+            return Err(BvrError::InvalidArgument(format!(
+                "redirect chain exceeds max depth ({MAX_REDIRECT_DEPTH}): {}",
+                beads_dir.display()
+            )));
+        }
+        let target = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            current.join(target)
+        };
+        let target = normalize_path_for_identity(&target);
+        if target == current {
+            break;
+        }
+        if !visited.insert(target.clone()) {
+            return Err(BvrError::InvalidArgument(format!(
+                "redirect loop detected: {} -> {}",
+                current.display(),
+                target.display()
+            )));
+        }
+        current = target;
+    }
+
+    if current == beads_dir {
+        return Ok(current);
+    }
+    if !current.is_dir() {
+        return Err(BvrError::InvalidArgument(format!(
+            "redirect target not found: {}",
+            current.display()
+        )));
+    }
+    let base = current
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    if base != ".beads" && base != "_beads" {
+        return Err(BvrError::InvalidArgument(format!(
+            "redirect target must be a .beads or _beads directory: {}",
+            current.display()
+        )));
+    }
+    Ok(current)
+}
+
+fn resolve_metadata_path(beads_dir: &Path, name: &str) -> Option<PathBuf> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let path = Path::new(name);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        beads_dir.join(path)
+    };
+    path.is_file().then_some(path)
+}
+
+fn newest_mtime(paths: &[PathBuf]) -> Option<std::time::SystemTime> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .max()
+}
+
+/// Pick the store to read for a `.beads` directory (see the section comment).
+pub fn select_issue_source(beads_dir: &Path) -> Result<IssueSource> {
+    if is_bd_workspace(beads_dir) {
+        let issues_path = beads_dir.join("issues.jsonl");
+        if !issues_path.is_file() {
+            refresh_bd_export(beads_dir, &issues_path);
+        }
+        if issues_path.is_file() {
+            return Ok(IssueSource::Jsonl(issues_path));
+        }
+        return Err(BvrError::InvalidArgument(format!(
+            "no compatibility JSONL found at {}; run 'bd export -o .beads/issues.jsonl'",
+            issues_path.display()
+        )));
+    }
+
+    let metadata = read_beads_metadata(beads_dir).unwrap_or_default();
+    let jsonl = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
+        .map_or_else(|| find_jsonl_path(beads_dir), Ok);
+    let database = resolve_metadata_path(beads_dir, &metadata.database);
+
+    let mode = std::env::var(DATA_SOURCE_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    match (database, jsonl) {
+        (Some(db), _) if mode == "sqlite" => Ok(IssueSource::Sqlite(db)),
+        (_, Ok(jsonl)) if mode == "jsonl" => Ok(IssueSource::Jsonl(jsonl)),
+        (Some(db), Ok(jsonl)) => {
+            let db_source = IssueSource::Sqlite(db);
+            let db_time = newest_mtime(&db_source.watch_paths());
+            let jsonl_time = newest_mtime(std::slice::from_ref(&jsonl));
+            if db_time >= jsonl_time {
+                Ok(db_source)
+            } else {
+                Ok(IssueSource::Jsonl(jsonl))
+            }
+        }
+        (Some(db), Err(_)) => Ok(IssueSource::Sqlite(db)),
+        (None, jsonl) => jsonl.map(IssueSource::Jsonl),
+    }
+}
+
+/// Refresh a bd workspace's compatibility export (`bd export -o`) when `bd`
+/// is installed. Failures are warnings; the caller reports a missing export.
+fn refresh_bd_export(beads_dir: &Path, issues_path: &Path) {
+    let beads_dir = std::fs::canonicalize(beads_dir).unwrap_or_else(|_| beads_dir.to_path_buf());
+    let Some(repo_root) = beads_dir.parent() else {
+        return;
+    };
+    let output = std::process::Command::new("bd")
+        .arg("export")
+        .arg("-o")
+        .arg(beads_dir.join(issues_path.file_name().unwrap_or_default()))
+        .current_dir(repo_root)
+        .env_remove(BEADS_DB_ENV)
+        .env(BEADS_DIR_ENV, &beads_dir)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => warn(format!(
+            "bd export failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(_) => {}
+    }
+}
+
+/// Load issues from a `.beads` directory through its selected store. A
+/// failing SQLite read falls back to the JSONL export with a warning.
+pub fn load_issues_from_beads_dir(beads_dir: &Path) -> Result<Vec<Issue>> {
+    match select_issue_source(beads_dir)? {
+        IssueSource::Jsonl(path) => load_issues_from_file(&path),
+        IssueSource::Sqlite(db) => match load_issues_from_sqlite(&db) {
+            Ok(issues) => Ok(issues),
+            Err(error) => {
+                warn(format!(
+                    "could not read {} ({error}); falling back to the JSONL export",
+                    db.display()
+                ));
+                let metadata = read_beads_metadata(beads_dir).unwrap_or_default();
+                let jsonl = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
+                    .map_or_else(|| find_jsonl_path(beads_dir), Ok)?;
+                load_issues_from_file(&jsonl)
+            }
+        },
+    }
+}
+
+/// Load issues from an explicit path: a `.beads` directory, a SQLite
+/// database (`.db`/`.sqlite`/`.sqlite3`), or a JSONL file.
+pub fn load_issues_from_path(path: &Path) -> Result<Vec<Issue>> {
+    if path.is_dir() {
+        let beads_dir = resolve_beads_redirect(path)?;
+        return load_issues_from_beads_dir(&beads_dir);
+    }
+    if is_sqlite_path(path) {
+        return load_issues_from_sqlite(path);
+    }
+    load_issues_from_file(path)
+}
+
+/// Watch paths for the store a `.beads` directory currently reads from.
+pub fn issue_source_watch_paths(beads_dir: &Path) -> Result<Vec<PathBuf>> {
+    Ok(select_issue_source(beads_dir)?.watch_paths())
+}
+
+fn parse_sqlite_time(raw: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let raw = raw?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(parsed.with_timezone(&chrono::Utc));
+    }
+    for format in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, format) {
+            return Some(naive.and_utc());
+        }
+    }
+    chrono::DateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f%:z")
+        .ok()
+        .map(|parsed| parsed.with_timezone(&chrono::Utc))
+}
+
+fn sqlite_columns(conn: &rusqlite::Connection, table: &str) -> HashSet<String> {
+    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
+        return HashSet::new();
+    };
+    stmt.query_map([], |row| row.get::<_, String>(1))
+        .map(|rows| {
+            rows.filter_map(std::result::Result::ok)
+                .map(|name| name.to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read issues straight from a beads SQLite database (br schema, tolerant of
+/// older/variant schemas). Opened read-only; never writes. Ephemeral issues
+/// are skipped exactly as br's JSONL export skips them.
+pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let sql_err = |error: rusqlite::Error| {
+        BvrError::InvalidArgument(format!("sqlite read of {}: {error}", path.display()))
+    };
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(sql_err)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(sql_err)?;
+
+    let issue_cols = sqlite_columns(&conn, "issues");
+    if !issue_cols.contains("id") || !issue_cols.contains("title") {
+        return Err(BvrError::InvalidArgument(format!(
+            "{} has no beads issues table",
+            path.display()
+        )));
+    }
+    let col = |name: &str, fallback: &str| -> String {
+        if issue_cols.contains(name) {
+            format!("i.{name}")
+        } else {
+            fallback.to_string()
+        }
+    };
+    let due_col = if issue_cols.contains("due_at") {
+        "i.due_at".to_string()
+    } else {
+        col("due_date", "NULL")
+    };
+    let mut filters = Vec::new();
+    if issue_cols.contains("ephemeral") {
+        filters.push("COALESCE(i.ephemeral, 0) = 0");
+    }
+    let where_clause = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", filters.join(" AND "))
+    };
+    let query = format!(
+        "SELECT i.id, i.title, {desc}, {design}, {ac}, {notes}, {status}, {priority}, \
+         {itype}, {assignee}, {est}, {created}, {updated}, {due}, {defer}, {closed}, \
+         {ext}, {repo}, {deleted} FROM issues i {where_clause} ORDER BY i.id",
+        desc = col("description", "''"),
+        design = col("design", "''"),
+        ac = col("acceptance_criteria", "''"),
+        notes = col("notes", "''"),
+        status = col("status", "'open'"),
+        priority = col("priority", "2"),
+        itype = col("issue_type", "'task'"),
+        assignee = col("assignee", "NULL"),
+        est = col("estimated_minutes", "NULL"),
+        created = col("created_at", "NULL"),
+        updated = col("updated_at", "NULL"),
+        due = due_col,
+        defer = col("defer_until", "NULL"),
+        closed = col("closed_at", "NULL"),
+        ext = col("external_ref", "NULL"),
+        repo = col("source_repo", "NULL"),
+        deleted = col("deleted_at", "NULL"),
+    );
+
+    let mut issues = Vec::<Issue>::new();
+    {
+        let mut stmt = conn.prepare(&query).map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let text = |idx: usize| -> rusqlite::Result<String> {
+                    Ok(row.get::<_, Option<String>>(idx)?.unwrap_or_default())
+                };
+                let mut issue = Issue {
+                    id: text(0)?,
+                    title: text(1)?,
+                    description: text(2)?,
+                    design: text(3)?,
+                    acceptance_criteria: text(4)?,
+                    notes: text(5)?,
+                    status: text(6)?,
+                    priority: row.get::<_, Option<i64>>(7)?.unwrap_or(2) as i32,
+                    issue_type: text(8)?,
+                    assignee: text(9)?,
+                    estimated_minutes: row.get::<_, Option<i64>>(10)?.map(|v| v as i32),
+                    created_at: parse_sqlite_time(row.get(11)?),
+                    updated_at: parse_sqlite_time(row.get(12)?),
+                    due_date: parse_sqlite_time(row.get(13)?),
+                    defer_until: parse_sqlite_time(row.get(14)?),
+                    closed_at: parse_sqlite_time(row.get(15)?),
+                    external_ref: row
+                        .get::<_, Option<String>>(16)?
+                        .filter(|value| !value.trim().is_empty()),
+                    source_repo: text(17)?,
+                    ..Issue::default()
+                };
+                if row.get::<_, Option<String>>(18)?.is_some()
+                    && !issue.status.eq_ignore_ascii_case("tombstone")
+                {
+                    issue.status = "tombstone".to_string();
+                }
+                Ok(issue)
+            })
+            .map_err(sql_err)?;
+        for row in rows {
+            let mut issue = row.map_err(sql_err)?;
+            issue.status = issue.normalized_status();
+            if let Err(error) = issue.validate() {
+                warn(format!(
+                    "skipping invalid issue {} in {}: {error}",
+                    issue.id,
+                    path.display()
+                ));
+                continue;
+            }
+            issues.push(issue);
+        }
+    }
+
+    let index: HashMap<String, usize> = issues
+        .iter()
+        .enumerate()
+        .map(|(idx, issue)| (issue.id.clone(), idx))
+        .collect();
+
+    if sqlite_columns(&conn, "labels").contains("label") {
+        let mut stmt = conn
+            .prepare("SELECT issue_id, label FROM labels ORDER BY issue_id, label")
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(sql_err)?;
+        for (issue_id, label) in rows.filter_map(std::result::Result::ok) {
+            if let Some(&idx) = index.get(&issue_id) {
+                issues[idx].labels.push(label);
+            }
+        }
+    }
+
+    let dep_cols = sqlite_columns(&conn, "dependencies");
+    if dep_cols.contains("issue_id") && dep_cols.contains("depends_on_id") {
+        let type_col = if dep_cols.contains("type") {
+            "type"
+        } else if dep_cols.contains("dependency_type") {
+            "dependency_type"
+        } else {
+            "''"
+        };
+        let created_by = if dep_cols.contains("created_by") {
+            "created_by"
+        } else {
+            "''"
+        };
+        let created_at = if dep_cols.contains("created_at") {
+            "created_at"
+        } else {
+            "NULL"
+        };
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT issue_id, depends_on_id, {type_col}, {created_by}, {created_at} \
+                 FROM dependencies ORDER BY issue_id, depends_on_id"
+            ))
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(crate::model::Dependency {
+                    issue_id: row.get(0)?,
+                    depends_on_id: row.get(1)?,
+                    dep_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    created_by: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    created_at: parse_sqlite_time(row.get(4)?),
+                })
+            })
+            .map_err(sql_err)?;
+        for dep in rows.filter_map(std::result::Result::ok) {
+            if dep.depends_on_id.trim().is_empty() {
+                continue;
+            }
+            if let Some(&idx) = index.get(&dep.issue_id) {
+                issues[idx].dependencies.push(dep);
+            }
+        }
+    }
+
+    let comment_cols = sqlite_columns(&conn, "comments");
+    if comment_cols.contains("issue_id") {
+        let text_col = if comment_cols.contains("text") {
+            "text"
+        } else if comment_cols.contains("body") {
+            "body"
+        } else {
+            "''"
+        };
+        let id_col = if comment_cols.contains("id") {
+            "id"
+        } else {
+            "0"
+        };
+        let author_col = if comment_cols.contains("author") {
+            "author"
+        } else {
+            "''"
+        };
+        let created_col = if comment_cols.contains("created_at") {
+            "created_at"
+        } else {
+            "NULL"
+        };
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {id_col}, issue_id, {author_col}, {text_col}, {created_col} \
+                 FROM comments ORDER BY issue_id, {created_col}, {id_col}"
+            ))
+            .map_err(sql_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(crate::model::Comment {
+                    id: row.get::<_, Option<i64>>(0)?.unwrap_or_default(),
+                    issue_id: row.get(1)?,
+                    author: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    text: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    created_at: parse_sqlite_time(row.get(4)?),
+                })
+            })
+            .map_err(sql_err)?;
+        for comment in rows.filter_map(std::result::Result::ok) {
+            if let Some(&idx) = index.get(&comment.issue_id) {
+                issues[idx].comments.push(comment);
+            }
+        }
+    }
+
+    Ok(deduplicate_issues(issues))
 }
 
 pub fn load_workspace_config(path: &Path) -> Result<WorkspaceConfig> {
@@ -743,8 +1363,10 @@ pub fn find_workspace_issue_paths(path: &Path) -> Result<Vec<PathBuf>> {
         };
         let beads_dir = repo_path.join(repo.effective_beads_path(Some(&config.defaults)));
 
-        match find_jsonl_path(&beads_dir) {
-            Ok(jsonl_path) => paths.push(jsonl_path),
+        match resolve_beads_redirect(&beads_dir)
+            .and_then(|beads_dir| issue_source_watch_paths(&beads_dir))
+        {
+            Ok(source_paths) => paths.extend(source_paths),
             Err(error) => warn(format!(
                 "workspace repo '{repo_name}' watch source unavailable: {error}"
             )),
@@ -794,8 +1416,8 @@ pub fn load_workspace_issues_with_summary(
         let beads_dir = repo_path.join(repo.effective_beads_path(Some(&config.defaults)));
 
         let repo_result = (|| -> Result<Vec<Issue>> {
-            let jsonl_path = find_jsonl_path(&beads_dir)?;
-            let mut issues = load_issues_from_file(&jsonl_path)?;
+            let beads_dir = resolve_beads_redirect(&beads_dir)?;
+            let mut issues = load_issues_from_beads_dir(&beads_dir)?;
             namespace_workspace_issues(&mut issues, &prefix, &repo_name, &known_prefixes);
             Ok(issues)
         })();
@@ -2257,5 +2879,277 @@ mod tests {
         let deduped = super::deduplicate_issues(issues);
         let ids: Vec<&str> = deduped.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, vec!["C", "A", "B"]);
+    }
+
+    /// Build a br-schema SQLite database (the subset bvr reads) at `path`.
+    fn write_br_sqlite(path: &Path) {
+        let conn = rusqlite::Connection::open(path).expect("open sqlite");
+        conn.execute_batch(
+            "CREATE TABLE issues (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+                design TEXT NOT NULL DEFAULT '', acceptance_criteria TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+                priority INTEGER NOT NULL DEFAULT 2, issue_type TEXT NOT NULL DEFAULT 'task',
+                assignee TEXT, estimated_minutes INTEGER, created_at DATETIME, updated_at DATETIME,
+                closed_at DATETIME, due_at DATETIME, defer_until DATETIME, external_ref TEXT,
+                source_repo TEXT NOT NULL DEFAULT '.', deleted_at DATETIME,
+                ephemeral INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE dependencies (issue_id TEXT NOT NULL, depends_on_id TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'blocks', created_at DATETIME, created_by TEXT NOT NULL DEFAULT '');
+             CREATE TABLE labels (issue_id TEXT NOT NULL, label TEXT NOT NULL);
+             CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT NOT NULL,
+                author TEXT NOT NULL, text TEXT NOT NULL, created_at DATETIME);
+             INSERT INTO issues (id, title, status, priority, issue_type, assignee, created_at,
+                updated_at, due_at, defer_until)
+             VALUES ('bd-1', 'Root task', 'open', 1, 'task', NULL, '2026-01-01T00:00:00Z',
+                '2026-01-02T00:00:00Z', '2026-02-01T00:00:00Z', '2099-01-01T00:00:00+00:00');
+             INSERT INTO issues (id, title, status, priority, issue_type, assignee, created_at, updated_at)
+             VALUES ('bd-2', 'Child task', 'in_progress', 2, 'feature', 'alice',
+                '2026-01-01 00:00:00', '2026-01-03 00:00:00');
+             INSERT INTO issues (id, title, ephemeral) VALUES ('bd-wisp', 'Ephemeral wisp', 1);
+             INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES ('bd-2', 'bd-1', 'blocks');
+             INSERT INTO labels (issue_id, label) VALUES ('bd-1', 'backend'), ('bd-1', 'api');
+             INSERT INTO comments (issue_id, author, text, created_at)
+             VALUES ('bd-1', 'bob', 'looks good', '2026-01-02T12:00:00Z');",
+        )
+        .expect("seed sqlite");
+    }
+
+    #[test]
+    fn loads_issues_from_br_sqlite_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("beads.db");
+        write_br_sqlite(&db);
+
+        let issues = load_issues_from_sqlite(&db).expect("load sqlite");
+        let ids: Vec<&str> = issues.iter().map(|issue| issue.id.as_str()).collect();
+        assert_eq!(ids, vec!["bd-1", "bd-2"], "ephemeral issues are skipped");
+
+        let root = &issues[0];
+        assert_eq!(root.priority, 1);
+        assert_eq!(root.labels, vec!["api".to_string(), "backend".to_string()]);
+        assert!(root.due_date.is_some(), "due_at maps to due_date");
+        assert!(root.defer_until.is_some());
+        assert_eq!(root.comments.len(), 1);
+        assert_eq!(root.comments[0].text, "looks good");
+
+        let child = &issues[1];
+        assert_eq!(child.assignee, "alice");
+        assert!(
+            child.created_at.is_some(),
+            "space-separated timestamps parse"
+        );
+        assert_eq!(child.dependencies.len(), 1);
+        assert_eq!(child.dependencies[0].depends_on_id, "bd-1");
+        assert!(child.dependencies[0].is_blocking());
+    }
+
+    #[test]
+    fn rejects_sqlite_without_issues_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("other.db");
+        rusqlite::Connection::open(&db)
+            .expect("open")
+            .execute_batch("CREATE TABLE unrelated (x INTEGER);")
+            .expect("create");
+        assert!(load_issues_from_sqlite(&db).is_err());
+    }
+
+    fn set_mtime(path: &Path, secs: i64) {
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs as u64);
+        File::options()
+            .write(true)
+            .open(path)
+            .expect("open for mtime")
+            .set_modified(time)
+            .expect("set mtime");
+    }
+
+    #[test]
+    fn select_issue_source_prefers_freshest_declared_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let beads = dir.path();
+        std::fs::write(
+            beads.join("metadata.json"),
+            r#"{"database":"beads.db","jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("metadata");
+        write_br_sqlite(&beads.join("beads.db"));
+        std::fs::write(
+            beads.join("issues.jsonl"),
+            "{\"id\":\"J-1\",\"title\":\"From JSONL\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+        )
+        .expect("jsonl");
+
+        // Database newer than export: un-flushed br writes win.
+        set_mtime(&beads.join("issues.jsonl"), 1_000_000);
+        set_mtime(&beads.join("beads.db"), 2_000_000);
+        assert_eq!(
+            select_issue_source(beads).expect("select"),
+            IssueSource::Sqlite(beads.join("beads.db"))
+        );
+        let issues = load_issues_from_beads_dir(beads).expect("load");
+        assert_eq!(issues.len(), 2);
+
+        // Export newer than database (git pull before import): JSONL wins.
+        set_mtime(&beads.join("issues.jsonl"), 3_000_000);
+        assert_eq!(
+            select_issue_source(beads).expect("select"),
+            IssueSource::Jsonl(beads.join("issues.jsonl"))
+        );
+        let issues = load_issues_from_beads_dir(beads).expect("load");
+        assert_eq!(issues[0].id, "J-1");
+    }
+
+    #[test]
+    fn select_issue_source_without_metadata_uses_jsonl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("beads.jsonl"),
+            "{\"id\":\"A\",\"title\":\"A\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+        )
+        .expect("jsonl");
+        assert_eq!(
+            select_issue_source(dir.path()).expect("select"),
+            IssueSource::Jsonl(dir.path().join("beads.jsonl"))
+        );
+    }
+
+    #[test]
+    fn corrupt_database_falls_back_to_jsonl_export() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let beads = dir.path();
+        std::fs::write(
+            beads.join("metadata.json"),
+            r#"{"database":"beads.db","jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("metadata");
+        std::fs::write(
+            beads.join("issues.jsonl"),
+            "{\"id\":\"J-1\",\"title\":\"From JSONL\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+        )
+        .expect("jsonl");
+        std::fs::write(beads.join("beads.db"), b"not a sqlite database").expect("db");
+        set_mtime(&beads.join("issues.jsonl"), 1_000_000);
+        set_mtime(&beads.join("beads.db"), 2_000_000);
+
+        let issues = load_issues_from_beads_dir(beads).expect("fallback load");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "J-1");
+    }
+
+    #[test]
+    fn bd_workspace_never_reads_stray_jsonl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let beads = dir.path().join(".beads");
+        std::fs::create_dir_all(beads.join("embeddeddolt")).expect("dolt dir");
+        std::fs::write(
+            beads.join("interactions.jsonl"),
+            "{\"id\":\"x\",\"title\":\"x\"}\n",
+        )
+        .expect("stray");
+        assert!(is_bd_workspace(&beads));
+        let error = select_issue_source(&beads).expect_err("no compatibility export");
+        assert!(error.to_string().contains("bd export"), "{error}");
+
+        std::fs::write(
+            beads.join("issues.jsonl"),
+            "{\"id\":\"B-1\",\"title\":\"bd issue\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+        )
+        .expect("export");
+        assert_eq!(
+            select_issue_source(&beads).expect("select"),
+            IssueSource::Jsonl(beads.join("issues.jsonl"))
+        );
+    }
+
+    #[test]
+    fn bd_workspace_detected_from_metadata_backend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("metadata.json"), r#"{"backend":"Dolt"}"#)
+            .expect("metadata");
+        assert!(is_bd_workspace(dir.path()));
+        let plain = tempfile::tempdir().expect("tempdir");
+        assert!(!is_bd_workspace(plain.path()));
+    }
+
+    #[test]
+    fn redirect_chain_resolves_to_target_beads_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let local = dir.path().join("worktree/.beads");
+        let shared = dir.path().join("main/.beads");
+        std::fs::create_dir_all(&local).expect("local");
+        std::fs::create_dir_all(&shared).expect("shared");
+        std::fs::write(local.join("redirect"), "../../main/.beads\n").expect("redirect");
+
+        let resolved = resolve_beads_redirect(&local).expect("resolve");
+        assert_eq!(
+            std::fs::canonicalize(resolved).expect("canon"),
+            std::fs::canonicalize(&shared).expect("canon")
+        );
+
+        // No redirect file: unchanged.
+        assert_eq!(resolve_beads_redirect(&shared).expect("resolve"), shared);
+    }
+
+    #[test]
+    fn redirect_errors_on_loop_and_bad_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = dir.path().join("a/.beads");
+        let b = dir.path().join("b/.beads");
+        std::fs::create_dir_all(&a).expect("a");
+        std::fs::create_dir_all(&b).expect("b");
+        std::fs::write(a.join("redirect"), b.display().to_string()).expect("a->b");
+        std::fs::write(b.join("redirect"), a.display().to_string()).expect("b->a");
+        let error = resolve_beads_redirect(&a).expect_err("loop");
+        assert!(error.to_string().contains("loop"), "{error}");
+
+        let c = dir.path().join("c/.beads");
+        let not_beads = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&c).expect("c");
+        std::fs::create_dir_all(&not_beads).expect("elsewhere");
+        std::fs::write(c.join("redirect"), not_beads.display().to_string()).expect("c->x");
+        let error = resolve_beads_redirect(&c).expect_err("bad target");
+        assert!(error.to_string().contains(".beads"), "{error}");
+
+        let d = dir.path().join("d/.beads");
+        std::fs::create_dir_all(&d).expect("d");
+        std::fs::write(
+            d.join("redirect"),
+            dir.path().join("missing/.beads").display().to_string(),
+        )
+        .expect("d->missing");
+        assert!(resolve_beads_redirect(&d).is_err());
+    }
+
+    #[test]
+    fn load_issues_from_path_dispatches_on_kind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("beads.db");
+        write_br_sqlite(&db);
+        assert_eq!(load_issues_from_path(&db).expect("sqlite").len(), 2);
+
+        let jsonl = dir.path().join("x.jsonl");
+        std::fs::write(
+            &jsonl,
+            "{\"id\":\"A\",\"title\":\"A\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+        )
+        .expect("jsonl");
+        assert_eq!(load_issues_from_path(&jsonl).expect("jsonl").len(), 1);
+
+        // A directory is treated as a .beads directory (metadata-less here, so
+        // the db alone is not declared and the JSONL file is found).
+        assert_eq!(load_issues_from_path(dir.path()).expect("dir").len(), 1);
+    }
+
+    #[test]
+    fn jsonl_due_at_alias_and_defer_until_load() {
+        let issues = parse_issues_from_text(
+            "{\"id\":\"A\",\"title\":\"A\",\"status\":\"open\",\"issue_type\":\"task\",\
+             \"due_at\":\"2026-03-01T00:00:00Z\",\"defer_until\":\"2026-04-01T00:00:00Z\"}",
+        )
+        .expect("parse");
+        assert!(issues[0].due_date.is_some());
+        assert!(issues[0].defer_until.is_some());
     }
 }

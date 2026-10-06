@@ -43,8 +43,15 @@ pub struct Issue {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    /// Due date. beads_rust (`br`) exports this as `due_at`; legacy `bd`
+    /// exports used `due_date`. Both spellings load into this field.
+    #[serde(default, alias = "due_at")]
     pub due_date: Option<DateTime<Utc>>,
+    /// Scheduler deferral (`br defer --until`): the issue is hidden from
+    /// ready/actionable work until this instant passes, exactly as `br ready`
+    /// withholds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_until: Option<DateTime<Utc>>,
     #[serde(default)]
     pub closed_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -208,6 +215,29 @@ impl Issue {
     #[must_use]
     pub fn is_claimable_status(&self) -> bool {
         self.normalized_status() == "open"
+    }
+
+    /// Returns true while a scheduler deferral (`defer_until`) is still in
+    /// the future at `now`. A deferred issue is withheld from ready work —
+    /// and therefore from every triage pick — until the instant passes.
+    #[must_use]
+    pub fn is_deferred_at(&self, now: DateTime<Utc>) -> bool {
+        self.defer_until.is_some_and(|until| until > now)
+    }
+
+    /// Returns true when the issue carries any of `labels`, compared
+    /// case-insensitively after trimming. An empty `labels` set never matches.
+    #[must_use]
+    pub fn has_any_label(&self, labels: &[String]) -> bool {
+        if labels.is_empty() {
+            return false;
+        }
+        self.labels.iter().any(|have| {
+            let have = have.trim();
+            labels
+                .iter()
+                .any(|want| have.eq_ignore_ascii_case(want.trim()))
+        })
     }
 
     #[must_use]

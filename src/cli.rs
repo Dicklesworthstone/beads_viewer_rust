@@ -88,6 +88,16 @@ pub struct Cli {
     #[arg(long)]
     pub robot_docs: Option<String>,
 
+    /// Machine-readable manifest of every robot command, output format,
+    /// environment variable, and exit code.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub robot_capabilities: bool,
+
+    /// TUI color theme: light, dark, or auto (detect the terminal background
+    /// from `COLORFGBG`). Overrides `BV_THEME`.
+    #[arg(long)]
+    pub theme: Option<String>,
+
     #[arg(long, action = ArgAction::SetTrue)]
     pub robot_schema: bool,
 
@@ -111,6 +121,17 @@ pub struct Cli {
 
     #[arg(long, action = ArgAction::SetTrue)]
     pub robot_triage_by_label: bool,
+
+    /// Compact --robot-triage output: only decision-relevant fields (id,
+    /// title, status, assignee, score, blockers, unblocks, claim commands).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub brief: bool,
+
+    /// Comma-separated labels marking a bead not-ready: excluded from
+    /// claimable --robot-next/--robot-triage top picks
+    /// (env: `BV_ROBOT_NOT_READY_LABELS`).
+    #[arg(long)]
+    pub robot_not_ready_labels: Option<String>,
 
     #[arg(long, action = ArgAction::SetTrue)]
     pub robot_plan: bool,
@@ -471,6 +492,19 @@ pub struct Cli {
     #[arg(long)]
     pub export_md: Option<PathBuf>,
 
+    /// Export a report to this path (format chosen by --export-format).
+    #[arg(long)]
+    pub export: Option<PathBuf>,
+
+    /// Report format for --export: markdown (default), json, csv, or mermaid.
+    #[arg(long)]
+    pub export_format: Option<String>,
+
+    /// Include dependency context in the --export report (default: true
+    /// except for csv). Use `--export-include-graph=false` to omit it.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub export_include_graph: Option<bool>,
+
     #[arg(long, action = ArgAction::SetTrue)]
     pub no_hooks: bool,
 
@@ -615,6 +649,7 @@ impl Cli {
             || self.robot_capacity
             || self.bead_history.is_some()
             || self.robot_docs.is_some()
+            || self.robot_capabilities
             || self.robot_schema
             || self.robot_sprint_list
             || self.robot_sprint_show.is_some()

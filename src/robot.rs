@@ -824,6 +824,84 @@ fn robot_command_docs() -> BTreeMap<&'static str, CmdDoc> {
     ])
 }
 
+fn robot_env_vars() -> Value {
+    serde_json::json!({
+        "BV_OUTPUT_FORMAT": "Default output format: json or toon (overridden by --format)",
+        "TOON_DEFAULT_FORMAT": "Fallback format if BV_OUTPUT_FORMAT not set",
+        "TOON_STATS": "Set to 1 to show JSON vs TOON token estimates on stderr",
+        "TOON_KEY_FOLDING": "TOON key folding mode",
+        "TOON_INDENT": "TOON indentation level (0-16)",
+        "BV_PRETTY_JSON": "Set to 1 for indented JSON output",
+        "BV_ROBOT": "Set to 1 to force robot mode (clean stdout)",
+        "BV_SEARCH_MODE": "Search mode: text or hybrid",
+        "BV_SEARCH_PRESET": "Hybrid search preset name",
+        "BV_ROBOT_NOT_READY_LABELS": "Comma-separated labels excluded from claimable top picks (overridden by --robot-not-ready-labels)",
+        "BEADS_DB": "Beads database/JSONL file or .beads directory to read (takes priority over BEADS_DIR)",
+        "BEADS_DIR": "Beads directory to read instead of discovering .beads",
+        "BV_DATA_SOURCE": "Store read from a br .beads directory: auto (freshest, default), sqlite, or jsonl",
+    })
+}
+
+fn robot_exit_codes() -> Value {
+    serde_json::json!({
+        "0": "Success",
+        "1": "Error (general failure, drift critical)",
+        "2": "Invalid arguments or drift warning",
+    })
+}
+
+/// `--robot-capabilities`: one machine-readable manifest of the robot surface.
+///
+/// Covers every robot
+/// command (flag, parameters, key fields, data needs), output formats, docs
+/// topics, environment variables, exit codes, and the stdout/stderr contract,
+/// so an agent can discover the whole surface in a single call.
+#[must_use]
+pub fn generate_robot_capabilities() -> Value {
+    let commands: Vec<Value> = robot_command_docs()
+        .into_iter()
+        .map(|(name, doc)| {
+            let mut entry = serde_json::json!({
+                "name": name,
+                "flag": doc.flag,
+                "description": doc.description,
+                "preferred_invocation": format!("bvr {} --format json", doc.flag),
+                "needs_issues": doc.needs_issues,
+                "mutates_state": matches!(
+                    name,
+                    "robot-confirm-correlation" | "robot-reject-correlation"
+                ),
+            });
+            if !doc.key_fields.is_empty() {
+                entry["key_fields"] = serde_json::json!(doc.key_fields);
+            }
+            if !doc.params.is_empty() {
+                entry["params"] = serde_json::json!(doc.params);
+            }
+            entry
+        })
+        .collect();
+
+    serde_json::json!({
+        "generated_at": Utc::now().to_rfc3339(),
+        "tool": "bvr",
+        "version": env!("CARGO_PKG_VERSION"),
+        "output_format": "json",
+        "default_robot_command": "bvr --robot-triage",
+        "output_formats": ["json", "toon"],
+        "commands": commands,
+        "docs_topics": ["guide", "commands", "examples", "env", "exit-codes", "all"],
+        "docs_command": "bvr --robot-docs <topic>",
+        "schema_command": "bvr --robot-schema",
+        "environment_variables": robot_env_vars(),
+        "exit_codes": robot_exit_codes(),
+        "stream_contract": {
+            "stdout": "Structured robot data only for robot commands.",
+            "stderr": "Diagnostics, warnings, and actionable errors.",
+        },
+    })
+}
+
 #[must_use]
 pub fn generate_robot_docs(topic: &str) -> Value {
     let now = Utc::now().to_rfc3339();
@@ -847,7 +925,7 @@ pub fn generate_robot_docs(topic: &str) -> Value {
             "bvr --robot-triage-by-track       # Parallel work streams for multi-agent coordination",
             "bvr --robot-schema                # JSON Schema definitions for all commands",
         ],
-        "data_source": ".beads/beads.jsonl by default (compat: issues.jsonl, beads.base.jsonl) plus git history correlations",
+        "data_source": "The .beads store: the freshest of br's SQLite database and JSONL export declared in .beads/metadata.json (BV_DATA_SOURCE forces one), else beads.jsonl/issues.jsonl/beads.base.jsonl; bd (Dolt) workspaces via .beads/issues.jsonl. .beads/redirect chains are followed. Plus git history correlations.",
         "output_modes": {
             "json": "Default structured output",
             "toon": "Token-optimized notation (saves ~30-50% tokens)",
@@ -868,23 +946,9 @@ pub fn generate_robot_docs(topic: &str) -> Value {
         {"description": "Show token savings estimate", "command": "bvr --robot-triage --format toon --stats"},
     ]);
 
-    let env_vars = serde_json::json!({
-        "BV_OUTPUT_FORMAT": "Default output format: json or toon (overridden by --format)",
-        "TOON_DEFAULT_FORMAT": "Fallback format if BV_OUTPUT_FORMAT not set",
-        "TOON_STATS": "Set to 1 to show JSON vs TOON token estimates on stderr",
-        "TOON_KEY_FOLDING": "TOON key folding mode",
-        "TOON_INDENT": "TOON indentation level (0-16)",
-        "BV_PRETTY_JSON": "Set to 1 for indented JSON output",
-        "BV_ROBOT": "Set to 1 to force robot mode (clean stdout)",
-        "BV_SEARCH_MODE": "Search mode: text or hybrid",
-        "BV_SEARCH_PRESET": "Hybrid search preset name",
-    });
+    let env_vars = robot_env_vars();
 
-    let exit_codes = serde_json::json!({
-        "0": "Success",
-        "1": "Error (general failure, drift critical)",
-        "2": "Invalid arguments or drift warning",
-    });
+    let exit_codes = robot_exit_codes();
 
     match topic {
         "guide" => {
@@ -1956,6 +2020,22 @@ mod tests {
     use serde_json::json;
 
     // --robot-docs tests
+
+    #[test]
+    fn robot_capabilities_lists_every_documented_command() {
+        let caps = generate_robot_capabilities();
+        assert_eq!(caps["tool"], "bvr");
+        let commands = caps["commands"].as_array().expect("commands array");
+        let docs = generate_robot_docs("commands");
+        assert_eq!(commands.len(), docs["commands"].as_object().unwrap().len());
+        for entry in commands {
+            assert!(entry["name"].is_string());
+            assert!(entry["flag"].as_str().unwrap().starts_with("--"));
+            assert!(entry["needs_issues"].is_boolean());
+        }
+        assert!(caps["environment_variables"]["BEADS_DB"].is_string());
+        assert!(caps["exit_codes"]["0"].is_string());
+    }
 
     #[test]
     fn robot_docs_guide_has_required_fields() {

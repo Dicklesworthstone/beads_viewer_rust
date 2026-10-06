@@ -585,7 +585,7 @@ fn write_markdown_report(issues: &[Issue], export_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn generate_markdown_report(issues: &[Issue]) -> String {
+pub fn generate_markdown_report(issues: &[Issue]) -> String {
     let mut sorted = issues.to_vec();
     sorted.sort_by(compare_issues_for_markdown);
 

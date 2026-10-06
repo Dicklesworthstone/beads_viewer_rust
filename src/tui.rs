@@ -71,7 +71,7 @@ impl BackgroundModeConfig {
     #[cfg(not(test))]
     fn load_issues(&self) -> Result<Vec<Issue>> {
         let issues = if let Some(path) = self.beads_file.as_deref() {
-            loader::load_issues_from_file(path)?
+            loader::load_issues_from_path(path)?
         } else if let Some(path) = self.workspace_config.as_deref() {
             loader::load_workspace_issues(path)?
         } else {
@@ -717,13 +717,48 @@ mod tokens {
         Light,
     }
 
-    /// Detect theme from `BV_THEME` env var.  Falls back to dark.
+    /// Theme chosen on the command line (`--theme`); wins over `BV_THEME`.
+    pub(super) static THEME_OVERRIDE: std::sync::OnceLock<ThemeMode> = std::sync::OnceLock::new();
+
+    /// Parse a theme preference: `light`, `dark`, or `auto` (terminal
+    /// background detection). Unknown values yield `None`.
+    pub fn parse_theme_preference(value: &str, colorfgbg: Option<&str>) -> Option<ThemeMode> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "light" => Some(ThemeMode::Light),
+            "dark" => Some(ThemeMode::Dark),
+            "auto" | "" => Some(detect_from_colorfgbg(colorfgbg)),
+            _ => None,
+        }
+    }
+
+    /// Infer the terminal background from `COLORFGBG` (`fg;bg` or
+    /// `fg;default;bg`, set by rxvt, Konsole, iTerm2 and others). ANSI
+    /// background 7 (white) or 9-15 (bright colours) means a light
+    /// background; anything else, or an absent variable, means dark.
+    pub fn detect_from_colorfgbg(colorfgbg: Option<&str>) -> ThemeMode {
+        let bg = colorfgbg
+            .and_then(|value| value.rsplit(';').next())
+            .and_then(|bg| bg.trim().parse::<u8>().ok());
+        match bg {
+            Some(7 | 9..=15) => ThemeMode::Light,
+            _ => ThemeMode::Dark,
+        }
+    }
+
+    /// Resolve the theme: `--theme` override, then `BV_THEME`
+    /// (`light`/`dark`/`auto`), then `COLORFGBG` auto-detection.
     /// Result is cached for the lifetime of the process.
     pub fn detect_theme() -> ThemeMode {
+        if let Some(mode) = THEME_OVERRIDE.get() {
+            return *mode;
+        }
         static CACHED: std::sync::OnceLock<ThemeMode> = std::sync::OnceLock::new();
-        *CACHED.get_or_init(|| match std::env::var("BV_THEME").as_deref() {
-            Ok("light") => ThemeMode::Light,
-            _ => ThemeMode::Dark,
+        *CACHED.get_or_init(|| {
+            let colorfgbg = std::env::var("COLORFGBG").ok();
+            std::env::var("BV_THEME")
+                .ok()
+                .and_then(|value| parse_theme_preference(&value, colorfgbg.as_deref()))
+                .unwrap_or_else(|| detect_from_colorfgbg(colorfgbg.as_deref()))
         })
     }
 
@@ -15127,6 +15162,19 @@ fn new_app_with_background(
     app
 }
 
+/// Apply a `--theme` preference (`light`, `dark`, or `auto`) for this
+/// process. Must be called before the TUI renders; the first call wins.
+pub fn set_theme_preference(value: &str) -> Result<()> {
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    let mode = tokens::parse_theme_preference(value, colorfgbg.as_deref()).ok_or_else(|| {
+        BvrError::InvalidArgument(format!(
+            "invalid --theme {value:?}: expected light, dark, or auto"
+        ))
+    })?;
+    let _ = tokens::THEME_OVERRIDE.set(mode);
+    Ok(())
+}
+
 pub fn run_tui(issues: Vec<Issue>) -> Result<()> {
     run_tui_with_background(issues, None, None, None)
 }
@@ -15495,6 +15543,29 @@ mod tests {
         should_apply_background_reload, sprint_reference_now, status_chip,
         styled_detail_summary_line, truncate_display, type_badge, wrap_command_hints,
     };
+
+    #[test]
+    fn theme_preference_parses_and_auto_detects() {
+        use super::tokens::{ThemeMode, detect_from_colorfgbg, parse_theme_preference};
+        assert_eq!(
+            parse_theme_preference("light", None),
+            Some(ThemeMode::Light)
+        );
+        assert_eq!(parse_theme_preference("DARK", None), Some(ThemeMode::Dark));
+        assert_eq!(
+            parse_theme_preference("auto", Some("0;15")),
+            Some(ThemeMode::Light)
+        );
+        assert_eq!(
+            parse_theme_preference("auto", Some("15;0")),
+            Some(ThemeMode::Dark)
+        );
+        assert_eq!(parse_theme_preference("neon", None), None);
+        assert_eq!(detect_from_colorfgbg(Some("0;default;7")), ThemeMode::Light);
+        assert_eq!(detect_from_colorfgbg(Some("7;8")), ThemeMode::Dark);
+        assert_eq!(detect_from_colorfgbg(Some("garbage")), ThemeMode::Dark);
+        assert_eq!(detect_from_colorfgbg(None), ThemeMode::Dark);
+    }
     use crate::analysis::Analyzer;
     use crate::analysis::diff::FieldChange;
     use crate::analysis::git_history::{

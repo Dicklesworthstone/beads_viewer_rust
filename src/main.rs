@@ -25,7 +25,7 @@ use bvr::cli::{BvrCommand, Cli, GraphFormat, GraphPreset, GraphStyle};
 use bvr::loader;
 use bvr::robot::{
     compute_data_hash, default_field_descriptions, emit_with_stats, envelope, envelope_empty,
-    generate_robot_docs, generate_robot_schemas,
+    generate_robot_capabilities, generate_robot_docs, generate_robot_schemas,
 };
 use chrono::{DateTime, Duration, Local, Utc};
 use clap::Parser;
@@ -470,7 +470,8 @@ fn main() -> ExitCode {
 
     // --no-cache: silently accepted for Go CLI compatibility (Rust port has no disk cache layer).
 
-    // --db: legacy compatibility alias for --beads-file.
+    // --db: a beads database file, JSONL file, or `.beads` directory (loaded
+    // through `loader::load_issues_from_path`).
     if let Some(ref db_path) = cli.db {
         if cli.beads_file.is_none() {
             let resolved = if db_path.is_absolute() {
@@ -487,6 +488,13 @@ fn main() -> ExitCode {
     if cli.version {
         print_version();
         return ExitCode::SUCCESS;
+    }
+
+    if let Some(theme) = cli.theme.as_deref()
+        && let Err(error) = bvr::tui::set_theme_preference(theme)
+    {
+        eprintln!("error: {error}");
+        return ExitCode::from(2);
     }
 
     if cli.background_mode && cli.no_background_mode {
@@ -530,6 +538,15 @@ fn main() -> ExitCode {
         }
 
         if let Err(error) = emit_with_stats(cli.format, &schemas, cli.stats) {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if cli.robot_capabilities {
+        let capabilities = generate_robot_capabilities();
+        if let Err(error) = emit_with_stats(cli.format, &capabilities, cli.stats) {
             eprintln!("error: {error}");
             return ExitCode::from(1);
         }
@@ -845,7 +862,7 @@ fn main() -> ExitCode {
                 weight_adjustments: feedback_weight_adjustments.clone(),
                 ..TriageScoringOptions::default()
             },
-            ..TriageOptions::default()
+            not_ready_labels: resolve_not_ready_labels(&cli),
         });
 
         if cli.robot_next {
@@ -889,6 +906,20 @@ fn main() -> ExitCode {
 
         if cli.robot_overview {
             let output = build_robot_overview_output(&issues, &analyzer, &triage.result);
+            if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        if cli.brief {
+            let output = build_triage_brief_output(
+                envelope(&issues),
+                as_of.clone(),
+                as_of_commit.clone(),
+                triage.result,
+            );
             if let Err(error) = emit_with_stats(cli.format, &output, cli.stats) {
                 eprintln!("error: {error}");
                 return ExitCode::from(1);
@@ -2146,7 +2177,7 @@ fn main() -> ExitCode {
                 weight_adjustments: feedback_weight_adjustments.clone(),
                 ..TriageScoringOptions::default()
             },
-            ..TriageOptions::default()
+            not_ready_labels: resolve_not_ready_labels(&cli),
         });
 
         let mut recommendations = triage.result.recommendations;
@@ -2530,6 +2561,60 @@ fn main() -> ExitCode {
             }
         }
 
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(export_path) = cli.export.as_deref() {
+        if cli.export_md.is_some() {
+            eprintln!("error: --export and --export-md specify conflicting output paths");
+            return ExitCode::from(2);
+        }
+        let format = cli
+            .export_format
+            .as_deref()
+            .unwrap_or("markdown")
+            .trim()
+            .to_ascii_lowercase();
+        let include_graph = cli.export_include_graph.unwrap_or(format != "csv");
+        let content = match render_export_report(&issues, &format, include_graph) {
+            Ok(content) => content,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        let hook_project_dir = match project_dir_for_export_hooks(&cli) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        };
+        println!(
+            "Exporting {} issues to {}...",
+            issues.len(),
+            export_path.display()
+        );
+        let result = bvr::export_md::run_export_with_hooks(
+            export_path,
+            &format,
+            issues.len(),
+            cli.no_hooks,
+            Some(hook_project_dir.as_path()),
+            |resolved| {
+                if let Some(parent) = resolved.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(resolved, content.as_bytes())?;
+                Ok(())
+            },
+        );
+        if let Err(error) = result {
+            eprintln!("error: {error}");
+            return ExitCode::from(1);
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -3114,7 +3199,7 @@ fn load_issues(cli: &Cli) -> bvr::Result<Vec<bvr::model::Issue>> {
     }
 
     match resolve_issue_load_target(cli)? {
-        IssueLoadTarget::BeadsFile(path) => loader::load_issues_from_file(&path),
+        IssueLoadTarget::BeadsFile(path) => loader::load_issues_from_path(&path),
         IssueLoadTarget::WorkspaceConfig(path) => loader::load_workspace_issues(&path),
         IssueLoadTarget::RepoPath(repo_path) => loader::load_issues(repo_path.as_deref())
             .map_err(|error| with_workspace_discovery_guidance(cli, error)),
@@ -3145,9 +3230,8 @@ fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
         IssueLoadTarget::RepoPath(repo_path) => {
             let beads_dir = loader::get_beads_dir(repo_path.as_deref())
                 .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
-            let beads_path = loader::find_jsonl_path(&beads_dir)
-                .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
-            Ok(vec![beads_path])
+            loader::issue_source_watch_paths(&beads_dir)
+                .map_err(|error| with_workspace_discovery_guidance(cli, error))
         }
     }
 }
@@ -4953,6 +5037,95 @@ fn extract_graph_subgraph(
         .collect()
 }
 
+/// Render an `--export` report. `include_graph` adds dependency context: a
+/// Mermaid section (markdown), a `graph` object (json); it is required for
+/// mermaid and rejected for csv, which is a flat issue table.
+fn render_export_report(
+    issues: &[bvr::model::Issue],
+    format: &str,
+    include_graph: bool,
+) -> Result<String, String> {
+    match (format, include_graph) {
+        ("csv", true) => {
+            return Err(
+                "CSV cannot include a graph; pass --export-include-graph=false".to_string(),
+            );
+        }
+        ("mermaid", false) => {
+            return Err("Mermaid export requires the graph (--export-include-graph)".to_string());
+        }
+        ("markdown" | "json" | "csv" | "mermaid", _) => {}
+        _ => {
+            return Err(format!(
+                "export format {format:?} must be markdown, json, csv, or mermaid"
+            ));
+        }
+    }
+
+    let edges = build_graph_edges(issues);
+    match format {
+        "markdown" => {
+            let mut report = bvr::export_md::generate_markdown_report(issues);
+            if include_graph {
+                report.push_str("\n## Dependency Graph\n\n```mermaid\n");
+                report.push_str(&generate_mermaid(issues, &edges));
+                report.push_str("```\n");
+            }
+            Ok(report)
+        }
+        "json" => {
+            let graph = include_graph.then(|| {
+                serde_json::json!({
+                    "nodes": issues.iter().map(|issue| issue.id.clone()).collect::<Vec<_>>(),
+                    "edges": edges,
+                })
+            });
+            let mut payload = serde_json::json!({
+                "title": "Beads Export",
+                "generated_at": Utc::now().to_rfc3339(),
+                "data_hash": compute_data_hash(issues),
+                "issue_count": issues.len(),
+                "issues": issues,
+            });
+            if let Some(graph) = graph {
+                payload["graph"] = graph;
+            }
+            serde_json::to_string_pretty(&payload).map_err(|error| error.to_string())
+        }
+        "csv" => {
+            let mut out =
+                String::from("id,title,status,priority,issue_type,assignee,labels,description\n");
+            for issue in issues {
+                let row = [
+                    issue.id.clone(),
+                    issue.title.clone(),
+                    issue.status.clone(),
+                    issue.priority.to_string(),
+                    issue.issue_type.clone(),
+                    issue.assignee.clone(),
+                    issue.labels.join(";"),
+                    issue.description.clone(),
+                ];
+                let cells: Vec<String> = row.iter().map(|cell| csv_cell(cell)).collect();
+                out.push_str(&cells.join(","));
+                out.push('\n');
+            }
+            Ok(out)
+        }
+        _ => Ok(generate_mermaid(issues, &edges)),
+    }
+}
+
+/// RFC 4180 cell quoting: wrap in quotes (doubling inner quotes) whenever the
+/// value holds a comma, quote, or line break.
+fn csv_cell(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn build_graph_edges(issues: &[bvr::model::Issue]) -> Vec<GraphAdjacencyEdge> {
     let issue_ids = issues
         .iter()
@@ -6361,6 +6534,102 @@ struct RobotTriageOutput {
     usage_hints: Vec<String>,
 }
 
+/// One recommendation in the compact `--robot-triage --brief` payload: only
+/// the fields agents use for work selection (identity, claim state, edges).
+#[derive(Debug, Serialize)]
+struct BriefTriageRecommendation {
+    id: String,
+    title: String,
+    status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    assignee: String,
+    score: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unblocks: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    blocked_by: Vec<String>,
+    claim_command: String,
+    show_command: String,
+}
+
+/// Compact `--robot-triage --brief` payload. Keeps `quick_ref` (counts and
+/// claimable top picks), quick-win and blocker ids, and lean recommendations;
+/// drops score breakdowns, project health, and usage hints, which dominate
+/// the full payload's token cost.
+#[derive(Debug, Serialize)]
+struct RobotTriageBriefOutput {
+    #[serde(flatten)]
+    envelope: bvr::robot::RobotEnvelope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    as_of: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    as_of_commit: Option<String>,
+    brief: bool,
+    quick_ref: bvr::analysis::triage::QuickRef,
+    recommendations: Vec<BriefTriageRecommendation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    quick_wins: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    blockers_to_clear: Vec<String>,
+}
+
+fn build_triage_brief_output(
+    envelope: bvr::robot::RobotEnvelope,
+    as_of: Option<String>,
+    as_of_commit: Option<String>,
+    triage: bvr::analysis::triage::TriageResult,
+) -> RobotTriageBriefOutput {
+    RobotTriageBriefOutput {
+        envelope,
+        as_of,
+        as_of_commit,
+        brief: true,
+        quick_ref: triage.quick_ref,
+        recommendations: triage
+            .recommendations
+            .into_iter()
+            .map(|rec| BriefTriageRecommendation {
+                id: rec.id,
+                title: rec.title,
+                status: rec.status,
+                assignee: rec.assignee,
+                score: rec.score,
+                unblocks: rec.unblocks_ids,
+                blocked_by: rec.blocked_by,
+                claim_command: rec.claim_command,
+                show_command: rec.show_command,
+            })
+            .collect(),
+        quick_wins: triage.quick_wins.into_iter().map(|rec| rec.id).collect(),
+        blockers_to_clear: triage
+            .blockers_to_clear
+            .into_iter()
+            .map(|blocker| blocker.id)
+            .collect(),
+    }
+}
+
+/// Resolve the opt-in not-ready label class: `--robot-not-ready-labels`
+/// (comma-separated) wins, else `BV_ROBOT_NOT_READY_LABELS`. Empty entries are
+/// dropped; an empty result disables the gate.
+fn resolve_not_ready_labels(cli: &Cli) -> Vec<String> {
+    let raw = cli
+        .robot_not_ready_labels
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("BV_ROBOT_NOT_READY_LABELS")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_default();
+    raw.split(',')
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
 struct RobotNextOutput {
     #[serde(flatten)]
@@ -6999,6 +7268,89 @@ mod tests {
         resolve_reference_file_path, resolve_watch_export_paths, resolve_workspace_config_path,
         upgrade_cargo_args,
     };
+
+    fn export_fixture() -> Vec<bvr::model::Issue> {
+        vec![
+            bvr::model::Issue {
+                id: "A-1".to_string(),
+                title: "Root, with \"quotes\"".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                labels: vec!["api".to_string(), "core".to_string()],
+                ..Default::default()
+            },
+            bvr::model::Issue {
+                id: "A-2".to_string(),
+                title: "Child".to_string(),
+                status: "blocked".to_string(),
+                issue_type: "bug".to_string(),
+                dependencies: vec![bvr::model::Dependency {
+                    issue_id: "A-2".to_string(),
+                    depends_on_id: "A-1".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ]
+    }
+
+    #[test]
+    fn export_report_renders_every_format() {
+        let issues = export_fixture();
+
+        let markdown = super::render_export_report(&issues, "markdown", true).expect("md");
+        assert!(markdown.contains("# Beads Export"));
+        assert!(markdown.contains("```mermaid"));
+        let plain = super::render_export_report(&issues, "markdown", false).expect("md");
+        assert!(!plain.contains("```mermaid"));
+
+        let json = super::render_export_report(&issues, "json", true).expect("json");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(value["issue_count"], 2);
+        assert_eq!(value["graph"]["edges"][0]["from"], "A-2");
+        assert_eq!(value["graph"]["edges"][0]["to"], "A-1");
+
+        let csv = super::render_export_report(&issues, "csv", false).expect("csv");
+        let mut lines = csv.lines();
+        assert_eq!(
+            lines.next(),
+            Some("id,title,status,priority,issue_type,assignee,labels,description")
+        );
+        assert_eq!(
+            lines.next(),
+            Some("A-1,\"Root, with \"\"quotes\"\"\",open,0,task,,api;core,")
+        );
+
+        let mermaid = super::render_export_report(&issues, "mermaid", true).expect("mermaid");
+        assert!(mermaid.starts_with("graph TD"));
+        assert!(mermaid.contains("A-2 ==> A-1"));
+    }
+
+    #[test]
+    fn export_report_rejects_invalid_combinations() {
+        let issues = export_fixture();
+        assert!(super::render_export_report(&issues, "csv", true).is_err());
+        assert!(super::render_export_report(&issues, "mermaid", false).is_err());
+        assert!(super::render_export_report(&issues, "yaml", true).is_err());
+    }
+
+    #[test]
+    fn not_ready_labels_flag_parses_and_trims() {
+        let cli = Cli::try_parse_from([
+            "bvr",
+            "--robot-triage",
+            "--brief",
+            "--robot-not-ready-labels",
+            " needs-design , ,blocked-external",
+        ])
+        .expect("parse");
+        assert!(cli.brief);
+        assert_eq!(
+            super::resolve_not_ready_labels(&cli),
+            vec!["needs-design".to_string(), "blocked-external".to_string()]
+        );
+    }
 
     struct CurrentDirGuard {
         original: PathBuf,

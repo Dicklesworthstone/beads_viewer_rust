@@ -518,10 +518,23 @@ impl IssueGraph {
     /// dependency-only view (which issues have no open blockers, whatever
     /// their status — what-if simulations and cascade alerts) see
     /// [`Self::dependency_unblocked_ids`].
+    ///
+    /// A scheduler deferral (`defer_until` still in the future) also withholds
+    /// an issue, exactly as `br ready` does.
     #[must_use]
     pub fn actionable_ids(&self) -> Vec<String> {
+        self.actionable_ids_at(chrono::Utc::now())
+    }
+
+    /// [`Self::actionable_ids`] evaluated against an explicit clock, so the
+    /// `defer_until` gate is deterministic in tests and pinned-clock flows.
+    #[must_use]
+    pub fn actionable_ids_at(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
         let mut ids = self.dependency_unblocked_ids();
-        ids.retain(|id| self.issue(id).is_some_and(Issue::is_actionable_status));
+        ids.retain(|id| {
+            self.issue(id)
+                .is_some_and(|issue| issue.is_actionable_status() && !issue.is_deferred_at(now))
+        });
         ids
     }
 

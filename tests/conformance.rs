@@ -714,6 +714,25 @@ fn robot_adversarial_triage_core_fields_match_legacy_fixture() {
         .collect::<Vec<_>>();
     fixture_ids.sort_unstable();
 
+    // The fixture predates the legacy claimability contract (beads_viewer
+    // #173/#191): a top pick must be unassigned and not an epic. Current
+    // legacy `bv` and bvr both withhold such beads, so the captured picks are
+    // narrowed by that rule against the fixture's own input data.
+    let unclaimable: std::collections::HashSet<String> =
+        fs::read_to_string(repo_root().join("tests/testdata/adversarial_parity.jsonl"))
+            .expect("adversarial input")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|issue| {
+                issue["assignee"]
+                    .as_str()
+                    .is_some_and(|a| !a.trim().is_empty())
+                    || issue["issue_type"] == "epic"
+            })
+            .filter_map(|issue| issue["id"].as_str().map(ToString::to_string))
+            .collect();
+    fixture_ids.retain(|id| !unclaimable.contains(id));
+
     assert_eq!(actual_ids, fixture_ids);
 }
 
@@ -1973,14 +1992,24 @@ fn stress_triage_counts_and_top_recommendation() {
     // but two of them (ST-030, ST-035) carry status=blocked, which `br ready`
     // does not surface — the status gate excludes them (issue #25).
     assert_eq!(qr["total_actionable"], 22);
-    // Hub epic ST-011 should be #1 recommendation (unblocks 14)
-    let top = &qr["top_picks"][0];
-    assert_eq!(top["id"], "ST-011");
-    assert_eq!(top["unblocks"], 14);
-
     let recs = actual["triage"]["recommendations"]
         .as_array()
         .expect("recommendations");
+    // Hub epic ST-011 is the #1 recommendation (unblocks 14) ...
+    assert_eq!(recs[0]["id"], "ST-011");
+    assert_eq!(recs[0]["unblocks"], 14);
+    // ... but an epic is a planning container, never a claimable top pick.
+    let top_ids: Vec<&str> = qr["top_picks"]
+        .as_array()
+        .expect("top picks")
+        .iter()
+        .filter_map(|pick| pick["id"].as_str())
+        .collect();
+    assert_ne!(top_ids.len(), 0, "expected claimable top picks");
+    assert!(
+        !top_ids.contains(&"ST-011"),
+        "epic surfaced as top pick: {top_ids:?}"
+    );
     assert_eq!(recs.len(), 10);
 
     let blockers = actual["triage"]["blockers_to_clear"]
