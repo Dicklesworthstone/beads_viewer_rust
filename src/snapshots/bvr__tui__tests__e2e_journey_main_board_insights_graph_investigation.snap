@@ -65,7 +65,7 @@ expression: artifact
 │                                            ││ Depends on A and should report blocked state clearly.                  │
 │                                            ││                                                                        │
 │                                            ││ Dependencies (1)                                                       │
-│                                            ││ `A`•  📋 OPEN Root (blocks)                                            │
+│                                            ││ • A 📋 OPEN Root (blocks)                                              │
 │                                            ││                                                                        │
 │                                            ││                                                                        │
 │                                            ││                                                                        │
