@@ -505,6 +505,8 @@ Use these when you want a fast orientation snapshot, ranked recommendations, qui
 
 Agent-style invocations are accepted too and rewritten onto these flags: `bvr triage --json`, `bvr robot-next`, `bvr forecast all`, `bvr search "oauth login" --limit 5`, `bvr graph mermaid`, `bvr docs env`, `bvr schema triage`. `--json`, `--toon`, and `-o <fmt>` map to `--format`. `--limit` maps to the command's own limit flag. `--json` with no other command runs `--robot-triage`.
 
+Triage counts use strict semantics, as in legacy `bv` (#165). `quick_ref.open_count` and `blocked_count` (and `project_health.counts.open`/`blocked`) count issues whose status is exactly `open` or `blocked`, so they always match `counts.by_status`. The aggregates have their own fields: `not_closed_count` (= `total_open` = `counts.not_closed`) and `not_actionable_count` (= `counts.dependency_blocked`), with `not_closed_count == actionable_count + not_actionable_count`.
+
 Top picks (`--robot-next`, `quick_ref.top_picks`, per-track and per-label `top_pick`) only include beads that can be claimed now. A claimable bead is `open`, unassigned, not an epic, not a parent with open children, not deferred, and has none of the not-ready labels (`--robot-not-ready-labels` or `BV_ROBOT_NOT_READY_LABELS`).
 
 ### Graph analysis and forecasting

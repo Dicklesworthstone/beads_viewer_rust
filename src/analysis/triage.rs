@@ -496,22 +496,36 @@ pub struct RecommendationsByLabel {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct QuickRef {
+    /// Every non-closed issue (alias of `not_closed_count`).
     pub total_open: usize,
     pub total_actionable: usize,
+    /// Strict: issues whose status is exactly `open` (legacy #165).
     pub open_count: usize,
     pub actionable_count: usize,
+    /// Strict: issues whose status is exactly `blocked` (legacy #165).
     pub blocked_count: usize,
     pub in_progress_count: usize,
+    /// Every non-closed issue; `actionable_count + not_actionable_count`.
+    pub not_closed_count: usize,
+    /// Non-closed issues that are not actionable (open blockers, parked
+    /// status, or deferral), whatever their status.
+    pub not_actionable_count: usize,
     pub top_picks: Vec<QuickPick>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectHealthCounts {
     pub total: usize,
+    /// Strict: status exactly `open` (equals `by_status.open`).
     pub open: usize,
     pub closed: usize,
     pub actionable: usize,
+    /// Strict: status exactly `blocked` (equals `by_status.blocked`).
     pub blocked: usize,
+    /// Every non-closed issue.
+    pub not_closed: usize,
+    /// Non-closed, non-actionable issues (`not_closed - actionable`).
+    pub dependency_blocked: usize,
     pub by_status: BTreeMap<String, usize>,
     pub by_priority: BTreeMap<i32, usize>,
     pub by_type: BTreeMap<String, usize>,
@@ -864,7 +878,13 @@ pub fn compute_triage(
         Vec::new()
     };
 
-    let blocked_count = total_open.saturating_sub(actionable.len());
+    let not_actionable_count = total_open.saturating_sub(actionable.len());
+    let status_count = |status: &str| {
+        issues
+            .iter()
+            .filter(|issue| issue.normalized_status() == status)
+            .count()
+    };
     let in_progress_count = issues
         .iter()
         .filter(|issue| issue.is_open_like() && issue.normalized_status() == "in_progress")
@@ -890,10 +910,12 @@ pub fn compute_triage(
         quick_ref: QuickRef {
             total_open,
             total_actionable: actionable.len(),
-            open_count: total_open,
+            open_count: status_count("open"),
             actionable_count: actionable.len(),
-            blocked_count,
+            blocked_count: status_count("blocked"),
             in_progress_count,
+            not_closed_count: total_open,
+            not_actionable_count,
             top_picks,
         },
         recommendations,
@@ -989,7 +1011,7 @@ fn compute_project_health(
         }
     }
 
-    let blocked_count = total_open.saturating_sub(actionable_count);
+    let dependency_blocked = total_open.saturating_sub(actionable_count);
     let node_count = graph.node_count();
     let edge_count = graph.edge_count();
     let density = if node_count <= 1 {
@@ -1001,10 +1023,12 @@ fn compute_project_health(
     ProjectHealth {
         counts: ProjectHealthCounts {
             total: issues.len(),
-            open: total_open,
+            open: by_status.get("open").copied().unwrap_or(0),
             closed: closed_count,
             actionable: actionable_count,
-            blocked: blocked_count,
+            blocked: by_status.get("blocked").copied().unwrap_or(0),
+            not_closed: total_open,
+            dependency_blocked,
             by_status,
             by_priority,
             by_type,
@@ -1250,15 +1274,29 @@ mod tests {
 
         assert_eq!(triage.result.quick_ref.total_open, 2);
         assert_eq!(triage.result.quick_ref.total_actionable, 1);
-        assert_eq!(triage.result.quick_ref.open_count, 2);
+        assert_eq!(triage.result.quick_ref.not_closed_count, 2);
         assert_eq!(triage.result.quick_ref.actionable_count, 1);
-        assert_eq!(triage.result.quick_ref.blocked_count, 1);
+        assert_eq!(triage.result.quick_ref.not_actionable_count, 1);
         assert_eq!(triage.result.quick_ref.in_progress_count, 0);
+        // Strict status counts (legacy #165) always reconcile with by_status.
+        let by_status = &triage.result.project_health.counts.by_status;
+        assert_eq!(
+            triage.result.quick_ref.open_count,
+            by_status.get("open").copied().unwrap_or(0)
+        );
+        assert_eq!(
+            triage.result.quick_ref.blocked_count,
+            by_status.get("blocked").copied().unwrap_or(0)
+        );
         assert_eq!(triage.result.recommendations.len(), 1);
         assert_eq!(triage.result.recommendations[0].id, "A");
         assert_eq!(triage.result.project_health.counts.total, 2);
-        assert_eq!(triage.result.project_health.counts.open, 2);
-        assert_eq!(triage.result.project_health.counts.blocked, 1);
+        assert_eq!(triage.result.project_health.counts.not_closed, 2);
+        assert_eq!(triage.result.project_health.counts.dependency_blocked, 1);
+        assert_eq!(
+            triage.result.project_health.counts.open,
+            triage.result.quick_ref.open_count
+        );
         assert_eq!(triage.result.project_health.graph.node_count, 2);
         assert_eq!(triage.result.project_health.graph.edge_count, 1);
         assert!(triage.result.project_health.graph.phase2_ready);
@@ -1565,7 +1603,14 @@ mod tests {
 
             assert_eq!(result.quick_ref.actionable_count, 1, "status {status:?}");
             assert_eq!(result.quick_ref.total_open, 4, "status {status:?}");
-            assert_eq!(result.quick_ref.blocked_count, 3, "status {status:?}");
+            assert_eq!(
+                result.quick_ref.not_actionable_count, 3,
+                "status {status:?}"
+            );
+            assert_eq!(
+                result.quick_ref.not_closed_count,
+                result.quick_ref.actionable_count + result.quick_ref.not_actionable_count
+            );
 
             let rec_ids: Vec<&str> = result
                 .recommendations

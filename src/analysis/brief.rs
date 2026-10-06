@@ -248,6 +248,8 @@ mod tests {
                 actionable_count: 3,
                 blocked_count: 2,
                 in_progress_count: 1,
+                not_closed_count: 5,
+                not_actionable_count: 2,
                 top_picks: vec![QuickPick {
                     id: "A-1".to_string(),
                     title: "Fix auth".to_string(),
@@ -292,6 +294,8 @@ mod tests {
                     closed: 0,
                     actionable: 3,
                     blocked: 2,
+                    not_closed: 5,
+                    dependency_blocked: 2,
                     by_status: std::collections::BTreeMap::new(),
                     by_priority: std::collections::BTreeMap::new(),
                     by_type: std::collections::BTreeMap::new(),

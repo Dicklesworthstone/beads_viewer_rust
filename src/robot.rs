@@ -1090,10 +1090,12 @@ pub fn generate_robot_schemas() -> RobotSchemas {
                     "quick_ref": {
                         "type": "object",
                         "properties": {
-                            "open_count": schema_prop("integer"),
-                            "actionable_count": schema_prop("integer"),
-                            "blocked_count": schema_prop("integer"),
-                            "in_progress_count": schema_prop("integer"),
+                            "open_count": {"type": "integer", "description": "Strict count of issues with status == open"},
+                            "actionable_count": {"type": "integer", "description": "Non-closed issues ready to work on now"},
+                            "blocked_count": {"type": "integer", "description": "Strict count of issues with status == blocked"},
+                            "in_progress_count": {"type": "integer", "description": "Strict count of issues with status == in_progress"},
+                            "not_closed_count": {"type": "integer", "description": "All non-closed issues; equals actionable_count + not_actionable_count"},
+                            "not_actionable_count": {"type": "integer", "description": "Non-closed issues that are not actionable (open blockers, parked status, deferral)"},
                             "top_picks": {
                                 "type": "array",
                                 "items": {"$ref": "#/$defs/recommendation"}
