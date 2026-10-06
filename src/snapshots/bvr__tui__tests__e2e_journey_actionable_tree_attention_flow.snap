@@ -42,78 +42,78 @@ expression: artifact
  📋 ALL  L:labels • h:detail  ○3 ◉3 ◈0 ●0                   3 issues  tab focus │ C copy │ x export │ / search │ ? help
 
 --- Step 2: actionable_entry ---
-bvr 1 Main b Board i Insights g Graph H History a Actionable | mode=Actionable | focus=list | issues=3/3 | filter=all |
-┌Execution Tracks [focus]────────────────────┐┌Track Detail────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ ⚡ ACTIONABLE ITEMS | 3 items in 3 tracks  ││ TRACK 1                                                                │
-│ RECOMMENDED: Start with A -> highest impac ││ independent issue — can execute in parallel                            │
-│                                            ││ 1 actionable item                                                      │
-│ ▸ TRACK 1 | independent issue — can execut ││                                                                        │
-│   1 item                                   ││ ▸ A  score 0.591                                                       │
-│    └─ P1 A             0.59  Feature work  ││   Feature work                                                         │
-│                                            ││   Claim: br update A --status=in_progress                              │
-│   TRACK 2 | independent issue — can execut ││                                                                        │
-│   1 item                                   ││ Highest impact: A                                                      │
-│    └─ P2 B             0.58  Bug fix       ││ Impact detail: highest impact: A (score 0.59)                          │
-│                                            ││                                                                        │
-│   TRACK 3 | independent issue — can execut ││                                                                        │
-│   1 item                                   ││                                                                        │
-│    └─ P3 C             0.41  UI polish     ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│ ═══ Parallel Track Overview ═══            ││                                                                        │
-│ Track 1 (1)                           Trac ││                                                                        │
-│   A 0.59                                B  ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Actionable: 3 tracks, 3 items │ j/k navigate │ Tab focus │ a/Esc back
+ ⚡ ACTIONABLE ITEMS  │  3 items in 3 tracks
+
+ 💡 RECOMMENDED: Start with A → highest impact: A (score 0.59)
+
+ TRACK A  independent issue — can execute in parallel
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+▸ └─ ⚡ A Feature work
+
+ TRACK B  independent issue — can execute in parallel
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+  └─ 🔹 B Bug fix
+
+ TRACK C  independent issue — can execute in parallel
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+  └─ ☕ C UI polish
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  L:labels • h:detail  ○3 ◉3 ◈0 ●0               3 issues  j/k nav │ tab tracks/items │ ⏎ view │ a list │ ? help
 
 --- Step 3: actionable_detail_nav ---
-bvr 1 Main b Board i Insights g Graph H History a Actionable | mode=Actionable | focus=detail | issues=3/3 | filter=all
-┌Execution Tracks────────────────────────────┐┌Track Detail [focus]────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ ⚡ ACTIONABLE ITEMS | 3 items in 3 tracks  ││ TRACK 1                                                                │
-│ RECOMMENDED: Start with A -> highest impac ││ independent issue — can execute in parallel                            │
-│                                            ││ 1 actionable item                                                      │
-│   TRACK 1 | independent issue — can execut ││                                                                        │
-│   1 item                                   ││ ▸ A  score 0.591                                                       │
-│   ▸└─ P1 A             0.59  Feature work  ││   Feature work                                                         │
-│                                            ││   Claim: br update A --status=in_progress                              │
-│   TRACK 2 | independent issue — can execut ││                                                                        │
-│   1 item                                   ││ Highest impact: A                                                      │
-│    └─ P2 B             0.58  Bug fix       ││ Impact detail: highest impact: A (score 0.59)                          │
-│                                            ││                                                                        │
-│   TRACK 3 | independent issue — can execut ││                                                                        │
-│   1 item                                   ││                                                                        │
-│    └─ P3 C             0.41  UI polish     ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│ ═══ Parallel Track Overview ═══            ││                                                                        │
-│ Track 1 (1)                           Trac ││                                                                        │
-│   A 0.59                                B  ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Actionable: 3 tracks, 3 items │ j/k navigate │ Tab focus │ a/Esc back
+ ⚡ ACTIONABLE ITEMS  │  3 items in 3 tracks
+
+ 💡 RECOMMENDED: Start with A → highest impact: A (score 0.59)
+
+ TRACK A  independent issue — can execute in parallel
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+▸ └─ ⚡ A Feature work
+
+ TRACK B  independent issue — can execute in parallel
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+  └─ 🔹 B Bug fix
+
+ TRACK C  independent issue — can execute in parallel
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+  └─ ☕ C UI polish
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  L:labels • h:detail  ○3 ◉3 ◈0 ●0               3 issues  j/k nav │ tab tracks/items │ ⏎ view │ a list │ ? help
 
 --- Step 4: tree_entry ---
 bvr 1 Main b Board i Insights g Graph H History T Tree | mode=Tree | focus=list | issues=3/3 | filter=all | sort=default

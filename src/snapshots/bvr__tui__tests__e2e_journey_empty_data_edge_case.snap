@@ -133,36 +133,36 @@ expression: artifact
  📋 ALL  Bottlenecks • L:labels • h:detail  ○0 ◉0 ◈0 ●0            0 issues  h/l panels │ j/k items
 
 --- Step 5: empty_actionable ---
-bvr 1 Main b Board i Insights a Actionable | mode=Actionable | focus=list | issues=0/0 | filter=all
-┌Execution Tracks [focus]────────────────┐┌Track Detail────────────────────────────────────────────┐
-│                                        ││                                                        │
-│ (no issues loaded)                     ││ (no track selected)                                    │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Actionable: 0 tracks, 0 items │ j/k navigate │ Tab focus │ a/Esc back
+ ⚡ ACTIONABLE ITEMS  │  0 items in 0 tracks
+
+✓ No actionable items. All tasks are either blocked or completed.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  L:labels • h:detail  ○0 ◉0 ◈0 ●0    0 issues  j/k nav │ tab tracks/items │ ⏎ view │ a list
 
 --- Step 6: empty_tree ---
 bvr 1 Main b Board i Insights T Tree | mode=Tree | focus=list | issues=0/0 | filter=all |

@@ -522,7 +522,11 @@ fn splitter_rect_between(left: Rect, right: Rect) -> Rect {
 fn header_height(app: &BvrApp) -> u16 {
     u16::from(!matches!(
         app.mode,
-        ViewMode::Main | ViewMode::Board | ViewMode::Insights | ViewMode::Graph
+        ViewMode::Main
+            | ViewMode::Board
+            | ViewMode::Insights
+            | ViewMode::Graph
+            | ViewMode::Actionable
     ))
 }
 
@@ -1730,6 +1734,16 @@ fn issue_label_summary(issue: &crate::model::Issue) -> Option<String> {
             format!("[{}]", truncate_display(label, 12))
         }
     })
+}
+
+/// A full-width colored bar: `text` then explicit padding in the same style,
+/// so the background spans the line even where trailing blanks get trimmed.
+fn padded_bar(text: &str, width: usize, style: Style) -> RichLine {
+    let pad = width.saturating_sub(display_width(text));
+    RichLine::from_spans([
+        RichSpan::styled(text.to_string(), style),
+        RichSpan::styled(" ".repeat(pad), style),
+    ])
 }
 
 /// Go bv's issue-type glyphs (`GetTypeIcon`).
@@ -3250,6 +3264,14 @@ impl Model for BvrApp {
 
             if matches!(self.mode, ViewMode::Insights) && self.insights_heatmap.is_none() {
                 self.render_go_insights(frame, body);
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
+            if matches!(self.mode, ViewMode::Actionable) {
+                self.render_go_actionable(frame, body);
                 Paragraph::new(RichText::from_lines([
                     self.main_go_status_bar(rows[2].width)
                 ]))
@@ -8967,6 +8989,168 @@ impl BvrApp {
         }
     }
 
+    /// Go bv's actionable view: a banner, the recommendation bar, and one
+    /// lettered block per execution track with tree-drawn items. The cursor
+    /// item is highlighted with its unblock list beneath; the view scrolls to
+    /// keep it on screen.
+    fn render_go_actionable(&self, frame: &mut Frame, area: Rect) {
+        // One spare column: a line that exactly fills the width loses its
+        // trailing padding (and thus its background) to wrapping.
+        let width = usize::from(area.width).saturating_sub(1);
+        // The plan is cached when the view is entered; compute it on the fly
+        // when it is not (e.g. the app started in this view).
+        let computed;
+        let plan = if let Some(plan) = self.actionable_plan.as_ref() {
+            plan
+        } else {
+            let triage = self
+                .analyzer
+                .triage(crate::analysis::triage::TriageOptions::default());
+            computed = self.analyzer.plan(&triage.score_by_id);
+            &computed
+        };
+        let mut lines: Vec<RichLine> = Vec::new();
+        let banner = format!(
+            " ⚡ ACTIONABLE ITEMS  │  {} items in {} tracks",
+            plan.summary.actionable_count,
+            plan.tracks.len()
+        );
+        lines.push(padded_bar(&banner, width, tokens::list_column_header()));
+        lines.push(RichLine::raw(""));
+        if plan.tracks.is_empty() {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "✓ No actionable items. All tasks are either blocked or completed.",
+                Style::new().fg(tokens::FG_SUCCESS).bold(),
+            )]));
+            Paragraph::new(RichText::from_lines(lines)).render(area, frame);
+            return;
+        }
+        if let (Some(highest), Some(reason)) = (
+            plan.summary.highest_impact.as_deref(),
+            plan.summary.impact_reason.as_deref(),
+        ) {
+            let rec = format!(" 💡 RECOMMENDED: Start with {highest} → {reason}");
+            lines.push(padded_bar(
+                &truncate_with_ellipsis(&rec, width, "…"),
+                width,
+                Style::new()
+                    .fg(tokens::FG_SUCCESS)
+                    .bg(tokens::BG_HIGHLIGHT)
+                    .bold(),
+            ));
+            lines.push(RichLine::raw(""));
+        }
+
+        let mut cursor_line = 0usize;
+        for (track_idx, track) in plan.tracks.iter().enumerate() {
+            let letter = if track_idx < 26 {
+                char::from(b'A' + u8::try_from(track_idx).unwrap_or(0)).to_string()
+            } else {
+                (track_idx + 1).to_string()
+            };
+            lines.push(RichLine::from_spans([
+                RichSpan::styled(
+                    format!(" TRACK {letter} "),
+                    Style::new()
+                        .fg(PackedRgba::rgb(248, 248, 242))
+                        .bg(tokens::FG_MUTED)
+                        .bold(),
+                ),
+                RichSpan::raw(" "),
+                RichSpan::styled(
+                    truncate_with_ellipsis(&track.reason, width.saturating_sub(12), "…"),
+                    tokens::row_id(),
+                ),
+            ]));
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "┈".repeat(width.saturating_sub(2)),
+                tokens::muted_text(),
+            )]));
+            for (item_idx, item) in track.items.iter().enumerate() {
+                let selected = track_idx == self.actionable_track_cursor
+                    && item_idx == self.actionable_item_cursor;
+                if selected {
+                    cursor_line = lines.len();
+                }
+                let tree = if item_idx + 1 < track.items.len() {
+                    "├─"
+                } else {
+                    "└─"
+                };
+                let glyph = go_priority_icon(item.priority)
+                    .split(' ')
+                    .next()
+                    .unwrap_or("•");
+                let mut spans = vec![
+                    RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+                    RichSpan::styled(format!("{tree} "), tokens::muted_text()),
+                    RichSpan::raw(format!("{glyph} ")),
+                    RichSpan::styled(format!("{} ", item.id), tokens::row_id()),
+                ];
+                let unblocks = if item.unblocks.is_empty() {
+                    String::new()
+                } else {
+                    format!(" →{}", item.unblocks.len())
+                };
+                let used: usize = spans
+                    .iter()
+                    .map(|span| display_width(span.content.as_ref()))
+                    .sum();
+                let title = truncate_with_ellipsis(
+                    &item.title,
+                    width.saturating_sub(used + display_width(&unblocks) + 1),
+                    "…",
+                );
+                spans.push(RichSpan::styled(title, tokens::row_title(selected)));
+                if !unblocks.is_empty() {
+                    spans.push(RichSpan::styled(
+                        unblocks,
+                        Style::new().fg(tokens::FG_SUCCESS).bold(),
+                    ));
+                }
+                if selected {
+                    let used: usize = spans
+                        .iter()
+                        .map(|span| display_width(span.content.as_ref()))
+                        .sum();
+                    spans.push(RichSpan::raw(" ".repeat(width.saturating_sub(used))));
+                    let highlighted: Vec<RichSpan<'static>> = spans
+                        .into_iter()
+                        .map(|span| {
+                            let style = span
+                                .style
+                                .unwrap_or_default()
+                                .bg(tokens::row_highlight_bg());
+                            RichSpan::styled(span.content.into_owned(), style)
+                        })
+                        .collect();
+                    lines.push(RichLine::from_spans(highlighted));
+                    if !item.unblocks.is_empty() {
+                        lines.push(RichLine::from_spans([RichSpan::styled(
+                            truncate_with_ellipsis(
+                                &format!("      ↳ Unblocks: {}", item.unblocks.join(", ")),
+                                width,
+                                "…",
+                            ),
+                            Style::new().fg(tokens::FG_WARNING),
+                        )]));
+                    }
+                } else {
+                    lines.push(RichLine::from_spans(spans));
+                }
+            }
+            lines.push(RichLine::raw(""));
+        }
+
+        // Keep the cursor visible, preferring to show the whole banner.
+        let height = usize::from(area.height);
+        let offset = cursor_line.saturating_sub(height.saturating_sub(4));
+        Paragraph::new(RichText::from_lines(lines))
+            .wrap(ftui::text::WrapMode::None)
+            .scroll((saturating_scroll_offset(offset), 0))
+            .render(area, frame);
+    }
+
     /// Render `?` help as Go bv's keyboard-shortcut modal: a titled frame of
     /// color-coded rounded section boxes in balanced columns. Returns false
     /// when the sections do not fit, so the caller can use the scrollable
@@ -9897,7 +10081,9 @@ impl BvrApp {
             ListFilter::Closed => ("✅", "CLOSED"),
             ListFilter::Ready => ("🚀", "READY"),
         };
-        let mode_hints = if matches!(self.mode, ViewMode::Graph) {
+        let mode_hints = if matches!(self.mode, ViewMode::Actionable) {
+            " L:labels • h:detail ".to_string()
+        } else if matches!(self.mode, ViewMode::Graph) {
             if self.graph_search_active || !self.graph_search_query.is_empty() {
                 let matches = self.graph_search_matches().len();
                 let position = if matches == 0 {
@@ -9983,7 +10169,15 @@ impl BvrApp {
 
         let sep = " │ ";
         let mut hints: Vec<(&str, &str)> = Vec::new();
-        if matches!(self.mode, ViewMode::Graph) {
+        if matches!(self.mode, ViewMode::Actionable) {
+            hints.extend([
+                ("j/k", " nav"),
+                ("tab", " tracks/items"),
+                ("⏎", " view"),
+                ("a", " list"),
+                ("?", " help"),
+            ]);
+        } else if matches!(self.mode, ViewMode::Graph) {
             if matches!(self.focus, FocusPane::Detail) {
                 hints.push(("^j/k", " scroll"));
             }
@@ -24065,7 +24259,7 @@ mod tests {
     #[test]
     fn mouse_left_click_on_header_mode_tab_switches_mode() {
         // Go bv views have no tab header; the Rust-only modes do.
-        let mut app = new_app(ViewMode::Actionable, 0);
+        let mut app = new_app(ViewMode::Tree, 0);
         let (x, y) =
             header_tab_click_point(&app, 120, 24, ViewMode::Graph).expect("graph header tab point");
 
