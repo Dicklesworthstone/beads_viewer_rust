@@ -359,11 +359,15 @@ bvr --preview-pages ./bv-pages
 
 ### Default data sources
 
-`bvr` loads issues from `.beads` by default, with compatibility for:
+`bvr` loads issues from `.beads` by default:
 
-- `beads.jsonl`
-- `issues.jsonl`
-- `beads.base.jsonl`
+- **br workspaces** declare their store in `.beads/metadata.json` (`database` and `jsonl_export`). `bvr` reads whichever is fresher: the SQLite database (read-only, including un-flushed writes in its `-wal` file) or the JSONL export (for example right after a `git pull`, before `br sync --import-only`). If the database cannot be read, `bvr` warns and falls back to the export. Set `BV_DATA_SOURCE=sqlite|jsonl` to force one.
+- **Without metadata**, it reads the first non-empty file among `beads.jsonl`, `issues.jsonl`, and `beads.base.jsonl`.
+- **bd (Dolt) workspaces** (`.beads/dolt/`, `.beads/embeddeddolt/`, or `backend: dolt`) are read only through `.beads/issues.jsonl`. If that file is missing, `bvr` runs `bd export` to create it. Other JSONL files in the directory are never used.
+- **`.beads/redirect`** chains are followed the same way `br where` follows them.
+- **`BEADS_DB`** (a database or JSONL file, or a `.beads` directory) takes priority over `BEADS_DIR`. `--db` accepts the same kinds of path.
+
+Scheduler deferrals (`defer_until`) are respected: a deferred bead is kept out of ready work and triage picks until the deferral passes, as in `br ready`.
 
 It can also aggregate repositories via `.bv/workspace.yaml`.
 
@@ -487,13 +491,18 @@ bvr --robot-overview
 bvr --robot-triage
 bvr --robot-triage-by-track
 bvr --robot-triage-by-label
+bvr --robot-triage --brief                          # compact, decision-only payload
+bvr --robot-next --robot-not-ready-labels needs-design,waiting-external
 bvr --robot-plan
 bvr --robot-priority
 bvr --robot-alerts
 bvr --robot-suggest
+bvr --robot-capabilities                            # one-call manifest of the robot surface
 ```
 
 Use these when you want a fast orientation snapshot, ranked recommendations, quick wins, blockers to clear, grouped tracks, or priority mismatch detection.
+
+Top picks (`--robot-next`, `quick_ref.top_picks`, per-track and per-label `top_pick`) only include beads that can be claimed now. A claimable bead is `open`, unassigned, not an epic, not a parent with open children, not deferred, and has none of the not-ready labels (`--robot-not-ready-labels` or `BV_ROBOT_NOT_READY_LABELS`).
 
 ### Graph analysis and forecasting
 
@@ -551,6 +560,8 @@ Use these when you need label health, workspace search, orphan detection, file-t
 
 ```bash
 bvr --export-md /tmp/report.md
+bvr --export /tmp/report.json --export-format json      # markdown|json|csv|mermaid
+bvr --export /tmp/issues.csv --export-format csv --export-include-graph=false
 bvr --priority-brief /tmp/priority-brief.md
 bvr --agent-brief /tmp/agent-brief
 bvr --export-graph /tmp/deps.json
@@ -566,6 +577,7 @@ These commands generate static artifacts, local previews, and operator-facing de
 
 ```bash
 bvr
+bvr --theme light                                   # light|dark|auto (COLORFGBG)
 bvr --debug-render graph --debug-width 160 --debug-height 50
 bvr --profile-startup
 bvr --profile-startup --profile-json

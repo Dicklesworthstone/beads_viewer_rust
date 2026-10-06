@@ -295,6 +295,10 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--graph-title` | `--graph-title` | complete | Optional title metadata for exported graph snapshots (text + static). |
 | `--graph-preset` | `--graph-preset` | complete | Layout density preset (`compact`/`roomy`) for text and static snapshots. |
 | `--graph-style` | `--graph-style` | complete | Static snapshot layout style (`force`/`grid`). |
+| `--export` | `--export` | complete | Report export through the export-hook pipeline. |
+| `--export-format` | `--export-format` | complete | `markdown` (default), `json`, `csv`, or `mermaid`. |
+| `--export-include-graph` | `--export-include-graph` | complete | Dependency context (Mermaid section / `graph` object); required for mermaid, rejected for csv. |
+| `--export-template` | — | missing | Go `text/template` report templates are not ported. |
 
 ### Workspace/Repo Scoping — 3 complete
 | Legacy Flag | bvr Flag | Status |
@@ -320,6 +324,8 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--label` | `--label` | complete |
 | `--robot-triage-by-label` | `--robot-triage-by-label` | complete |
 | `--robot-triage-by-track` | `--robot-triage-by-track` | complete |
+| `--brief` | `--brief` | complete | Compact `--robot-triage` payload: id/title/status/assignee/score/blockers/unblocks/claim commands. |
+| `--robot-not-ready-labels` | `--robot-not-ready-labels` | complete | Opt-in label class excluded from claimable top picks (env `BV_ROBOT_NOT_READY_LABELS`). Claimable picks are also unassigned, non-epic, and not `defer_until`-deferred. |
 
 ### Robot Commands (Metadata/Docs) — 3 complete
 | Legacy Flag | bvr Flag | Status | Notes |
@@ -327,6 +333,7 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--robot-docs` | `--robot-docs` | complete | Topic-based documentation output. |
 | `--robot-schema` | `--robot-schema` | complete | JSON Schema for all robot commands. |
 | `--schema-command` | `--schema-command` | complete | Schema for specific command. |
+| `--robot-capabilities` | `--robot-capabilities` | complete | One-call manifest of commands, formats, env vars, exit codes, stream contract. |
 
 ### Format/Meta — 4 complete
 | Legacy Flag | bvr Flag | Status |
@@ -341,6 +348,21 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 |---|---|---|---|
 | `--as-of` | `--as-of` | complete | Loads issues from historical git revision. |
 | `--force-full-analysis` | `--force-full-analysis` | complete | Bypasses incremental analysis caches. |
+| `--theme` | `--theme` | complete | TUI palette: `light`, `dark`, or `auto` (`COLORFGBG` detection); overrides `BV_THEME`. |
+| `--db` | `--db` | complete | Database file (`.db`/`.sqlite`), JSONL file, or `.beads` directory. |
+| `--id-pattern` | — | missing | Commit correlation already matches every known ID verbatim; custom regexes not ported. |
+| `--search-min-score` | — | missing | Not ported. |
+| `--robot-history-timeout-ms` | — | missing | Not ported. |
+| `--generate-docs` | — | missing | Not ported. |
+
+### Data Source Authority
+| Capability | Status | Notes |
+|---|---|---|
+| br SQLite database read (`metadata.json` `database`) | complete | Read-only; freshest of database (incl. `-wal`) vs JSONL export wins; corrupt DB falls back to JSONL; `BV_DATA_SOURCE=auto|sqlite|jsonl` forces a store. Ephemeral issues skipped. |
+| `.beads/redirect` chains | complete | Mirrors `br where`: depth/size bounds, loop detection, `.beads`/`_beads` target check. |
+| `BEADS_DB` env | complete | File (exact source) or `.beads` directory; priority over `BEADS_DIR`. |
+| bd (Dolt) workspaces | complete | `.beads/dolt`, `.beads/embeddeddolt`, or `backend: dolt` → reads `issues.jsonl` only (refreshing via `bd export` when missing); stray JSONL never used. |
+| `defer_until` / `due_at` | complete | Deferred issues are excluded from actionable/ready sets; br's `due_at` loads as the due date. |
 
 ### Rust-Only Additions
 | bvr Flag | Notes |
@@ -548,5 +570,5 @@ Prerequisites: Wave 3 complete.
 All core robot commands, export surfaces, pages workflows, workspace semantics, and quality gates are passing with the current proof surface. The Rust port now has full legacy parity across robot, CLI, export, and interactive TUI behavior.
 
 ## Open Gaps to 100%
-1. None for legacy parity. Remaining work is post-parity enhancement work only.
+1. Legacy `bv` kept evolving after the original parity pass. Flags it added since that are still unported: `--export-template`, `--id-pattern`, `--search-min-score`, `--robot-history-timeout-ms`, `--generate-docs`, and the `bv robot-<cmd> --json` subcommand-style invocation aliases.
 2. Future additions should keep the current proof surface green rather than reopen parity debt.
