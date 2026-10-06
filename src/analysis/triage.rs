@@ -466,6 +466,14 @@ pub struct Recommendation {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocked_by: Vec<String>,
     pub assignee: String,
+    /// Scheduler deferral, when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// Machine-readable top-pick gate (legacy #199): true iff this item would
+    /// be surfaced as a claimable robot pick (open, unassigned, unblocked,
+    /// not an epic or parent with open children, no not-ready label).
+    #[serde(default)]
+    pub claimable: bool,
     pub claim_command: String,
     pub show_command: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -788,6 +796,8 @@ pub fn compute_triage(
             unblocks_ids,
             blocked_by: open_blocker_ids,
             assignee: issue.assignee.clone(),
+            defer_until: issue.defer_until,
+            claimable: false,
             claim_command: issue.claim_command(),
             show_command: issue.show_command(),
             breakdown: Some(impact.breakdown),
@@ -831,6 +841,9 @@ pub fn compute_triage(
         })
         .map(|rec| rec.id.clone())
         .collect();
+    for rec in &mut recommendations {
+        rec.claimable = claimable.contains(&rec.id);
+    }
     let is_claimable_pick = |rec: &Recommendation| -> bool { claimable.contains(&rec.id) };
 
     let top_picks: Vec<QuickPick> = recommendations
@@ -1369,6 +1382,16 @@ mod tests {
             .collect();
         pick_ids.sort_unstable();
         assert_eq!(pick_ids, vec!["defer-elapsed", "free"]);
+
+        // `claimable` mirrors the top-pick gate on every recommendation.
+        for rec in &triage.result.recommendations {
+            assert_eq!(
+                rec.claimable,
+                pick_ids.contains(&rec.id.as_str()),
+                "claimable flag for {}",
+                rec.id
+            );
+        }
 
         for track in &triage.result.recommendations_by_track {
             if let Some(pick) = &track.top_pick {

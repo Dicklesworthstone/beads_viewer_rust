@@ -90,8 +90,8 @@ pub fn compute_execution_plan(
                 priority: issue.priority,
                 score: score_by_id.get(issue_id).copied().unwrap_or_default(),
                 unblocks,
-                claim_command: format!("br update {} --status=in_progress", issue.id),
-                show_command: format!("br show {}", issue.id),
+                claim_command: issue.claim_command(),
+                show_command: issue.show_command(),
             });
         }
 

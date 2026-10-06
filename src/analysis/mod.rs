@@ -579,6 +579,8 @@ impl Analyzer {
                 unblocks_ids: Vec::new(),
                 blocked_by: Vec::new(),
                 assignee: issue.assignee.clone(),
+                defer_until: issue.defer_until,
+                claimable: false,
                 claim_command: issue.claim_command(),
                 show_command: issue.show_command(),
                 breakdown: None,

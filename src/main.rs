@@ -6809,6 +6809,7 @@ struct BriefTriageRecommendation {
     unblocks: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     blocked_by: Vec<String>,
+    claimable: bool,
     claim_command: String,
     show_command: String,
 }
@@ -6857,6 +6858,7 @@ fn build_triage_brief_output(
                 score: rec.score,
                 unblocks: rec.unblocks_ids,
                 blocked_by: rec.blocked_by,
+                claimable: rec.claimable,
                 claim_command: rec.claim_command,
                 show_command: rec.show_command,
             })

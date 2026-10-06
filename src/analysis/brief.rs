@@ -274,6 +274,8 @@ mod tests {
                 unblocks_ids: Vec::new(),
                 blocked_by: Vec::new(),
                 assignee: String::new(),
+                defer_until: None,
+                claimable: false,
                 claim_command: "br update A-1 --status=in_progress".to_string(),
                 show_command: "br show A-1".to_string(),
                 breakdown: None,
