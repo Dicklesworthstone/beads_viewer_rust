@@ -1,7 +1,7 @@
 use std::cell::Cell;
 #[cfg(not(test))]
 use std::collections::VecDeque;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -20,7 +20,6 @@ use crate::model::{Issue, Sprint};
 use crate::robot::compute_data_hash;
 use crate::{BvrError, Result};
 use chrono::{DateTime, Utc};
-use ftui::Style;
 use ftui::core::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -37,6 +36,7 @@ use ftui::text::{
 use ftui::widgets::Widget;
 use ftui::widgets::block::Block;
 use ftui::widgets::paragraph::Paragraph;
+use ftui::{PackedRgba, Style};
 
 #[cfg(not(test))]
 use std::sync::{
@@ -3236,6 +3236,14 @@ impl Model for BvrApp {
                 ])
                 .split(body);
 
+            if matches!(self.mode, ViewMode::Board) {
+                self.render_go_board(frame, body);
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
             if matches!(self.mode, ViewMode::Main) {
                 let list_focused = self.focus == FocusPane::List;
                 // Narrow terminals get one full-width pane, as in Go bv: the
@@ -7322,13 +7330,18 @@ impl BvrApp {
                     }
                 }
 
-                vec![
+                let mut lanes = vec![
                     ("open".to_string(), open),
                     ("in_progress".to_string(), in_progress),
                     ("blocked".to_string(), blocked),
                     ("closed".to_string(), closed),
-                    ("other".to_string(), other),
-                ]
+                ];
+                // Custom/parked statuses get a lane only when they exist; the
+                // four Go bv status columns are always the board's spine.
+                if !other.is_empty() {
+                    lanes.push(("other".to_string(), other));
+                }
+                lanes
             }
             BoardGrouping::Priority => {
                 let mut p0 = Vec::<usize>::new();
@@ -8173,29 +8186,44 @@ impl BvrApp {
             return None;
         }
 
+        if matches!(self.mode, ViewMode::Main | ViewMode::Board) {
+            // The Go-style detail pane word-wraps, so the link's visual row is
+            // the sum of the wrapped heights of the lines above it.
+            let detail_text = self.main_go_detail_text(area.width);
+            let width = usize::from(area.width).max(1);
+            let mut row = 0usize;
+            let mut link_line = None;
+            for line in detail_text.lines() {
+                if ftui::text::Line::spans(line)
+                    .iter()
+                    .any(|span| span.link.is_some())
+                {
+                    link_line = Some(line);
+                    break;
+                }
+                row += line
+                    .wrap(width, ftui::text::WrapMode::WordChar)
+                    .len()
+                    .max(1);
+            }
+            let line = link_line?;
+            let scroll = if matches!(self.mode, ViewMode::Board) {
+                self.board_detail_scroll_offset
+            } else {
+                usize::from(saturating_scroll_offset(self.detail_scroll_offset))
+            };
+            let visible = row.checked_sub(scroll)?;
+            let y = area.y.saturating_add(saturating_scroll_offset(visible));
+            let line_width = u16::try_from(display_width(&line.to_plain_text()))
+                .unwrap_or(u16::MAX)
+                .min(area.width);
+            if line_width == 0 || y >= area.y.saturating_add(area.height) {
+                return None;
+            }
+            return Some(Rect::new(area.x, y, line_width, 1));
+        }
+
         let (detail_text, line_index, scroll_offset) = match self.mode {
-            ViewMode::Main => {
-                let detail_text = self.issue_detail_render_text();
-                let line_index = detail_text.lines().iter().position(|line| {
-                    ftui::text::Line::spans(line)
-                        .iter()
-                        .any(|span| span.link.is_some())
-                })?;
-                (
-                    detail_text,
-                    line_index,
-                    usize::from(saturating_scroll_offset(self.detail_scroll_offset)),
-                )
-            }
-            ViewMode::Board => {
-                let detail_text = self.board_detail_render_text();
-                let line_index = detail_text.lines().iter().position(|line| {
-                    ftui::text::Line::spans(line)
-                        .iter()
-                        .any(|span| span.link.is_some())
-                })?;
-                (detail_text, line_index, self.board_detail_scroll_offset)
-            }
             ViewMode::Insights => {
                 let detail_text = self.insights_detail_render_text();
                 let line_index = detail_text.lines().iter().position(|line| {
@@ -8664,6 +8692,379 @@ impl BvrApp {
         }
     }
 
+    /// Go bv lane presentation for a board lane key: (emoji, title, color).
+    fn go_board_lane_meta(&self, key: &str) -> (&'static str, String, PackedRgba) {
+        match (self.board_grouping, key) {
+            (BoardGrouping::Status, "open") => ("📋", "OPEN".into(), tokens::status_fg("open")),
+            (BoardGrouping::Status, "in_progress") => {
+                ("🔄", "IN PROGRESS".into(), tokens::status_fg("in_progress"))
+            }
+            (BoardGrouping::Status, "blocked") => {
+                ("🚫", "BLOCKED".into(), tokens::status_fg("blocked"))
+            }
+            (BoardGrouping::Status, "closed") => {
+                ("✅", "CLOSED".into(), tokens::status_fg("closed"))
+            }
+            (BoardGrouping::Priority, "p0") => {
+                ("🔴", "P0 CRITICAL".into(), PackedRgba::rgb(239, 83, 80))
+            }
+            (BoardGrouping::Priority, "p1") => {
+                ("🟡", "P1 HIGH".into(), PackedRgba::rgb(255, 183, 77))
+            }
+            (BoardGrouping::Priority, "p2") => {
+                ("🔵", "P2 MEDIUM".into(), PackedRgba::rgb(100, 181, 246))
+            }
+            (BoardGrouping::Priority, _) => {
+                ("⚪", "P3+ OTHER".into(), PackedRgba::rgb(158, 158, 158))
+            }
+            (BoardGrouping::Type, kind) => (
+                go_type_icon(kind),
+                kind.to_ascii_uppercase(),
+                tokens::type_fg(kind),
+            ),
+            (_, other) => ("•", other.to_ascii_uppercase(), tokens::FG_MUTED),
+        }
+    }
+
+    /// Render the Go bv kanban board into `area`: title bar, one bordered
+    /// column per lane with a colored header, and priority-coded cards.
+    fn render_go_board(&self, frame: &mut Frame, area: Rect) {
+        let lanes = self.board_lane_indices();
+        if lanes.is_empty() || area.height < 6 {
+            Paragraph::new("No issues to display")
+                .style(tokens::muted_text())
+                .alignment(ftui::widgets::block::Alignment::Center)
+                .render(area, frame);
+            return;
+        }
+        let show_detail = matches!(self.focus, FocusPane::Detail);
+        let detail_width = if !show_detail {
+            0
+        } else if area.width >= 100 {
+            (area.width * 35 / 100).clamp(40, 80)
+        } else {
+            area.width
+        };
+        let board_width = area.width.saturating_sub(detail_width);
+        if board_width == 0 {
+            self.render_go_board_detail(frame, area);
+            return;
+        }
+        let title = format!("BOARD [by: {}]", {
+            let mut name = self.board_grouping.label().to_string();
+            if let Some(first) = name.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            name
+        });
+        Paragraph::new(title)
+            .style(tokens::primary_bold())
+            .alignment(ftui::widgets::block::Alignment::Center)
+            .render(Rect::new(area.x, area.y, board_width, 1), frame);
+
+        let col_count = u16::try_from(lanes.len()).unwrap_or(1).max(1);
+        let col_width = (board_width / col_count).max(12);
+        let focused_lane = lanes
+            .iter()
+            .position(|(_, idx)| idx.contains(&self.selected));
+        let search_hits: HashSet<usize> = self.board_search_matches().into_iter().collect();
+        let current_hit = {
+            let matches = self.board_search_matches();
+            matches
+                .get(
+                    self.board_search_match_cursor
+                        .min(matches.len().saturating_sub(1)),
+                )
+                .copied()
+        };
+        let now = tui_now();
+
+        for (slot, (key, indices)) in lanes.iter().enumerate() {
+            let x = area.x + col_width * u16::try_from(slot).unwrap_or(0);
+            if x >= area.x + board_width {
+                break;
+            }
+            let width = col_width.min(area.x + board_width - x);
+            let focused = focused_lane == Some(slot);
+            let (emoji, lane_title, color) = self.go_board_lane_meta(key);
+
+            // Header with P0/P1 counts and the oldest item's age.
+            let issues: Vec<&Issue> = indices
+                .iter()
+                .filter_map(|i| self.analyzer.issues.get(*i))
+                .collect();
+            let mut header = format!("{emoji} {lane_title} ({})", issues.len());
+            if area.width >= 100 {
+                let p0 = issues.iter().filter(|i| i.priority == 0).count();
+                let p1 = issues.iter().filter(|i| i.priority == 1).count();
+                if p0 > 0 {
+                    let _ = write!(header, " {p0}🔴");
+                }
+                if p1 > 0 {
+                    let _ = write!(header, " {p1}🟡");
+                }
+                if area.width >= 140
+                    && let Some(oldest) = issues.iter().filter_map(|i| i.created_at).min()
+                {
+                    let days = (now - oldest).num_days();
+                    let age = if days < 1 {
+                        "<1d".to_string()
+                    } else if days < 7 {
+                        format!("{days}d")
+                    } else if days < 30 {
+                        format!("{}w", days / 7)
+                    } else {
+                        format!("{}mo", days / 30)
+                    };
+                    let _ = write!(header, " ⏱{age}");
+                }
+            }
+            let header_style = if focused {
+                Style::new()
+                    .fg(PackedRgba::rgb(26, 26, 26))
+                    .bg(color)
+                    .bold()
+            } else {
+                Style::new()
+                    .fg(color)
+                    .bg(PackedRgba::rgb(42, 42, 42))
+                    .bold()
+            };
+            Paragraph::new(truncate_with_ellipsis(&header, usize::from(width), "…"))
+                .style(header_style)
+                .alignment(ftui::widgets::block::Alignment::Center)
+                .render(Rect::new(x, area.y + 1, width, 1), frame);
+
+            let column = Rect::new(x, area.y + 2, width, area.height.saturating_sub(2));
+            Block::bordered()
+                .border_type(ftui::widgets::borders::BorderType::Rounded)
+                .border_style(Style::new().fg(if focused { color } else { tokens::FG_MUTED }))
+                .render(column, frame);
+            let inner = Rect::new(
+                column.x + 2,
+                column.y + 1,
+                column.width.saturating_sub(4),
+                column.height.saturating_sub(2),
+            );
+            if issues.is_empty() {
+                Paragraph::new("(empty)")
+                    .style(tokens::muted_text().italic())
+                    .alignment(ftui::widgets::block::Alignment::Center)
+                    .render(
+                        Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1),
+                        frame,
+                    );
+                continue;
+            }
+
+            const CARD_HEIGHT: u16 = 6; // 3 lines + 2 border + 1 gap
+            let visible_cards = usize::from((inner.height.saturating_sub(1) / CARD_HEIGHT).max(1));
+            let sel = indices
+                .iter()
+                .position(|i| *i == self.selected)
+                .unwrap_or(0);
+            let start = sel.saturating_sub(visible_cards - 1);
+            for (row, &index) in indices.iter().enumerate().skip(start).take(visible_cards) {
+                let issue = &self.analyzer.issues[index];
+                let y = inner.y + u16::try_from(row - start).unwrap_or(0) * CARD_HEIGHT;
+                let card = Rect::new(inner.x, y, inner.width, 5);
+                let selected = focused && index == self.selected;
+                self.render_go_board_card(
+                    frame,
+                    card,
+                    issue,
+                    selected,
+                    current_hit == Some(index),
+                    search_hits.contains(&index),
+                    now,
+                );
+            }
+            if issues.len() > visible_cards {
+                Paragraph::new(format!("↕ {}/{}", sel + 1, issues.len()))
+                    .style(tokens::muted_text().italic())
+                    .alignment(ftui::widgets::block::Alignment::Center)
+                    .render(
+                        Rect::new(
+                            inner.x,
+                            inner.y + inner.height.saturating_sub(1),
+                            inner.width,
+                            1,
+                        ),
+                        frame,
+                    );
+            }
+        }
+
+        if show_detail {
+            self.render_go_board_detail(
+                frame,
+                Rect::new(area.x + board_width, area.y, detail_width, area.height),
+            );
+        }
+    }
+
+    fn render_go_board_detail(&self, frame: &mut Frame, panel: Rect) {
+        semantic_panel_block("", true, SemanticTone::Accent).render(panel, frame);
+        let inner = block_inner_rect(panel);
+        let body = Rect::new(
+            inner.x + 1,
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height,
+        );
+        Paragraph::new(self.main_go_detail_text(body.width))
+            .wrap(ftui::text::WrapMode::WordChar)
+            .scroll((saturating_scroll_offset(self.board_detail_scroll_offset), 0))
+            .render(body, frame);
+        record_detail_content_area(body);
+    }
+
+    /// One Go bv board card: type glyph, priority, ID, age; title; first
+    /// blocker, unblock count, and labels. The border color encodes state.
+    #[allow(clippy::too_many_arguments)]
+    fn render_go_board_card(
+        &self,
+        frame: &mut Frame,
+        card: Rect,
+        issue: &Issue,
+        selected: bool,
+        current_hit: bool,
+        any_hit: bool,
+        now: DateTime<Utc>,
+    ) {
+        let blockers: Vec<String> = self
+            .analyzer
+            .graph
+            .open_blockers(&issue.id)
+            .into_iter()
+            .collect();
+        let blocks = self
+            .analyzer
+            .graph
+            .dependents(&issue.id)
+            .into_iter()
+            .filter(|dep| {
+                self.analyzer
+                    .graph
+                    .issue(dep)
+                    .is_some_and(Issue::is_open_like)
+            })
+            .count();
+        let border = if selected {
+            tokens::FG_ACCENT
+        } else if current_hit {
+            PackedRgba::rgb(206, 147, 216)
+        } else if any_hit {
+            PackedRgba::rgb(100, 181, 246)
+        } else if !blockers.is_empty() {
+            PackedRgba::rgb(239, 83, 80)
+        } else if blocks > 0 {
+            PackedRgba::rgb(255, 183, 77)
+        } else if issue.normalized_status() == "open" {
+            PackedRgba::rgb(129, 199, 132)
+        } else {
+            tokens::FG_MUTED
+        };
+        let mut block = Block::bordered()
+            .border_type(ftui::widgets::borders::BorderType::Rounded)
+            .border_style(Style::new().fg(border));
+        if selected {
+            block = block.style(Style::new().bg(tokens::row_highlight_bg()));
+        }
+        block.render(card, frame);
+        let inner = Rect::new(card.x + 2, card.y + 1, card.width.saturating_sub(4), 3);
+        let width = usize::from(inner.width);
+
+        let prio = issue.priority.clamp(0, 4);
+        let prio_style = if prio <= 1 {
+            Style::new().fg(PackedRgba::rgb(239, 83, 80)).bold()
+        } else {
+            tokens::row_id().bold()
+        };
+        let age_days = issue.updated_at.map(|t| (now - t).num_days());
+        let age_color = match age_days {
+            Some(d) if d < 7 => PackedRgba::rgb(129, 199, 132),
+            Some(d) if d < 30 => PackedRgba::rgb(255, 183, 77),
+            Some(_) => PackedRgba::rgb(229, 115, 115),
+            None => tokens::FG_MUTED,
+        };
+        let age = truncate_to_width(&go_time_rel(issue.updated_at, now), 6);
+        let id = truncate_with_ellipsis(&issue.id, width.saturating_sub(14).max(6), "…");
+        let line1 = RichLine::from_spans([
+            RichSpan::styled(
+                go_type_icon(&issue.issue_type),
+                Style::new().fg(tokens::type_fg(&issue.issue_type)),
+            ),
+            RichSpan::raw(" "),
+            RichSpan::styled(format!("P{prio}"), prio_style),
+            RichSpan::raw(" "),
+            RichSpan::styled(id, tokens::row_id().bold()),
+            RichSpan::raw(" "),
+            RichSpan::styled(age, Style::new().fg(age_color)),
+        ]);
+        let line2 = RichLine::from_spans([RichSpan::styled(
+            truncate_with_ellipsis(&issue.title, width, "…"),
+            tokens::row_title(selected),
+        )]);
+        let mut meta: Vec<RichSpan<'static>> = Vec::new();
+        if let Some(first) = blockers.first() {
+            let snippet = self
+                .analyzer
+                .graph
+                .issue(first)
+                .map(|b| format!(" ({})", truncate_with_ellipsis(&b.title, 12, "…")))
+                .unwrap_or_default();
+            meta.push(RichSpan::styled(
+                format!("🚫←{}{snippet} ", truncate_with_ellipsis(first, 10, "…")),
+                Style::new().fg(tokens::status_fg("blocked")),
+            ));
+        }
+        if blocks > 0 {
+            meta.push(RichSpan::styled(
+                format!("⚡→{blocks} "),
+                Style::new().fg(tokens::type_fg("feature")),
+            ));
+        }
+        if !issue.labels.is_empty() {
+            let labels: Vec<String> = issue
+                .labels
+                .iter()
+                .take(3)
+                .map(|label| truncate_to_width(label, 8))
+                .collect();
+            meta.push(RichSpan::styled(
+                labels.join(","),
+                Style::new().fg(tokens::status_fg("in_progress")),
+            ));
+        }
+        let mut text_lines = Vec::new();
+        for line in [line1, line2, RichLine::from_spans(meta)] {
+            let plain: String = line.spans().iter().map(|s| s.content.as_ref()).collect();
+            if display_width(&plain) > width {
+                // Truncate by rebuilding spans up to the width budget.
+                let mut budget = width.saturating_sub(1);
+                let mut out = RichLine::new();
+                for span in line.spans() {
+                    if budget == 0 {
+                        break;
+                    }
+                    let content = truncate_to_width(span.content.as_ref(), budget);
+                    budget = budget.saturating_sub(display_width(&content));
+                    out.push_span(RichSpan::styled(content, span.style.unwrap_or_default()));
+                }
+                out.push_span(RichSpan::raw("…"));
+                text_lines.push(out);
+            } else {
+                text_lines.push(line);
+            }
+        }
+        let mut para = Paragraph::new(RichText::from_lines(text_lines));
+        if selected {
+            para = para.style(Style::new().bg(tokens::row_highlight_bg()));
+        }
+        para.render(inner, frame);
+    }
+
     /// Left-click on a main-list row selects it and focuses the list
     /// (Go bv bv-162). Returns false when the click is not on a row.
     fn mouse_select_main_row(&mut self, x: u16, y: u16) -> bool {
@@ -9099,9 +9500,30 @@ impl BvrApp {
             ListFilter::Closed => ("✅", "CLOSED"),
             ListFilter::Ready => ("🚀", "READY"),
         };
+        let mode_hints = if matches!(self.mode, ViewMode::Board) {
+            if self.board_search_active || !self.board_search_query.is_empty() {
+                let matches = self.board_search_matches().len();
+                let position = if matches == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " [{}/{matches}]",
+                        self.board_search_match_cursor.min(matches - 1) + 1
+                    )
+                };
+                format!(
+                    " /{}{position} • n/N:match • enter:done • esc:cancel ",
+                    self.board_search_query
+                )
+            } else {
+                " 1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help ".to_string()
+            }
+        } else {
+            " L:labels • h:detail ".to_string()
+        };
         let mut spans = vec![
             RichSpan::styled(format!(" {icon} {name} "), tokens::status_filter_badge()),
-            RichSpan::styled(" L:labels • h:detail ", tokens::footer_hint()),
+            RichSpan::styled(mode_hints, tokens::footer_hint()),
         ];
         if let Some(label) = self.modal_label_filter.as_deref() {
             spans.push(RichSpan::styled(
@@ -9144,20 +9566,36 @@ impl BvrApp {
 
         let sep = " │ ";
         let mut hints: Vec<(&str, &str)> = Vec::new();
-        if matches!(self.focus, FocusPane::Detail) {
+        if matches!(self.mode, ViewMode::Board) {
+            if matches!(self.focus, FocusPane::Detail) {
+                hints.push(("^j/k", " scroll"));
+                if self.should_open_selected_issue_external_ref() {
+                    hints.push(("o", " open link"));
+                    hints.push(("y", " copy link"));
+                }
+            }
+            hints.extend([
+                ("hjkl", " nav"),
+                ("G", " bottom"),
+                ("tab", " detail"),
+                ("b", " list"),
+            ]);
+        } else if matches!(self.focus, FocusPane::Detail) {
             hints.push(("^j/k", " scroll"));
             if self.should_open_selected_issue_external_ref() {
                 hints.push(("o", " open link"));
                 hints.push(("y", " copy link"));
             }
         }
-        hints.extend([
-            ("tab", " focus"),
-            ("C", " copy"),
-            ("x", " export"),
-            ("/", " search"),
-            ("?", " help"),
-        ]);
+        if !matches!(self.mode, ViewMode::Board) {
+            hints.extend([
+                ("tab", " focus"),
+                ("C", " copy"),
+                ("x", " export"),
+                ("/", " search"),
+                ("?", " help"),
+            ]);
+        }
         let left_width: usize = spans
             .iter()
             .map(|span| display_width(span.content.as_ref()))
@@ -22585,11 +23023,11 @@ mod tests {
 
         let rendered = render_app(&app, 240, 40);
         assert!(
-            rendered.contains("Tab focus"),
+            rendered.contains("tab detail"),
             "expected board footer to advertise focus switching, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("/ search"),
+            rendered.contains("/:search"),
             "expected board footer to advertise search, got:\n{rendered}"
         );
     }
@@ -22996,26 +23434,17 @@ mod tests {
         app.analyzer.issues[0].external_ref = Some("https://github.com/org/repo/issues/42".into());
 
         let _ = render_app(&app, 120, 40);
+        let rendered = render_app(&app, 120, 40);
         let link_area = app
             .current_detail_link_row_area()
             .expect("board detail link row area");
-        let detail_area = cached_detail_content_area();
-        let detail = app.board_detail_render_text();
-        let expected_row = detail
+        let row = rendered
             .lines()
-            .iter()
-            .position(|line| {
-                ftui::text::Line::spans(line)
-                    .iter()
-                    .any(|span| span.link.is_some())
-            })
-            .expect("board detail hyperlink row");
-
-        assert_eq!(
-            link_area.y,
-            detail_area
-                .y
-                .saturating_add(saturating_scroll_offset(expected_row)),
+            .nth(usize::from(link_area.y))
+            .expect("rendered link row");
+        assert!(
+            row.contains("🔗 External:"),
+            "link row area must point at the rendered hyperlink row: {row}"
         );
     }
 

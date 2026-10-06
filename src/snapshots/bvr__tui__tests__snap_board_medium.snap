@@ -3,32 +3,32 @@ source: src/tui.rs
 expression: text
 ---
 bvr 1 Main b Board i Insights | mode=Board | focus=list | issues=3/3 | filter=all |
-┌Board Lanes [focus]─────────────────────┐┌Board Focus─────────────────────────────────────────────┐
-│                                        ││                                                        │
-│ Grouping: status (s cycles) | Empty: A ││ ┌────────────────────────────────────────┐             │
-│                                        ││ │  o T A p0                              │             │
-│ Lanes (5) | 3 issues total             ││ │ Root                                   │             │
-│                                        ││ ├────────────────────────────────────────┤             │
-│ ▸ ┌─ open [2] ██  clear                ││ │ Lane: open                             │             │
-│   ▶ oT P0 A Root↓1 @alice              ││ │ Assignee: alice                        │             │
-│   │ oT P0 B Dependent⊘1                ││ │ Labels: core, parity                   │             │
-│   └────────────                        ││ │ Age: 91d | Updated: 90d ago            │             │
-│                                        ││ │ PR:0.481 Depth:2                       │             │
-│   ┌─ in_progress [0]   empty           ││ ├────────────────────────────────────────┤             │
-│   │ (empty)                            ││ │ Top-level issue that unblocks downst…  │             │
-│   └────────────                        ││ └────────────────────────────────────────┘             │
-│                                        ││                                                        │
-│   ┌─ blocked [0]   empty               ││ Unblocks (1)                                           │
-│   │ (empty)                            ││   o B                                                  │
-│   └────────────                        ││                                                        │
-│                                        ││ Ready to advance to next lane.                         │
-│   ┌─ closed [1] █  clear               ││                                                        │
-│   │ xT P0 C Closed                     ││                                                        │
-│   └────────────                        ││                                                        │
-│                                        ││                                                        │
-│   ┌─ other [0]   empty                 ││                                                        │
-│   │ (empty)                            ││                                                        │
-│   └────────────                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges
+                                         BOARD [by: Status]
+     📋 OPEN (2) 2🔴        🔄 IN PROGRESS (0)         🚫 BLOCKED (0)          ✅ CLOSED (1) 1🔴
+╭───────────────────────╮╭───────────────────────╮╭───────────────────────╮╭───────────────────────╮
+│ ╭───────────────────╮ ││                       ││                       ││ ╭───────────────────╮ │
+│ │ 📋 P0 A 5mo ag    │ ││                       ││                       ││ │ 📋 P0 C 4mo ag    │ │
+│ │ Root              │ ││                       ││                       ││ │ Closed            │ │
+│ │ ⚡→1 core,parity  │ ││                       ││                       ││ │                   │ │
+│ ╰───────────────────╯ ││                       ││                       ││ ╰───────────────────╯ │
+│                       ││                       ││                       ││                       │
+│ ╭───────────────────╮ ││                       ││                       ││                       │
+│ │ 📋 P0 B 4mo ag    │ ││                       ││                       ││                       │
+│ │ Dependent         │ ││                       ││                       ││                       │
+│ │ 🚫←A (Root)       │ ││                       ││                       ││                       │
+│ ╰───────────────────╯ ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││        (empty)        ││        (empty)        ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯
+ 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1

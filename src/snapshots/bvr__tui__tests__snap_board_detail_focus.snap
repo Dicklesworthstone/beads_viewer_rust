@@ -3,32 +3,32 @@ source: src/tui.rs
 expression: text
 ---
 bvr 1 Main b Board i Insights | mode=Board | focus=detail | issues=3/3 | filter=all |
-┌Board Lanes─────────────────────────────┐┌Board Focus [focus]─────────────────────────────────────┐
-│                                        ││                                                        │
-│ Grouping: status (s cycles) | Empty: A ││ ┌────────────────────────────────────────┐             │
-│                                        ││ │  o T B p0                              │             │
-│ Lanes (5) | 3 issues total             ││ │ Dependent                              │             │
-│                                        ││ ├────────────────────────────────────────┤             │
-│ ▸ ┌─ open [2] ██  clear                ││ │ Lane: open                             │             │
-│   │ oT P0 A Root↓1 @alice              ││ │ Assignee:                              │             │
-│   ▶ oT P0 B Dependent⊘1                ││ │ Age: 89d | Updated: 88d ago            │             │
-│   └────────────                        ││ │ PR:0.260 Depth:1                       │             │
-│                                        ││ ├────────────────────────────────────────┤             │
-│   ┌─ in_progress [0]   empty           ││ │ Depends on A and should report block…  │             │
-│   │ (empty)                            ││ └────────────────────────────────────────┘             │
-│   └────────────                        ││                                                        │
-│                                        ││ Depends on (1)                                         │
-│   ┌─ blocked [0]   empty               ││ > o A [OPEN]                                           │
-│   │ (empty)                            ││                                                        │
-│   └────────────                        ││ Blocked by 1 open issue(s).                            │
-│                                        ││                                                        │
-│   ┌─ closed [1] █  clear               ││                                                        │
-│   │ xT P0 C Closed                     ││                                                        │
-│   └────────────                        ││                                                        │
-│                                        ││                                                        │
-│   ┌─ other [0]   empty                 ││                                                        │
-│   │ (empty)                            ││                                                        │
-│   └────────────                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges
+                     BOARD [by: Status]                     ┌──────────────────────────────────────┐
+📋 OPEN (2) 2🔴🔄 IN PROGRESS…🚫 BLOCKED (0) ✅ CLOSED (1) …│ 📋 Dependent                         │
+╭─────────────╮╭─────────────╮╭─────────────╮╭─────────────╮│                                      │
+│ ╭─────────╮ ││             ││             ││ ╭─────────╮ ││ ┌───┬─────┬───────┬──────┬───────┐   │
+│ │ 📋 P0 … │ ││             ││             ││ │ 📋 P0 … │ ││ │ … │ St… │ Prio… │ Ass… │ Crea… │   │
+│ │ Root    │ ││             ││             ││ │ Closed  │ ││ ├───┼─────┼───────┼──────┼───────┤   │
+│ │ ⚡→1 c… │ ││             ││             ││ │         │ ││ │ B │ OP… │ 🔥 P0 │ —    │ 2026… │   │
+│ ╰─────────╯ ││             ││             ││ ╰─────────╯ ││ └───┴─────┴───────┴──────┴───────┘   │
+│             ││             ││             ││             ││ C copy id • L label filter • w repo  │
+│ ╭─────────╮ ││             ││             ││             ││ filter • t time-travel               │
+│ │ 📋 P0 … │ ││             ││             ││             ││                                      │
+│ │ Depend… │ ││             ││             ││             ││ 🎯 Triage Insights                   │
+│ │ 🚫←A (… │ ││             ││             ││             ││ • ⛔ Blocked by: A                   │
+│ ╰─────────╯ ││             ││             ││             ││                                      │
+│             ││             ││             ││             ││ Graph Analysis                       │
+│             ││   (empty)   ││   (empty)   ││             ││ • Impact Depth: 1 (downstream chain  │
+│             ││             ││             ││             ││ length)                              │
+│             ││             ││             ││             ││ • Centrality: PR 0.2597 • BW 0.0000  │
+│             ││             ││             ││             ││ • EV 0.0000                          │
+│             ││             ││             ││             ││ • Flow Role: Hub 1.0000 • Authority  │
+│             ││             ││             ││             ││ 0.0000                               │
+│             ││             ││             ││             ││                                      │
+│             ││             ││             ││             ││ Description                          │
+│             ││             ││             ││             ││                                      │
+│             ││             ││             ││             ││ Depends on A and should report       │
+│             ││             ││             ││             ││ blocked state clearly.               │
+│             ││             ││             ││             ││                                      │
+╰─────────────╯╰─────────────╯╰─────────────╯╰─────────────╯└──────────────────────────────────────┘
+ 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1

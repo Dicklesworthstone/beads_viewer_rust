@@ -3,32 +3,32 @@ source: src/tui.rs
 expression: text
 ---
 bvr 1 Main b Board i In g Graph H Hist  | 3/3 | all
-┌Board Lanes [focus]┐┌Board Focus──────────────────────────┐
-│                   ││                                     │
-│ Grouping: status  ││ ┌────────────────────────────────── │
-│                   ││ │  o T A p0                         │
-│ Lanes (5) | 3 iss ││ │ Root                              │
-│                   ││ ├────────────────────────────────── │
-│ ▸ ┌─ open [2] ██  ││ │ Lane: open                        │
-│   ▶ oT P0 A Root↓ ││ │ Assignee: alice                   │
-│   │ oT P0 B Depen ││ │ Labels: core, parity              │
-│   └────────────   ││ │ Age: 91d | Updated: 90d ago       │
-│                   ││ │ PR:0.481 Depth:2                  │
-│   ┌─ in_progress  ││ ├────────────────────────────────── │
-│   │ (empty)       ││ │ Top-level issue that unblocks dow │
-│   └────────────   ││ └────────────────────────────────── │
-│                   ││                                     │
-│   ┌─ blocked [0]  ││ Unblocks (1)                        │
-│   │ (empty)       ││   o B                               │
-│   └────────────   ││                                     │
-│                   ││ Ready to advance to next lane.      │
-│   ┌─ closed [1] █ ││                                     │
-│   │ xT P0 C Close ││                                     │
-│   └────────────   ││                                     │
-│                   ││                                     │
-│   ┌─ other [0]    ││                                     │
-│   │ (empty)       ││                                     │
-│   └────────────   ││                                     │
-│                   ││                                     │
-└───────────────────┘└─────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status
+                     BOARD [by: Status]
+  📋 OPEN (2)  🔄 IN PROGRESS…🚫 BLOCKED (0)  ✅ CLOSED (1)
+╭─────────────╮╭─────────────╮╭─────────────╮╭─────────────╮
+│ ╭─────────╮ ││             ││             ││ ╭─────────╮ │
+│ │ 📋 P0 … │ ││             ││             ││ │ 📋 P0 … │ │
+│ │ Root    │ ││             ││             ││ │ Closed  │ │
+│ │ ⚡→1 c… │ ││             ││             ││ │         │ │
+│ ╰─────────╯ ││             ││             ││ ╰─────────╯ │
+│             ││             ││             ││             │
+│ ╭─────────╮ ││             ││             ││             │
+│ │ 📋 P0 … │ ││             ││             ││             │
+│ │ Depend… │ ││             ││             ││             │
+│ │ 🚫←A (… │ ││             ││             ││             │
+│ ╰─────────╯ ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││   (empty)   ││   (empty)   ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+│             ││             ││             ││             │
+╰─────────────╯╰─────────────╯╰─────────────╯╰─────────────╯
+ 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:sea

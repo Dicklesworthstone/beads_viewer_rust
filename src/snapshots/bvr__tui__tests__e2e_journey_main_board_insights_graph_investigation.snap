@@ -80,77 +80,77 @@ expression: artifact
 
 --- Step 3: board_entry ---
 bvr 1 Main b Board i Insights g Graph H History | mode=Board | focus=list | issues=3/3 | filter=all | sort=default |
-┌Board Lanes [focus]─────────────────────────┐┌Board Focus─────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Grouping: status (s cycles) | Empty: Auto  ││ ┌────────────────────────────────────────┐                             │
-│                                            ││ │  o T B p0                              │                             │
-│ Lanes (5) | 3 issues total                 ││ │ Dependent                              │                             │
-│                                            ││ ├────────────────────────────────────────┤                             │
-│ ▸ ┌─ open [2] ██  clear                    ││ │ Lane: open                             │                             │
-│   │ oT P0 A Root↓1 @alice                  ││ │ Assignee:                              │                             │
-│   ▶ oT P0 B Dependent⊘1                    ││ │ Age: 89d | Updated: 88d ago            │                             │
-│   └────────────                            ││ │ PR:0.260 Depth:1                       │                             │
-│                                            ││ ├────────────────────────────────────────┤                             │
-│   ┌─ in_progress [0]   empty               ││ │ Depends on A and should report block…  │                             │
-│   │ (empty)                                ││ └────────────────────────────────────────┘                             │
-│   └────────────                            ││                                                                        │
-│                                            ││ Depends on (1)                                                         │
-│   ┌─ blocked [0]   empty                   ││   o A [OPEN]                                                           │
-│   │ (empty)                                ││                                                                        │
-│   └────────────                            ││ Blocked by 1 open issue(s).                                            │
-│                                            ││                                                                        │
-│   ┌─ closed [1] █  clear                   ││                                                                        │
-│   │ xT P0 C Closed                         ││                                                                        │
-│   └────────────                            ││                                                                        │
-│                                            ││                                                                        │
-│   ┌─ other [0]   empty                     ││                                                                        │
-│   │ (empty)                                ││                                                                        │
-│   └────────────                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges │ ^j/k detail scroll
+                                                   BOARD [by: Status]
+       📋 OPEN (2) 2🔴              🔄 IN PROGRESS (0)              🚫 BLOCKED (0)              ✅ CLOSED (1) 1🔴
+╭────────────────────────────╮╭────────────────────────────╮╭────────────────────────────╮╭────────────────────────────╮
+│ ╭────────────────────────╮ ││                            ││                            ││ ╭────────────────────────╮ │
+│ │ 📋 P0 A 5mo ag         │ ││                            ││                            ││ │ 📋 P0 C 4mo ag         │ │
+│ │ Root                   │ ││                            ││                            ││ │ Closed                 │ │
+│ │ ⚡→1 core,parity       │ ││                            ││                            ││ │                        │ │
+│ ╰────────────────────────╯ ││                            ││                            ││ ╰────────────────────────╯ │
+│                            ││                            ││                            ││                            │
+│ ╭────────────────────────╮ ││                            ││                            ││                            │
+│ │ 📋 P0 B 4mo ag         │ ││                            ││                            ││                            │
+│ │ Dependent              │ ││                            ││                            ││                            │
+│ │ 🚫←A (Root)            │ ││                            ││                            ││                            │
+│ ╰────────────────────────╯ ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││          (empty)           ││          (empty)           ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯
+ 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1     3 issues  hjkl nav │ G bottom
 
 --- Step 4: board_navigate ---
 bvr 1 Main b Board i Insights g Graph H History | mode=Board | focus=list | issues=3/3 | filter=all | sort=default |
-┌Board Lanes [focus]─────────────────────────┐┌Board Focus─────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Grouping: status (s cycles) | Empty: Auto  ││ ┌────────────────────────────────────────┐                             │
-│                                            ││ │  x T C p0                              │                             │
-│ Lanes (5) | 3 issues total                 ││ │ Closed                                 │                             │
-│                                            ││ ├────────────────────────────────────────┤                             │
-│   ┌─ open [2] ██  clear                    ││ │ Lane: closed                           │                             │
-│   │ oT P0 A Root↓1 @alice                  ││ │ Assignee:                              │                             │
-│   │ oT P0 B Dependent⊘1                    ││ │ Age: 91d | Updated: 86d ago            │                             │
-│   └────────────                            ││ │ PR:0.260 Depth:1                       │                             │
-│                                            ││ └────────────────────────────────────────┘                             │
-│   ┌─ in_progress [0]   empty               ││                                                                        │
-│   │ (empty)                                ││                                                                        │
-│   └────────────                            ││ Ready to advance to next lane.                                         │
-│                                            ││                                                                        │
-│   ┌─ blocked [0]   empty                   ││                                                                        │
-│   │ (empty)                                ││                                                                        │
-│   └────────────                            ││                                                                        │
-│                                            ││                                                                        │
-│ ▸ ┌─ closed [1] █  clear                   ││                                                                        │
-│   ▶ xT P0 C Closed                         ││                                                                        │
-│   └────────────                            ││                                                                        │
-│                                            ││                                                                        │
-│   ┌─ other [0]   empty                     ││                                                                        │
-│   │ (empty)                                ││                                                                        │
-│   └────────────                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges │ ^j/k detail scroll
+                                                   BOARD [by: Status]
+       📋 OPEN (2) 2🔴              🔄 IN PROGRESS (0)              🚫 BLOCKED (0)              ✅ CLOSED (1) 1🔴
+╭────────────────────────────╮╭────────────────────────────╮╭────────────────────────────╮╭────────────────────────────╮
+│ ╭────────────────────────╮ ││                            ││                            ││ ╭────────────────────────╮ │
+│ │ 📋 P0 A 5mo ag         │ ││                            ││                            ││ │ 📋 P0 C 4mo ag         │ │
+│ │ Root                   │ ││                            ││                            ││ │ Closed                 │ │
+│ │ ⚡→1 core,parity       │ ││                            ││                            ││ │                        │ │
+│ ╰────────────────────────╯ ││                            ││                            ││ ╰────────────────────────╯ │
+│                            ││                            ││                            ││                            │
+│ ╭────────────────────────╮ ││                            ││                            ││                            │
+│ │ 📋 P0 B 4mo ag         │ ││                            ││                            ││                            │
+│ │ Dependent              │ ││                            ││                            ││                            │
+│ │ 🚫←A (Root)            │ ││                            ││                            ││                            │
+│ ╰────────────────────────╯ ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││          (empty)           ││          (empty)           ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+│                            ││                            ││                            ││                            │
+╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯╰────────────────────────────╯
+ 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○2 ◉1 ◈0 ●1     3 issues  hjkl nav │ G bottom
 
 --- Step 5: graph_entry_from_board ---
 bvr 1 Main b Board i Insights g Graph H History | mode=Graph | focus=list | issues=3/3 | filter=all | sort=default |

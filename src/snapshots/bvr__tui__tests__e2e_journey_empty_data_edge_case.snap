@@ -38,35 +38,35 @@ expression: artifact
 
 --- Step 2: empty_board ---
 bvr 1 Main b Board i Insights | mode=Board | focus=list | issues=0/0 | filter=all |
-┌Board Lanes [focus]─────────────────────┐┌Board Focus─────────────────────────────────────────────┐
-│                                        ││                                                        │
-│ (no issues loaded)                     ││ No issues to display in board mode.                    │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Board │ Tab focus │ / search │ s grouping=status │ e empty-lanes=Auto │ 1-4 lanes │ 0/$ edges
+                                         BOARD [by: Status]
+       📋 OPEN (0)          🔄 IN PROGRESS (0)         🚫 BLOCKED (0)            ✅ CLOSED (0)
+╭───────────────────────╮╭───────────────────────╮╭───────────────────────╮╭───────────────────────╮
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│        (empty)        ││        (empty)        ││        (empty)        ││        (empty)        │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+│                       ││                       ││                       ││                       │
+╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯╰───────────────────────╯
+ 📋 ALL  1-4:col • o/c/r:filter • s:group • L:labels • /:search • ?:help  ○0 ◉0 ◈0 ●0
 
 --- Step 3: empty_graph ---
 bvr 1 Main b Board i Insights g Graph | mode=Graph | focus=list | issues=0/0 | filter=all |
