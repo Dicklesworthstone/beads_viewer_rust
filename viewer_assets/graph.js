@@ -236,7 +236,8 @@ const DEFAULT_EXPORT_PRESET = 'spread';
 class GraphStore {
     constructor() {
         this.graph = null;
-        this.wasmGraph = null;
+        this.wasmGraph = null;       // dependent -> blocker, for metrics/arrows
+        this.planningGraph = null;   // blocker -> dependent, for completion flow
         this.wasmReady = false;
         this.container = null;
 
@@ -326,16 +327,17 @@ const store = new GraphStore();
  * This avoids the "wiggle" caused by graphData() potentially reheating the simulation.
  */
 function refreshGraph() {
-    if (!store.graph) return;
+    const graph = store.graph;
+    if (!graph) return;
     // Get current zoom level
-    const currentZoom = store.graph.zoom();
+    const currentZoom = graph.zoom();
     // Guard against undefined/NaN zoom values
     if (typeof currentZoom !== 'number' || isNaN(currentZoom)) return;
     // Apply imperceptible zoom change (0.0001% = invisible) with 0ms duration (instant)
-    store.graph.zoom(currentZoom * 1.000001, 0);
+    graph.zoom(currentZoom * 1.000001, 0);
     // Immediately restore - this triggers a redraw without any visual change
     requestAnimationFrame(() => {
-        if (store.graph) store.graph.zoom(currentZoom, 0);
+        if (store.graph === graph) graph.zoom(currentZoom, 0);
     });
 }
 
@@ -642,6 +644,15 @@ function drawClusterHulls(ctx, globalScale) {
 // WASM INTEGRATION
 // ============================================================================
 
+function isClosedStatus(status) {
+    return ['closed', 'tombstone'].includes(String(status || '').trim().toLowerCase());
+}
+
+function isBlockingDependency(dependency) {
+    const type = String(dependency.type || '').trim().toLowerCase();
+    return ['', 'blocks', 'waits-for', 'conditional-blocks'].includes(type);
+}
+
 async function initWasm() {
     try {
         if (typeof window.bvGraphWasm !== 'undefined') {
@@ -663,33 +674,40 @@ function buildWasmGraph() {
     try {
         const { DiGraph } = window.bvGraphWasm;
 
-        if (store.wasmGraph) {
-            store.wasmGraph.free();
-            store.wasmGraph = null;
+        for (const key of ['wasmGraph', 'planningGraph']) {
+            if (store[key]) {
+                store[key].free();
+                store[key] = null;
+            }
         }
 
         store.wasmGraph = DiGraph.withCapacity(store.issues.length, store.dependencies.length);
+        store.planningGraph = DiGraph.withCapacity(store.issues.length, store.dependencies.length);
 
-        // Add all nodes
+        // Use identical indices in the metric and completion graphs, including
+        // isolated issues. Dependencies have already been validated in loadData.
         store.issues.forEach(issue => {
             store.wasmGraph.addNode(issue.id);
+            store.planningGraph.addNode(issue.id);
         });
 
-        // Add blocking edges
-        store.dependencies
-            .filter(d => d.type === 'blocks' || !d.type)
-            .forEach(d => {
-                const fromIdx = store.wasmGraph.nodeIdx(d.issue_id);
-                const toIdx = store.wasmGraph.nodeIdx(d.depends_on_id);
-                if (fromIdx !== undefined && toIdx !== undefined) {
-                    store.wasmGraph.addEdge(fromIdx, toIdx);
-                }
-            });
+        store.dependencies.forEach(d => {
+            const dependent = store.wasmGraph.nodeIdx(d.issue_id);
+            const blocker = store.wasmGraph.nodeIdx(d.depends_on_id);
+            store.wasmGraph.addEdge(dependent, blocker);
+            // WASM what-if/readiness APIs expect prerequisites as predecessors.
+            // Keep the metric graph and visible dependency arrows unchanged.
+            store.planningGraph.addEdge(blocker, dependent);
+        });
 
         console.log(`[bv-graph] WASM graph: ${store.wasmGraph.nodeCount()} nodes, ${store.wasmGraph.edgeCount()} edges`);
     } catch (e) {
         console.warn('[bv-graph] Failed to build WASM graph:', e);
-        store.wasmGraph = null;
+        store.wasmReady = false;
+        for (const key of ['wasmGraph', 'planningGraph']) {
+            if (store[key]) store[key].free();
+            store[key] = null;
+        }
     }
 }
 
@@ -790,7 +808,9 @@ export async function initGraph(containerId, options = {}) {
     await initWasm();
 
     // Create force-graph instance
-    store.graph = ForceGraph()(store.container)
+    const graph = ForceGraph()(store.container);
+    store.graph = graph;
+    graph
         // Data binding
         .nodeId('id')
         .linkSource('source')
@@ -843,9 +863,10 @@ export async function initGraph(containerId, options = {}) {
         // but the layout is visually stable much earlier. We consider it "done"
         // when alpha drops below 0.05 (95% progress) for smoother UX.
         .onEngineTick(() => {
+            if (store.graph !== graph) return;
             // Get current simulation alpha (1 = start, 0 = done)
             // Alpha decays from 1 towards alphaMin (0.001)
-            const alpha = store.graph.d3Alpha?.() ?? 0;
+            const alpha = graph.d3Alpha?.() ?? 0;
             const progress = Math.round((1 - alpha) * 100);
 
             // Consider layout stable when alpha < 0.05 (95% progress)
@@ -858,6 +879,7 @@ export async function initGraph(containerId, options = {}) {
             });
         })
         .onEngineStop(() => {
+            if (store.graph !== graph) return;
             dispatchEvent('simulationProgress', { alpha: 0, progress: 100, done: true });
         })
 
@@ -912,14 +934,29 @@ export async function loadPrecomputedLayout() {
  * @param {object} [layout] - Optional pre-computed layout
  */
 export function loadData(issues, dependencies, layout = precomputedLayout) {
+    resetWhatIf();
     store.reset();
     store.issues = issues;
-    store.dependencies = dependencies;
 
     // Build lookup maps
     issues.forEach((issue, idx) => {
         store.nodeMap.set(issue.id, issue);
         store.nodeIndexMap.set(issue.id, idx);
+    });
+
+    // Match Rust's blocking edge contract and exclude references to issues that
+    // are absent from this export. Multiple blocking types for the same pair
+    // represent one prerequisite, not parallel prerequisites.
+    const seenDependencies = new Set();
+    store.dependencies = dependencies.filter(dependency => {
+        if (!isBlockingDependency(dependency)) return false;
+        const dependent = store.nodeIndexMap.get(dependency.issue_id);
+        const blocker = store.nodeIndexMap.get(dependency.depends_on_id);
+        if (dependent === undefined || blocker === undefined) return false;
+        const edge = `${dependent}:${blocker}`;
+        if (seenDependencies.has(edge)) return false;
+        seenDependencies.add(edge);
+        return true;
     });
 
     // Merge pre-computed metrics if available
@@ -1021,7 +1058,6 @@ function prepareGraphData(layout = null) {
 
     // Filter links
     let links = dependencies
-        .filter(d => (d.type === 'blocks' || !d.type))
         .filter(d => nodeIds.has(d.issue_id) && nodeIds.has(d.depends_on_id))
         .map(d => ({
             source: d.issue_id,
@@ -1592,26 +1628,34 @@ const whatIfState = {
     sourceNode: null,
     unblockedNodes: new Set(),
     animationPhase: 0,
-    animationTimer: null
+    animationTimers: new Set()
 };
+
+function scheduleWhatIf(callback, delay) {
+    const timer = scheduleTimeout(() => {
+        whatIfState.animationTimers.delete(timer);
+        callback();
+    }, delay);
+    whatIfState.animationTimers.add(timer);
+}
 
 /**
  * Perform what-if simulation for closing an issue
  * @param {Object} node - The node to simulate closing
  */
 export function performWhatIf(node) {
-    if (!node || !store.wasmReady || !store.wasmGraph) {
+    if (!node || !store.wasmReady || !store.planningGraph) {
         console.warn('[bv-graph] What-if: WASM not ready');
         return null;
     }
 
     // Only simulate on open issues
-    if (node.status === 'closed') {
+    if (isClosedStatus(node.status)) {
         showToast('Issue is already closed', 'info');
         return null;
     }
 
-    const idx = store.wasmGraph.nodeIdx(node.id);
+    const idx = store.planningGraph.nodeIdx(node.id);
     if (idx === undefined) return null;
 
     // Build closed set from current issue states
@@ -1620,7 +1664,7 @@ export function performWhatIf(node) {
     // Call WASM what-if
     let result;
     try {
-        result = store.wasmGraph.whatIfClose(idx, closedSet);
+        result = store.planningGraph.whatIfClose(idx, closedSet);
         if (typeof result === 'string') {
             result = JSON.parse(result);
         }
@@ -1639,12 +1683,12 @@ export function performWhatIf(node) {
  * Build a boolean array indicating which nodes are already closed
  */
 function buildClosedSet() {
-    const n = store.wasmGraph.nodeCount();
+    const n = store.planningGraph.nodeCount();
     const closedSet = new Uint8Array(n);
 
     store.issues.forEach(issue => {
-        if (issue.status === 'closed') {
-            const idx = store.wasmGraph.nodeIdx(issue.id);
+        if (isClosedStatus(issue.status)) {
+            const idx = store.planningGraph.nodeIdx(issue.id);
             if (idx !== undefined && idx < n) {
                 closedSet[idx] = 1;
             }
@@ -1665,10 +1709,14 @@ function animateWhatIfCascade(sourceNode, result) {
     whatIfState.sourceNode = sourceNode;
     whatIfState.unblockedNodes.clear();
 
-    // Get unblocked node IDs
+    // The immediate frontier and the full completion cascade are distinct.
     const unblockedIds = (result.unblocked_ids || []).map(idx => {
-        return store.wasmGraph.nodeId(idx);
+        return store.planningGraph.nodeId(idx);
     }).filter(Boolean);
+    const cascadeIds = (result.cascade_ids || []).map(idx => {
+        return store.planningGraph.nodeId(idx);
+    }).filter(Boolean);
+    const cascadeSet = new Set(cascadeIds);
 
     // Phase 1: Highlight the source node (pulse green, "closing")
     store.highlightedNodes.clear();
@@ -1689,8 +1737,8 @@ function animateWhatIfCascade(sourceNode, result) {
     whatIfState.animationPhase = 1;
     let delay = 300;
 
-    unblockedIds.forEach((id, i) => {
-        scheduleTimeout(() => {
+    cascadeIds.forEach((id, i) => {
+        scheduleWhatIf(() => {
             whatIfState.unblockedNodes.add(id);
             store.highlightedNodes.add(id);
 
@@ -1700,45 +1748,44 @@ function animateWhatIfCascade(sourceNode, result) {
                 unblockedNode._whatIfState = 'unblocked';
             }
 
-            // Highlight the edge from blocker to this node
+            // Visible links point from a dependent back to its prerequisite.
+            // Highlight prerequisites completed by this simulated cascade.
             store.dependencies.forEach(dep => {
-                if (dep.issue_id === sourceNode.id && dep.depends_on_id === id) {
-                    store.highlightedLinks.add(`${sourceNode.id}-${id}`);
-                }
-                // Also highlight edges from other closed nodes that contribute
-                const blocker = store.nodeMap.get(dep.issue_id);
-                if (blocker && (blocker.status === 'closed' || dep.issue_id === sourceNode.id) && dep.depends_on_id === id) {
-                    store.highlightedLinks.add(`${dep.issue_id}-${id}`);
+                if (dep.issue_id !== id) return;
+                const blocker = store.nodeMap.get(dep.depends_on_id);
+                if (blocker && (isClosedStatus(blocker.status) || blocker.id === sourceNode.id || cascadeSet.has(blocker.id))) {
+                    store.highlightedLinks.add(`${id}-${blocker.id}`);
                 }
             });
 
             refreshGraph();
-            dispatchEvent('whatIfUnblock', { nodeId: id, index: i, total: unblockedIds.length });
+            dispatchEvent('whatIfUnblock', { nodeId: id, index: i, total: cascadeIds.length });
         }, delay + i * 150);
     });
 
     // Phase 3: Show summary after animations complete
-    const summaryDelay = delay + unblockedIds.length * 150 + 200;
-    whatIfState.animationTimer = scheduleTimeout(() => {
+    const summaryDelay = delay + cascadeIds.length * 150 + 200;
+    scheduleWhatIf(() => {
         whatIfState.animationPhase = 2;
-        showWhatIfSummary(sourceNode, result, unblockedIds);
+        showWhatIfSummary(sourceNode, result, unblockedIds, cascadeIds);
     }, summaryDelay);
 }
 
 /**
  * Show what-if summary popup
  */
-function showWhatIfSummary(sourceNode, result, unblockedIds) {
-    const directCount = result.direct_unblocks || unblockedIds.length;
-    const transitiveCount = result.transitive_unblocks || directCount;
-    const parallelGain = result.parallel_gain || 0;
+function showWhatIfSummary(sourceNode, result, unblockedIds, cascadeIds) {
+    const directCount = result.direct_unblocks ?? 0;
+    const transitiveCount = result.transitive_unblocks ?? 0;
+    const parallelGain = result.parallel_gain ?? 0;
 
     dispatchEvent('whatIfComplete', {
         node: sourceNode,
         directUnblocks: directCount,
         transitiveUnblocks: transitiveCount,
         parallelGain: parallelGain,
-        unblockedIds: unblockedIds
+        unblockedIds: unblockedIds,
+        cascadeIds: cascadeIds
     });
 
     // Create summary toast
@@ -1757,10 +1804,8 @@ function showWhatIfSummary(sourceNode, result, unblockedIds) {
  * Reset what-if visualization state
  */
 export function resetWhatIf() {
-    if (whatIfState.animationTimer) {
-        clearScheduledTimeout(whatIfState.animationTimer);
-        whatIfState.animationTimer = null;
-    }
+    whatIfState.animationTimers.forEach(clearScheduledTimeout);
+    whatIfState.animationTimers.clear();
 
     // Clear visual states
     const graphData = store.graph?.graphData();
@@ -1777,7 +1822,7 @@ export function resetWhatIf() {
 
     store.highlightedNodes.clear();
     store.highlightedLinks.clear();
-    store.graph?.refresh();
+    refreshGraph();
 
     dispatchEvent('whatIfReset');
 }
@@ -2067,9 +2112,9 @@ export function highlightDependencyPath(node) {
     if (idx === undefined) return;
 
     // Get all nodes that block this one (upstream)
-    const blockers = store.wasmGraph.reachableTo(idx);
+    const blockers = store.wasmGraph.reachableFrom(idx).filter(i => i !== idx);
     // Get all nodes blocked by this one (downstream)
-    const dependents = store.wasmGraph.reachableFrom(idx);
+    const dependents = store.wasmGraph.reachableTo(idx).filter(i => i !== idx);
 
     // Highlight nodes
     store.highlightedNodes.add(node.id);
@@ -3199,6 +3244,10 @@ export function getWasmGraph() {
     return store.wasmGraph;
 }
 
+export function getPlanningGraph() {
+    return store.planningGraph;
+}
+
 export function isWasmReady() {
     return store.wasmReady;
 }
@@ -3227,6 +3276,13 @@ export function setConfig(key, value) {
 export function cleanup() {
     clearScheduledTimeouts();
     document.removeEventListener('mousemove', positionTooltip);
+    resetWhatIf();
+    // Stop ForceGraph's own render/simulation loop before releasing the WASM
+    // graphs or allowing a subsequent route entry to create another instance.
+    if (store.graph) {
+        store.graph._destructor();
+        store.graph = null;
+    }
     if (tooltipEl) {
         tooltipEl.remove();
         tooltipEl = null;
@@ -3239,6 +3295,11 @@ export function cleanup() {
         store.wasmGraph.free();
         store.wasmGraph = null;
     }
+    if (store.planningGraph) {
+        store.planningGraph.free();
+        store.planningGraph = null;
+    }
+    store.wasmReady = false;
     if (store.animationFrame) {
         cancelAnimationFrame(store.animationFrame);
     }
@@ -3258,7 +3319,6 @@ export function cleanup() {
         timeTravelState.styleEl.remove();
         timeTravelState.styleEl = null;
     }
-    store.graph = null;
 }
 
 // Note: Cycle navigator functions are already exported at their definitions

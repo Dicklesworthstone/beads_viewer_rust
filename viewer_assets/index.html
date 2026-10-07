@@ -251,7 +251,7 @@
   </script>
 
   <!-- Alpine.js app -->
-  <div x-data="beadsApp()" x-init="init()" x-cloak>
+  <div x-data="beadsApp()" x-cloak>
     <!-- Navigation header -->
     <header class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -745,8 +745,8 @@
         </div>
 
         <!-- Explore Graph CTA - Hero Card (Premium with animation) -->
-        <div @click="view = 'graph'"
-             class="mb-6 sm:mb-8 relative overflow-hidden bg-gradient-to-br from-beads-500 via-beads-600 to-beads-700 dark:from-beads-600 dark:via-beads-700 dark:to-beads-800 rounded-2xl cursor-pointer group touch-btn haptic-medium animate-fade-in-up"
+        <a href="#/graph" @click="cancelPendingSearch()" aria-label="Explore dependency graph"
+             class="block mb-6 sm:mb-8 relative overflow-hidden bg-gradient-to-br from-beads-500 via-beads-600 to-beads-700 dark:from-beads-600 dark:via-beads-700 dark:to-beads-800 rounded-2xl cursor-pointer group touch-btn haptic-medium animate-fade-in-up"
              style="animation-delay: 100ms; box-shadow: 0 10px 40px -10px rgba(14, 165, 233, 0.4);">
           <!-- Animated background pattern -->
           <div class="absolute inset-0 opacity-[0.08]">
@@ -785,7 +785,7 @@
               </div>
             </div>
           </div>
-        </div>
+        </a>
 
         <!-- Quick Wins and Blockers to Clear -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6 sm:mb-8">
@@ -1452,7 +1452,7 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
                 </svg>
                 <span class="text-sm font-semibold text-purple-700 dark:text-purple-300">
-                  <span x-text="topKSet?.total_unblocked || 0"></span> potential unblocks
+                  <span x-text="topKSet?.total_gain ?? 0"></span> potential unblocks
                 </span>
               </div>
             </div>
@@ -1476,7 +1476,7 @@
                     <div class="flex flex-wrap items-center gap-2">
                       <span class="text-[10px] sm:text-xs font-mono text-purple-600 dark:text-purple-400 bg-purple-100 dark:bg-purple-900/50 px-1.5 py-0.5 rounded" x-text="item.issueId"></span>
                       <span class="px-2 py-0.5 text-[10px] sm:text-xs font-semibold bg-gradient-to-r from-green-100 to-emerald-100 dark:from-green-900/50 dark:to-emerald-900/50 text-green-700 dark:text-green-300 rounded-full border border-green-200 dark:border-green-700">
-                        +<span x-text="item.marginal_unblocked"></span> unblock
+                        +<span x-text="item.marginal_gain ?? 0"></span> unblock
                       </span>
                     </div>
                     <h3 class="text-sm sm:text-base font-medium text-gray-900 dark:text-gray-100 mt-1 line-clamp-2 group-hover:text-purple-700 dark:group-hover:text-purple-300 transition-colors" x-text="getIssue(item.issueId)?.title || item.issueId" :title="getIssue(item.issueId)?.title || item.issueId"></h3>
@@ -1527,8 +1527,8 @@
                       <h3 class="text-sm font-medium text-gray-900 dark:text-gray-100 mt-1 line-clamp-2 group-hover:text-cyan-700 dark:group-hover:text-cyan-300 transition-colors" x-text="getIssue(item.issueId)?.title || item.issueId" :title="getIssue(item.issueId)?.title || item.issueId"></h3>
                     </div>
                     <span class="shrink-0 px-2 py-1 text-[10px] sm:text-xs font-bold bg-gradient-to-r from-cyan-100 to-sky-100 dark:from-cyan-900/50 dark:to-sky-900/50 text-cyan-700 dark:text-cyan-300 rounded-lg border border-cyan-200 dark:border-cyan-700">
-                      <span x-text="item.result?.cascade_depth || item.result?.total_unblocked || '?'"></span>
-                      <span x-text="item.result?.total_unblocked ? '↑' : '⬇'"></span>
+                      <span x-text="item.result?.transitive_unblocks ?? 0"></span>
+                      <span>potential unblocks</span>
                     </span>
                   </div>
                 </div>
@@ -3124,7 +3124,7 @@
         <!-- Left controls -->
         <div class="pointer-events-auto flex flex-col gap-2 md:gap-3">
           <!-- Back button - larger touch target on mobile -->
-          <button @click="view = 'dashboard'"
+          <button @click="cancelPendingSearch(); navigateToDashboard()"
                   class="flex items-center gap-2 px-3 py-2.5 md:px-4 md:py-2 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 active:bg-gray-100 dark:active:bg-gray-600 transition-colors min-h-[44px]">
             <svg class="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
@@ -3506,7 +3506,7 @@
               </div>
 
               <!-- What-If Impact Section (if graph engine ready) -->
-              <div x-show="graphReady && selectedIssue.status !== 'closed'" class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+              <div x-show="graphReady && !isClosedStatus(selectedIssue.status)" class="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-3">
                   <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">What-If Analysis</h3>
                   <button @click="computeWhatIf(selectedIssue.id)"
@@ -3516,8 +3516,8 @@
                 </div>
                 <div x-show="whatIfResult" class="bg-emerald-50 dark:bg-emerald-900/20 rounded-lg p-4 border border-emerald-100 dark:border-emerald-800/30">
                   <p class="text-sm text-emerald-700 dark:text-emerald-300">
-                    Closing this issue would unblock <span class="font-bold" x-text="whatIfResult?.newly_unblocked || 0"></span> issue(s)
-                    and enable <span class="font-bold" x-text="whatIfResult?.cascade_count || 0"></span> downstream item(s).
+                    Closing this issue would directly unblock <span class="font-bold" x-text="whatIfResult?.direct_unblocks ?? 0"></span> issue(s).
+                    Completing that newly available work could unlock <span class="font-bold" x-text="whatIfResult?.transitive_unblocks ?? 0"></span> issue(s) in total.
                   </p>
                   <div x-show="whatIfResult?.cascade_issue_ids?.length" class="mt-3">
                     <span class="text-xs font-medium text-emerald-600 dark:text-emerald-400">Cascade:</span>

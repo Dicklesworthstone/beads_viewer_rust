@@ -133,8 +133,10 @@ const DB_STATE = {
 // Graph engine state (WASM)
 const GRAPH_STATE = {
   wasm: null,         // WASM module (bv_graph.js)
-  graph: null,        // DiGraph instance
+  graph: null,        // Dependency graph: dependent -> blocker (metrics)
+  planningGraph: null, // Completion graph: blocker -> dependent (unblocks)
   nodeMap: null,      // Map<string, number> - issue ID to node index
+  initPromise: null,  // Share one WASM initialization across concurrent callers
   ready: false,       // true when graph is loaded
 };
 
@@ -288,18 +290,19 @@ function cleanupWasm() {
   }
   WASM_ALLOCATIONS.subgraphs = [];
 
-  // Free the main graph
-  if (GRAPH_STATE.graph && typeof GRAPH_STATE.graph.free === 'function') {
-    try {
-      GRAPH_STATE.graph.free();
-      console.log('[WASM Memory] Main graph freed');
-    } catch (e) {
-      console.warn('[WASM Memory] Error freeing main graph:', e);
+  // Both graphs own WASM allocations, including after a failed initialization.
+  for (const key of ['graph', 'planningGraph']) {
+    if (GRAPH_STATE[key] && typeof GRAPH_STATE[key].free === 'function') {
+      try {
+        GRAPH_STATE[key].free();
+      } catch (e) {
+        console.warn(`[WASM Memory] Error freeing ${key}:`, e);
+      }
+      GRAPH_STATE[key] = null;
     }
-    GRAPH_STATE.graph = null;
-    GRAPH_STATE.ready = false;
-    GRAPH_STATE.nodeMap = null;
   }
+  GRAPH_STATE.ready = false;
+  GRAPH_STATE.nodeMap = null;
 
   console.log(`[WASM Memory] Cleanup complete. Tracked: ${WASM_ALLOCATIONS.trackCount}, Freed: ${WASM_ALLOCATIONS.freedCount}`);
 }
@@ -650,11 +653,24 @@ function execScalar(sql, params = []) {
 // WASM Graph Engine - Live graph calculations
 // ============================================================================
 
+function isClosedStatus(status) {
+  return ['closed', 'tombstone'].includes(String(status || '').trim().toLowerCase());
+}
+
 /**
  * Initialize the WASM graph engine
  */
 async function initGraphEngine() {
   if (GRAPH_STATE.ready) return true;
+  if (!GRAPH_STATE.initPromise) {
+    GRAPH_STATE.initPromise = initializeGraphEngine().finally(() => {
+      GRAPH_STATE.initPromise = null;
+    });
+  }
+  return GRAPH_STATE.initPromise;
+}
+
+async function initializeGraphEngine() {
 
   // Check if we're already in fallback mode
   if (WASM_STATUS.fallbackMode) {
@@ -678,38 +694,43 @@ async function initGraphEngine() {
     window.bvGraphWasm = wasmModule;
 
     GRAPH_STATE.wasm = wasmModule;
-    GRAPH_STATE.graph = new wasmModule.DiGraph();
-    GRAPH_STATE.nodeMap = new Map();
-
     // Load graph data from SQLite
     if (!DB_STATE.db) {
       console.warn('[Graph] Database not loaded yet');
       return false;
     }
 
+    GRAPH_STATE.graph = new wasmModule.DiGraph();
+    GRAPH_STATE.planningGraph = new wasmModule.DiGraph();
+    GRAPH_STATE.nodeMap = new Map();
+
+    // Isolated issues are still vertices, and unknown dependency endpoints must
+    // never become phantom issues. Both graphs use the same node indices.
+    for (const { id } of execQuery('SELECT id FROM issues ORDER BY id')) {
+      const idx = GRAPH_STATE.graph.addNode(id);
+      GRAPH_STATE.planningGraph.addNode(id);
+      GRAPH_STATE.nodeMap.set(id, idx);
+    }
+
     const deps = execQuery(`
       SELECT issue_id, depends_on_id
       FROM dependencies
-      WHERE type = 'blocks'
+      WHERE LOWER(TRIM(type)) IN ('', 'blocks', 'waits-for', 'conditional-blocks')
     `);
 
+    const seen = new Set();
     for (const row of deps) {
-      const from = row.issue_id;
-      const to = row.depends_on_id;
+      const dependent = GRAPH_STATE.nodeMap.get(row.issue_id);
+      const blocker = GRAPH_STATE.nodeMap.get(row.depends_on_id);
+      if (dependent === undefined || blocker === undefined) continue;
+      const edge = `${dependent}:${blocker}`;
+      if (seen.has(edge)) continue;
+      seen.add(edge);
 
-      if (!GRAPH_STATE.nodeMap.has(from)) {
-        const idx = GRAPH_STATE.graph.addNode(from);
-        GRAPH_STATE.nodeMap.set(from, idx);
-      }
-      if (!GRAPH_STATE.nodeMap.has(to)) {
-        const idx = GRAPH_STATE.graph.addNode(to);
-        GRAPH_STATE.nodeMap.set(to, idx);
-      }
-
-      GRAPH_STATE.graph.addEdge(
-        GRAPH_STATE.nodeMap.get(from),
-        GRAPH_STATE.nodeMap.get(to)
-      );
+      // Rust's metric graph and rendered arrows follow dependency references.
+      // The bundled WASM readiness/cascade APIs instead follow completion flow.
+      GRAPH_STATE.graph.addEdge(dependent, blocker);
+      GRAPH_STATE.planningGraph.addEdge(blocker, dependent);
     }
 
     GRAPH_STATE.ready = true;
@@ -724,6 +745,7 @@ async function initGraphEngine() {
     return true;
   } catch (err) {
     console.warn('[Graph] WASM init failed:', err.message);
+    cleanupWasm();
     enableFallbackMode(`WASM load failed: ${err.message}`);
     return false;
   }
@@ -736,11 +758,11 @@ async function initGraphEngine() {
 function buildClosedSet() {
   if (!GRAPH_STATE.ready) return null;
 
-  const n = GRAPH_STATE.graph.nodeCount();
+  const n = GRAPH_STATE.planningGraph.nodeCount();
   const closed = new Uint8Array(n);
 
   const closedIssues = execQuery(`
-    SELECT id FROM issues WHERE status = 'closed'
+    SELECT id FROM issues WHERE LOWER(TRIM(status)) IN ('closed', 'tombstone')
   `);
 
   for (const row of closedIssues) {
@@ -792,13 +814,15 @@ function whatIfClose(issueId) {
   if (idx === undefined) return null;
 
   const closedSet = buildClosedSet();
-  const result = GRAPH_STATE.graph.whatIfClose(idx, closedSet);
+  if (closedSet[idx]) return null;
+  const result = GRAPH_STATE.planningGraph.whatIfClose(idx, closedSet);
 
   // Convert node indices back to issue IDs
-  if (result && result.cascade_ids) {
-    result.cascade_issue_ids = result.cascade_ids
-      .map(i => GRAPH_STATE.graph.nodeId(i))
-      .filter(Boolean);
+  if (result) {
+    result.unblocked_issue_ids = (result.unblocked_ids || [])
+      .map(i => GRAPH_STATE.planningGraph.nodeId(i)).filter(Boolean);
+    result.cascade_issue_ids = (result.cascade_ids || [])
+      .map(i => GRAPH_STATE.planningGraph.nodeId(i)).filter(Boolean);
   }
 
   return result;
@@ -811,14 +835,14 @@ function topWhatIf(limit = 10) {
   if (!GRAPH_STATE.ready) return [];
 
   const closedSet = buildClosedSet();
-  const results = GRAPH_STATE.graph.topWhatIf(closedSet, limit);
+  const results = GRAPH_STATE.planningGraph.topWhatIf(closedSet, limit);
 
   // Enrich with issue IDs
   return (results || []).map(item => ({
     ...item,
-    issueId: GRAPH_STATE.graph.nodeId(item.node),
+    issueId: GRAPH_STATE.planningGraph.nodeId(item.node),
     result: item.result,
-  }));
+  })).filter(item => item.issueId);
 }
 
 /**
@@ -828,11 +852,14 @@ function getActionableIssues() {
   if (!GRAPH_STATE.ready) return [];
 
   const closedSet = buildClosedSet();
-  const indices = GRAPH_STATE.graph.actionableNodes(closedSet);
+  const indices = GRAPH_STATE.planningGraph.actionableNodes(closedSet);
+  const actionableStatuses = new Set(execQuery(`
+    SELECT id FROM issues WHERE LOWER(TRIM(status)) IN ('open', 'in_progress')
+  `).map(issue => issue.id));
 
   return (indices || [])
-    .map(idx => GRAPH_STATE.graph.nodeId(idx))
-    .filter(Boolean);
+    .map(idx => GRAPH_STATE.planningGraph.nodeId(idx))
+    .filter(id => actionableStatuses.has(id));
 }
 
 /**
@@ -852,17 +879,17 @@ function getTopKSet(k = 5) {
   if (!GRAPH_STATE.ready) return null;
 
   const closedSet = buildClosedSet();
-  const result = GRAPH_STATE.graph.topkSet(closedSet, k);
+  const result = GRAPH_STATE.planningGraph.topkSet(closedSet, k);
 
   // Enrich with issue IDs
   if (result && result.items) {
     result.items = result.items.map(item => ({
       ...item,
-      issueId: GRAPH_STATE.graph.nodeId(item.node),
+      issueId: GRAPH_STATE.planningGraph.nodeId(item.node),
       unblocked_issue_ids: (item.unblocked_ids || [])
-        .map(i => GRAPH_STATE.graph.nodeId(i))
+        .map(i => GRAPH_STATE.planningGraph.nodeId(i))
         .filter(Boolean),
-    }));
+    })).filter(item => item.issueId);
   }
 
   return result;
@@ -1068,7 +1095,7 @@ function getGraphViewData() {
   const dependencies = execQuery(`
     SELECT issue_id, depends_on_id, type
     FROM dependencies
-    WHERE type = 'blocks'
+    WHERE LOWER(TRIM(type)) IN ('', 'blocks', 'waits-for', 'conditional-blocks')
   `);
 
   return { issues, dependencies };

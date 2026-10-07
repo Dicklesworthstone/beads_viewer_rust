@@ -4,7 +4,7 @@
 // Run with an existing Playwright installation (no npm project is needed):
 // NODE_PATH=/path/to/node_modules node --test scripts/test_viewer_search.cjs
 // BVR_CHROMIUM_EXECUTABLE (or CHROMIUM_PATH) selects an installed Chromium.
-// BVR_VIEWER_REVISION optionally serves index.html/viewer.js from a git revision
+// BVR_VIEWER_REVISION optionally serves index.html/viewer.js/graph.js from a git revision
 // to demonstrate that these regressions fail before a fix, without changing files.
 
 const assert = require('node:assert/strict');
@@ -27,6 +27,38 @@ const issues = [
   ['bv-other', 'Unrelated blocked task', '', 'open', 2, 'task', '', '[]', 'bv-open', 0],
   ['bv-special', specialQuery, '', 'open', 2, 'task', '', '[]', '', 0],
 ];
+const dependencies = [
+  ['bv-blocked', 'bv-open', 'blocks'],
+  ['bv-other', 'bv-open', 'blocks'],
+];
+// A separate graph fixture keeps the original search expectations unchanged.
+// Closing root makes left/right ready; completing BOTH then unlocks join/tail.
+const graphIssues = [
+  ['graph-root', 'Root prerequisite', '', 'open', 1, 'task', '', '[]', '', 2],
+  ['graph-left', 'Left branch', '', 'open', 2, 'task', '', '[]', 'graph-root', 1],
+  ['graph-right', 'Right branch', '', 'open', 2, 'task', '', '[]', 'graph-root', 1],
+  ['graph-join', 'Two prerequisite join', '', 'open', 2, 'task', '', '[]', 'graph-left,graph-right', 1],
+  ['graph-tail', 'Tail after join', '', 'open', 2, 'task', '', '[]', 'graph-join', 0],
+  ['graph-closed', 'Completed prerequisite', '', 'closed', 2, 'task', '', '[]', '', 0],
+  ['graph-tombstone', 'Tombstoned prerequisite', '', 'tombstone', 2, 'task', '', '[]', '', 0],
+  ['graph-ready', 'Ready after resolved prerequisites', '', 'open', 2, 'task', '', '[]', '', 0],
+  ['graph-isolated', 'Standalone actionable issue', '', 'open', 2, 'task', '', '[]', '', 0],
+  ['graph-info', 'Nonblocking relationships', '', 'open', 2, 'task', '', '[]', '', 0],
+  ['graph-external', 'Reference outside this export', '', 'open', 2, 'task', '', '[]', '', 0],
+];
+const graphDependencies = [
+  ['graph-left', 'graph-root', 'blocks'],
+  ['graph-right', 'graph-root', 'waits-for'],
+  ['graph-join', 'graph-left', 'conditional-blocks'],
+  ['graph-join', 'graph-right', 'blocks'],
+  ['graph-tail', 'graph-join', 'blocks'],
+  ['graph-ready', 'graph-closed', 'blocks'],
+  ['graph-ready', 'graph-tombstone', 'waits-for'],
+  ['graph-info', 'graph-root', 'related'],
+  ['graph-info', 'graph-tail', 'parent-child'],
+  ['graph-external', 'missing-blocker', 'blocks'],
+  ['missing-dependent', 'graph-root', 'blocks'],
+];
 const allIds = issues.map(issue => issue[0]);
 const matchingIds = ['bv-open', 'bv-blocked', 'bv-progress', 'bv-closed', 'bv-description'];
 const openIds = ['bv-open', 'bv-blocked', 'bv-description'];
@@ -36,7 +68,7 @@ const executablePath = process.env.BVR_CHROMIUM_EXECUTABLE || process.env.CHROMI
 let server;
 let origin;
 
-async function fixtureDatabase() {
+async function fixtureDatabase(fixtureIssues = issues, fixtureDependencies = dependencies) {
   const initSqlJs = require(path.join(assets, 'vendor/sql-wasm.js'));
   const SQL = await initSqlJs({ locateFile: file => path.join(assets, 'vendor', file) });
   const db = new SQL.Database();
@@ -48,14 +80,16 @@ async function fixtureDatabase() {
     db.run(schema[0]);
   }
   db.run('CREATE VIEW issues AS SELECT * FROM issue_overview_mv');
-  db.run("INSERT INTO export_meta VALUES ('issue_count', ?)", [String(issues.length)]);
-  for (const issue of issues) {
+  db.run("INSERT INTO export_meta VALUES ('issue_count', ?)", [String(fixtureIssues.length)]);
+  for (const issue of fixtureIssues) {
     db.run(`INSERT INTO issue_overview_mv
       (id, title, description, status, priority, issue_type, assignee, labels,
        blocked_by_ids, blocks_count, triage_score, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.5, '2026-10-06T12:00:00Z', '2026-10-06T12:00:00Z')`, issue);
   }
-  db.run("INSERT INTO dependencies (issue_id, depends_on_id) VALUES ('bv-blocked', 'bv-open'), ('bv-other', 'bv-open')");
+  for (const dependency of fixtureDependencies) {
+    db.run('INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES (?, ?, ?)', dependency);
+  }
   // Deliberately omit issues_fts: the shipped LIKE fallback must work without FTS5,
   // as it does in the original report. No application/search/router is mocked.
   const bytes = Buffer.from(db.export());
@@ -65,15 +99,18 @@ async function fixtureDatabase() {
 
 before(async () => {
   const database = await fixtureDatabase();
+  const graphDatabase = await fixtureDatabase(graphIssues, graphDependencies);
   const overrides = new Map();
   if (process.env.BVR_VIEWER_REVISION) {
-    for (const file of ['index.html', 'viewer.js']) {
+    for (const file of ['index.html', 'viewer.js', 'graph.js']) {
       overrides.set(file, execFileSync('git', ['show', `${process.env.BVR_VIEWER_REVISION}:viewer_assets/${file}`], { cwd: root }));
     }
   }
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm' };
   server = http.createServer(async (request, response) => {
-    const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    const requestedPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    const graphFixture = requestedPath.startsWith('/graph-fixture/');
+    const pathname = graphFixture ? requestedPath.slice('/graph-fixture'.length) : requestedPath;
     response.setHeader('Cache-Control', 'no-store');
     // Supply the isolation headers directly, as a configured preview server can,
     // so COI service-worker installation does not reload a test mid-interaction.
@@ -81,7 +118,7 @@ before(async () => {
     response.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
     if (pathname === '/beads.sqlite3') {
       response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
-      response.end(database);
+      response.end(graphFixture ? graphDatabase : database);
       return;
     }
     if (pathname === '/beads.sqlite3.config.json') {
@@ -121,7 +158,7 @@ async function searchInput(page, mobile) {
   return page.locator(inputSelector);
 }
 
-async function openViewer(t, mobile, hash = '#/', useClock = false) {
+async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath = '') {
   // Keep browser process state and memory independent between scenarios.
   const browser = await chromium.launch({
     headless: true,
@@ -154,6 +191,14 @@ async function openViewer(t, mobile, hash = '#/', useClock = false) {
   page.setDefaultTimeout(10000);
   page.setDefaultNavigationTimeout(30000);
   if (useClock) await page.clock.install({ time: new Date('2026-10-07T12:00:00Z') });
+  if (hash === '#/graph') {
+    // Keep the real WASM request in flight beyond the graph view's 50ms staging
+    // delay, so both initial-route consumers encounter the same initialization.
+    await page.route('**/vendor/bv_graph_bg.wasm', async request => {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      await request.continue();
+    });
+  }
   page.on('pageerror', error => errors.push({ name: error.name, message: error.message, stack: error.stack }));
   page.on('console', message => {
     if (message.type() === 'error') {
@@ -172,7 +217,7 @@ async function openViewer(t, mobile, hash = '#/', useClock = false) {
       console.error('[viewer test] unhandled rejection:', reason);
     });
   });
-  await page.goto(origin + '/' + hash);
+  await page.goto(origin + '/' + fixturePath + hash);
   await page.locator('[x-show="loading"]').waitFor({ state: 'hidden', timeout: 30000 });
   await searchInput(page, mobile);
   return page;
@@ -221,6 +266,86 @@ async function navigateWithClock(page, action) {
 
 async function filters(page, mobile) {
   if (mobile) await listView(page).getByRole('button', { name: /^Filters/ }).click();
+}
+
+async function insightsImpact(page, issueId, directCount, cascadeIds) {
+  await page.locator('[x-show="view === \'insights\'"]').waitFor({ state: 'visible' });
+  const picks = page.locator('[x-show="topKSet && topKSet.items?.length > 0"]');
+  await picks.waitFor({ state: 'visible' });
+  const firstPick = picks.locator('.group').first();
+  assert.equal(await firstPick.locator('[x-text="item.issueId"]').textContent(), issueId,
+    'suggested work starts with the prerequisite that unlocks its dependents');
+  assert.equal(await picks.locator('[x-text^="topKSet"]').textContent(), String(cascadeIds.length));
+  assert.match(await firstPick.locator('span.rounded-full').innerText(), new RegExp(`\\+${cascadeIds.length} unblock`));
+  assert.deepEqual((await firstPick.locator('[x-text="unblockedId"]').allTextContents()).sort(), [...cascadeIds].sort());
+  const impact = page.locator('[x-show="topImpactIssues?.length > 0"]').locator('.group').first();
+  assert.equal(await impact.locator('[x-text="item.issueId"]').textContent(), issueId);
+  assert.match(await impact.locator('span.shrink-0').innerText(), new RegExp(`^${cascadeIds.length}\\s+potential unblocks$`));
+
+  await firstPick.click();
+  const modal = page.locator('[x-show="selectedIssue"]');
+  await modal.waitFor({ state: 'visible' });
+  assert.equal(route(page).path, `#/issue/${issueId}`);
+  await modal.getByRole('button', { name: 'Simulate Close', exact: true }).click();
+  const result = modal.locator('[x-show="whatIfResult"]');
+  await result.waitFor({ state: 'visible' });
+  assert.deepEqual(await result.locator('p .font-bold').allTextContents(), [String(directCount), String(cascadeIds.length)]);
+  assert.deepEqual((await result.locator('button').allTextContents()).sort(), [...cascadeIds].sort(),
+    'the rendered cascade lists the affected issues');
+  await modal.locator('button').first().click();
+  await modal.waitFor({ state: 'hidden' });
+}
+
+async function openForceGraph(page) {
+  if (route(page).path !== '#/graph') {
+    await page.getByRole('link', { name: 'Graph', exact: true }).click();
+  }
+  await page.waitForFunction(() => {
+    const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+    return app.forceGraphReady && !app.forceGraphLoading && app.forceGraphModule?.getWasmGraph()?.nodeCount() > 0;
+  });
+  await page.locator('#graph-container canvas').first().waitFor({ state: 'visible' });
+}
+
+async function dependencyPath(page, issueId) {
+  return page.evaluate(async id => {
+    const graph = await import('./graph.js');
+    const node = graph.getGraph().graphData().nodes.find(item => item.id === id);
+    let result;
+    document.addEventListener('bv-graph:pathHighlight', event => {
+      result = { blockers: event.detail.blockerCount, dependents: event.detail.dependentCount };
+    }, { once: true });
+    graph.highlightDependencyPath(node);
+    return result;
+  }, issueId);
+}
+
+async function forceGraphImpact(page, issueId) {
+  // Invoke the same public action used by Shift-click / W, then observe the
+  // actual animation, summary event and toast. No graph algorithm is replaced.
+  return page.evaluate(async id => {
+    const graph = await import('./graph.js');
+    const node = graph.getGraph().graphData().nodes.find(item => item.id === id);
+    const completed = new Promise(resolve => {
+      document.addEventListener('bv-graph:whatIfComplete', event => resolve({
+        direct: event.detail.directUnblocks,
+        total: event.detail.transitiveUnblocks,
+        directIds: [...event.detail.unblockedIds].sort(),
+        ids: [...event.detail.cascadeIds].sort(),
+      }), { once: true });
+    });
+    const result = graph.performWhatIf(node);
+    if (!result) throw new Error(`what-if did not run for ${id}`);
+    const summary = await completed;
+    return {
+      direct: result.direct_unblocks,
+      total: result.transitive_unblocks,
+      ids: result.cascade_ids.map(index => graph.getWasmGraph().nodeId(index)).sort(),
+      summary,
+      animated: graph.getGraph().graphData().nodes
+        .filter(item => item._whatIfState === 'unblocked').map(item => item.id).sort(),
+    };
+  }, issueId);
 }
 
 for (const mobile of [false, true]) {
@@ -409,4 +534,94 @@ for (const mobile of [false, true]) {
     await listView(page).getByRole('button', { name: 'Clear search', exact: true }).click();
     await results(page, allIds, '');
   });
+
+  test(`${device}: graph Insights show the real blocker and visible what-if counts`, async t => {
+    const page = await openViewer(t, mobile, '#/insights');
+    await insightsImpact(page, 'bv-open', 2, ['bv-blocked', 'bv-other']);
+    const graph = await page.evaluate(() => {
+      const viewer = window.beadsViewer;
+      const state = viewer.GRAPH_STATE;
+      const rank = state.graph.pagerankDefault();
+      return {
+        actionable: [...viewer.getActionableIssues()].sort(),
+        nodes: state.graph.nodeCount(),
+        blockerRank: rank[state.nodeMap.get('bv-open')],
+        dependentRank: rank[state.nodeMap.get('bv-blocked')],
+      };
+    });
+    assert.deepEqual(graph.actionable, ['bv-description', 'bv-open', 'bv-progress', 'bv-special'],
+      'standalone open work is actionable; closed issues and blocked dependents are not');
+    assert.equal(graph.nodes, issues.length, 'isolated issues also belong to the graph');
+    assert.ok(graph.blockerRank > graph.dependentRank, 'reference-direction PageRank still values the blocker');
+  });
+
+  test(`${device}: force graph keeps blocker paths and cascades correct after re-entry`, async t => {
+    // Cover both dashboard navigation and a fresh deep link, which initializes
+    // the viewer's and force graph's WASM consumers concurrently.
+    const page = await openViewer(t, mobile, mobile ? '#/graph' : '#/');
+    for (let visit = 0; visit < 2; visit += 1) {
+      if (!mobile && visit === 0) {
+        await page.getByRole('link', { name: 'Explore dependency graph', exact: true }).click();
+      }
+      await openForceGraph(page);
+      assert.deepEqual(await dependencyPath(page, 'bv-open'), { blockers: 0, dependents: 2 });
+      assert.deepEqual(await dependencyPath(page, 'bv-blocked'), { blockers: 1, dependents: 0 });
+      const expectedIds = ['bv-blocked', 'bv-other'];
+      assert.deepEqual(await forceGraphImpact(page, 'bv-open'), {
+        direct: 2, total: 2, ids: expectedIds,
+        summary: { direct: 2, total: 2, directIds: expectedIds, ids: expectedIds },
+        animated: expectedIds,
+      });
+      await page.getByText('Closing bv-open would unblock 2 issues directly', { exact: true }).last().waitFor({ state: 'visible' });
+      if (mobile) {
+        await page.locator('[x-show="view === \'graph\'"]').getByRole('button', { name: 'Back', exact: true }).click();
+        await page.locator('[x-show="view === \'dashboard\'"]').waitFor({ state: 'visible' });
+      } else {
+        await home(page, mobile);
+      }
+      assert.equal(route(page).path, '#/', 'leaving the graph updates the route before re-entry');
+    }
+  });
 }
+
+test('desktop: graph diamond honors all blockers, resolved statuses and exported vertices', async t => {
+  const page = await openViewer(t, false, '#/insights', false, 'graph-fixture/');
+  const expectedCascade = ['graph-join', 'graph-left', 'graph-right', 'graph-tail'];
+  await insightsImpact(page, 'graph-root', 2, expectedCascade);
+  const state = await page.evaluate(() => {
+    const viewer = window.beadsViewer;
+    return {
+      actionable: [...viewer.getActionableIssues()].sort(),
+      nodes: [...viewer.GRAPH_STATE.nodeMap.keys()].sort(),
+      edges: viewer.GRAPH_STATE.graph.edgeCount(),
+      left: viewer.whatIfClose('graph-left'),
+      join: viewer.whatIfClose('graph-join'),
+    };
+  });
+  assert.deepEqual(state.actionable, ['graph-external', 'graph-info', 'graph-isolated', 'graph-ready', 'graph-root']);
+  assert.deepEqual(state.nodes, graphIssues.map(issue => issue[0]).sort(), 'unknown endpoints do not create phantom work');
+  assert.equal(state.edges, 7, 'blocking types participate; related/parent-child and missing endpoints do not');
+  assert.equal(state.left.direct_unblocks, 0, 'closing one branch cannot unblock a join with another open prerequisite');
+  assert.equal(state.left.transitive_unblocks, 0);
+  assert.equal(state.join.direct_unblocks, 1);
+  assert.deepEqual(state.join.cascade_issue_ids, ['graph-tail']);
+
+  await page.getByRole('link', { name: 'Issues', exact: true }).click();
+  await page.getByRole('button', { name: 'View issue graph-tombstone: Tombstoned prerequisite', exact: true }).click();
+  const modal = page.locator('[x-show="selectedIssue"]');
+  await modal.waitFor({ state: 'visible' });
+  assert.equal(await modal.getByRole('button', { name: 'Simulate Close', exact: true }).isVisible(), false,
+    'resolved tombstones do not offer a close simulation');
+  await modal.locator('button').first().click();
+  await modal.waitFor({ state: 'hidden' });
+
+  await openForceGraph(page);
+  assert.deepEqual(await dependencyPath(page, 'graph-root'), { blockers: 0, dependents: 4 });
+  assert.deepEqual(await dependencyPath(page, 'graph-join'), { blockers: 3, dependents: 1 });
+  assert.deepEqual(await forceGraphImpact(page, 'graph-root'), {
+    direct: 2, total: 4, ids: expectedCascade,
+    summary: { direct: 2, total: 4, directIds: ['graph-left', 'graph-right'], ids: expectedCascade },
+    animated: expectedCascade,
+  });
+  await page.getByText('Closing graph-root would unblock 2 issues directly, 4 total in cascade', { exact: true }).waitFor({ state: 'visible' });
+});
