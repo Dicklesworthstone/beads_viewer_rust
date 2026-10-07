@@ -618,10 +618,10 @@ Bare `bvr` launches the interactive terminal UI. For automation, do not run the 
 | `g` | Graph | Dependency graph and edge inspection |
 | `H` | History | Bead/git timeline and file tree |
 | `a` | Actionable | Parallel execution tracks |
-| `!` | Attention | Label attention ranking |
-| `T` | Tree | Dependency tree |
+| `]` | Attention | Label attention ranking |
+| `T` / `E` | Tree | Dependency tree |
 | `[` | Labels | Label health dashboard |
-| `]` | Flow | Cross-label flow matrix |
+| `f` | Flow | Cross-label flow matrix |
 | `t` | Time Travel | Diff-against-ref view |
 | `S` | Sprint | Sprint planning/detail view |
 
@@ -634,6 +634,7 @@ Bare `bvr` launches the interactive terminal UI. For automation, do not run the 
 | `Esc` | Back, clear, or quit confirm |
 | `j` / `k` | Move within the focused pane |
 | `/` | Search in supported views |
+| `!` | Alerts panel: j/k navigate, Enter jumps to the issue, `d` dismisses |
 
 ## TUI Design Goals
 

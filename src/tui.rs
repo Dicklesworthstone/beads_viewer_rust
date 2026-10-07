@@ -2508,10 +2508,10 @@ impl ViewMode {
             Self::Graph => "g",
             Self::History => "H",
             Self::Actionable => "a",
-            Self::Attention => "!",
+            Self::Attention => "]",
             Self::Tree => "T",
             Self::LabelDashboard => "[",
-            Self::FlowMatrix => "]",
+            Self::FlowMatrix => "f",
             Self::TimeTravelDiff => "t",
             Self::Sprint => "S",
         }
@@ -2976,6 +2976,21 @@ enum ModalOverlay {
         cursor: usize,
         filter: String,
     },
+    /// Go bv's alerts panel (`!`): active (non-dismissed) alerts with
+    /// jump-to-issue and dismiss.
+    Alerts { rows: Vec<AlertRow>, cursor: usize },
+}
+
+/// One alert as the alerts panel lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AlertRow {
+    /// Dismissal key: `type:severity:issue`, as Go bv's `alertKey`.
+    key: String,
+    severity: crate::analysis::alerts::AlertSeverity,
+    message: String,
+    issue_id: Option<String>,
+    unblocks: Option<usize>,
+    priority_sum: Option<i32>,
 }
 
 /// State for the multi-step pages export wizard.
@@ -3151,6 +3166,9 @@ struct BvrApp {
     /// Go bv's flow drilldown: the endpoint cursor over the selected
     /// label's blocker/blocked pairs, `None` while the dashboard shows.
     flow_drilldown: Option<usize>,
+    /// Alerts dismissed in the alerts panel (`d`), by `AlertRow::key`;
+    /// cleared when the data reloads.
+    dismissed_alerts: HashSet<String>,
     sprint_data: Vec<Sprint>,
     sprint_cursor: usize,
     sprint_issue_cursor: usize,
@@ -3438,6 +3456,17 @@ impl Model for BvrApp {
                     Paragraph::new("Type to filter | ↑/↓=navigate | Enter=apply | Esc=close")
                         .style(tokens::footer())
                         .render(rows[2], frame);
+                    return;
+                }
+                ModalOverlay::Alerts {
+                    rows: alert_rows,
+                    cursor,
+                } => {
+                    self.render_go_alerts_panel(frame, rows[1], alert_rows, *cursor);
+                    Paragraph::new(RichText::from_lines([
+                        self.main_go_status_bar(rows[2].width)
+                    ]))
+                    .render(rows[2], frame);
                     return;
                 }
                 ModalOverlay::RepoPicker {
@@ -4034,7 +4063,7 @@ impl Model for BvrApp {
                             desc: "focus",
                         },
                         CommandHint {
-                            key: "!/Esc",
+                            key: "]/Esc",
                             desc: "back",
                         },
                     ],
@@ -4109,7 +4138,7 @@ impl Model for BvrApp {
                             desc: "focus",
                         },
                         CommandHint {
-                            key: "]/Esc",
+                            key: "f/Esc",
                             desc: "back",
                         },
                     ],
@@ -5085,6 +5114,10 @@ impl BvrApp {
                 }
                 ModalOverlay::PagesWizard(wiz) => {
                     return self.handle_pages_wizard_key(code, wiz.clone());
+                }
+                ModalOverlay::Alerts { rows, cursor } => {
+                    self.handle_alerts_panel_key(code, rows, *cursor);
+                    return Cmd::None;
                 }
                 ModalOverlay::RecipePicker { items, cursor } => {
                     let len = items.len();
@@ -6441,7 +6474,8 @@ impl BvrApp {
                 self.detail_scroll_offset = 0;
                 self.focus = FocusPane::List;
             }
-            KeyCode::Char('!') => {
+            KeyCode::Char('!') => self.open_alerts_panel(),
+            KeyCode::Char(']') => {
                 self.mode = if matches!(self.mode, ViewMode::Attention) {
                     ViewMode::Main
                 } else {
@@ -6450,7 +6484,7 @@ impl BvrApp {
                 };
                 self.focus = FocusPane::List;
             }
-            KeyCode::Char('T') => {
+            KeyCode::Char('T' | 'E') => {
                 self.toggle_tree_mode();
                 self.focus = FocusPane::List;
             }
@@ -6464,7 +6498,7 @@ impl BvrApp {
                 self.toggle_label_dashboard();
                 self.focus = FocusPane::List;
             }
-            KeyCode::Char(']') => {
+            KeyCode::Char('f') if !matches!(self.mode, ViewMode::History) => {
                 self.toggle_flow_matrix();
                 self.focus = FocusPane::List;
             }
@@ -10299,6 +10333,207 @@ impl BvrApp {
         lines
     }
 
+    /// Active alerts for the alerts panel: the `--robot-alerts` engine's
+    /// output minus the ones dismissed this session.
+    fn active_alert_rows(&self) -> Vec<AlertRow> {
+        self.analyzer
+            .alerts(&crate::analysis::alerts::AlertOptions::default())
+            .alerts
+            .into_iter()
+            .map(|alert| AlertRow {
+                key: format!(
+                    "{}:{}:{}",
+                    alert.alert_type.as_str(),
+                    alert.severity.as_str(),
+                    alert.issue_id.as_deref().unwrap_or_default()
+                ),
+                severity: alert.severity,
+                message: alert.message,
+                issue_id: alert.issue_id,
+                unblocks: alert.unblocks_count,
+                priority_sum: alert.downstream_priority_sum,
+            })
+            .filter(|row| !self.dismissed_alerts.contains(&row.key))
+            .collect()
+    }
+
+    /// `!`: open Go bv's alerts panel, or say there is nothing to show.
+    fn open_alerts_panel(&mut self) {
+        let rows = self.active_alert_rows();
+        if rows.is_empty() {
+            self.status_msg = "No active alerts".into();
+            return;
+        }
+        self.modal_overlay = Some(ModalOverlay::Alerts { rows, cursor: 0 });
+    }
+
+    fn handle_alerts_panel_key(&mut self, code: KeyCode, rows: &[AlertRow], cursor: usize) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ModalOverlay::Alerts { cursor, rows }) = &mut self.modal_overlay {
+                    *cursor = (*cursor + 1).min(rows.len().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ModalOverlay::Alerts { cursor, .. }) = &mut self.modal_overlay {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => {
+                self.modal_overlay = None;
+                if let Some(id) = rows.get(cursor).and_then(|row| row.issue_id.clone()) {
+                    if !self.visible_issue_indices().iter().any(|&idx| {
+                        self.analyzer
+                            .issues
+                            .get(idx)
+                            .is_some_and(|issue| issue.id == id)
+                    }) {
+                        // Reveal an issue the current filter hides.
+                        self.set_list_filter(ListFilter::All);
+                        self.modal_label_filter = None;
+                        self.modal_repo_filter = None;
+                    }
+                    self.select_issue_by_id(&id);
+                    self.mode = ViewMode::Main;
+                    self.focus = FocusPane::List;
+                    self.ensure_selected_visible();
+                }
+            }
+            KeyCode::Char('d') => {
+                let Some(row) = rows.get(cursor) else {
+                    return;
+                };
+                self.dismissed_alerts.insert(row.key.clone());
+                let remaining: Vec<AlertRow> = rows
+                    .iter()
+                    .filter(|other| other.key != row.key)
+                    .cloned()
+                    .collect();
+                self.modal_overlay = if remaining.is_empty() {
+                    self.status_msg = "All alerts dismissed".into();
+                    None
+                } else {
+                    let cursor = cursor.min(remaining.len() - 1);
+                    Some(ModalOverlay::Alerts {
+                        rows: remaining,
+                        cursor,
+                    })
+                };
+            }
+            KeyCode::Escape | KeyCode::Char('q' | '!') => self.modal_overlay = None,
+            _ => {}
+        }
+    }
+
+    /// Go bv's alerts panel: a centered rounded box with the summary, one
+    /// line per alert (severity glyph and message), the selected alert's
+    /// issue and unblock details, and the key legend.
+    fn render_go_alerts_panel(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        rows: &[AlertRow],
+        cursor: usize,
+    ) {
+        use crate::analysis::alerts::AlertSeverity;
+        let box_width = area.width.saturating_sub(4).min(80);
+        if box_width < 20 || area.height < 6 {
+            return;
+        }
+        let width = usize::from(box_width.saturating_sub(6));
+        let count =
+            |severity: AlertSeverity| rows.iter().filter(|row| row.severity == severity).count();
+        let mut summary = format!("{} total", rows.len());
+        for (severity, name) in [
+            (AlertSeverity::Critical, "critical"),
+            (AlertSeverity::Warning, "warning"),
+            (AlertSeverity::Info, "info"),
+        ] {
+            let n = count(severity);
+            if n > 0 {
+                summary.push_str(&format!(" • {n} {name}"));
+            }
+        }
+        let mut lines = vec![
+            RichLine::from_spans([RichSpan::styled("🔔 Alerts Panel", tokens::primary_bold())]),
+            RichLine::raw(""),
+            RichLine::from_spans([RichSpan::styled(summary, tokens::row_id())]),
+            RichLine::raw(""),
+        ];
+        let mut cursor_line = 0;
+        for (idx, row) in rows.iter().enumerate() {
+            let selected = idx == cursor;
+            let (icon, style) = match row.severity {
+                AlertSeverity::Critical => {
+                    ("⚠", Style::new().fg(tokens::status_fg("blocked")).bold())
+                }
+                AlertSeverity::Warning => ("⚡", Style::new().fg(tokens::FG_WARNING)),
+                AlertSeverity::Info => ("ℹ", tokens::row_id()),
+            };
+            if selected {
+                cursor_line = lines.len();
+            }
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(
+                    &format!(
+                        "{}{icon} {}",
+                        if selected { "▸ " } else { "  " },
+                        row.message
+                    ),
+                    width,
+                    "…",
+                ),
+                if selected { style.bold() } else { style },
+            )]));
+            if !selected {
+                continue;
+            }
+            if let Some(id) = row.issue_id.as_deref() {
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    format!("     Issue: {id} (press Enter to jump)"),
+                    tokens::muted_text().italic(),
+                )]));
+            }
+            if let Some(unblocks) = row.unblocks.filter(|&n| n > 0) {
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    format!(
+                        "     Unblocks {unblocks} items (priority sum: {})",
+                        row.priority_sum.unwrap_or_default()
+                    ),
+                    tokens::success_text(),
+                )]));
+            }
+        }
+        lines.push(RichLine::raw(""));
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "j/k: navigate • Enter: jump to issue • d: dismiss • Esc: close",
+            tokens::muted_text().italic(),
+        )]));
+
+        let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let box_height = (content_height + 4).min(area.height);
+        let panel = Rect::new(
+            area.x + (area.width - box_width) / 2,
+            area.y + (area.height - box_height) / 2,
+            box_width,
+            box_height,
+        );
+        semantic_panel_block("", true, SemanticTone::Accent).render(panel, frame);
+        let inner = block_inner_rect(panel);
+        let body = Rect::new(
+            inner.x.saturating_add(2),
+            inner.y.saturating_add(1),
+            inner.width.saturating_sub(4),
+            inner.height.saturating_sub(2),
+        );
+        let visible = usize::from(body.height);
+        let offset = (cursor_line + 3).saturating_sub(visible);
+        Paragraph::new(RichText::from_lines(lines))
+            .wrap(ftui::text::WrapMode::None)
+            .scroll((saturating_scroll_offset(offset), 0))
+            .render(body, frame);
+    }
+
     /// Go bv's per-label flow stats, highest blocking power first.
     fn go_flow_label_stats(&self) -> Vec<GoFlowLabelStat> {
         self.flow_matrix
@@ -12852,6 +13087,17 @@ impl BvrApp {
     /// (total, critical, warning) alert counts for the status bar, computed
     /// once per loaded issue set.
     fn status_alert_counts(&self) -> (usize, usize, usize) {
+        if !self.dismissed_alerts.is_empty() {
+            // Dismissals are rare; count what the alerts panel still shows.
+            use crate::analysis::alerts::AlertSeverity;
+            let rows = self.active_alert_rows();
+            let count = |severity| rows.iter().filter(|row| row.severity == severity).count();
+            return (
+                rows.len(),
+                count(AlertSeverity::Critical),
+                count(AlertSeverity::Warning),
+            );
+        }
         // Cheap fingerprint of what alerts depend on (ids, statuses, update
         // times, dependency counts) so a reload or a different data set in
         // the same thread never reuses stale counts.
@@ -15140,6 +15386,7 @@ impl BvrApp {
         // Reset computed views.
         self.actionable_plan = None;
         self.attention_result = None;
+        self.dismissed_alerts.clear();
 
         // Recompute if in a derived view.
         match self.mode {
@@ -19118,10 +19365,11 @@ fn help_sections() -> Vec<HelpSection> {
                 ("i", "Toggle insights mode"),
                 ("g", "Toggle graph mode"),
                 ("H", "Toggle history mode"),
-                ("!", "Toggle attention mode"),
-                ("T", "Toggle tree view"),
+                ("]", "Toggle attention mode"),
+                ("T / E", "Toggle tree view"),
                 ("[", "Toggle label dashboard"),
-                ("]", "Toggle flow matrix"),
+                ("f", "Toggle flow matrix"),
+                ("!", "Alerts panel"),
                 ("v", "History: bead/git toggle"),
             ],
         },
@@ -20149,6 +20397,7 @@ fn new_app_with_background(
         flow_matrix_row_cursor: 0,
         flow_matrix_col_cursor: 0,
         flow_drilldown: None,
+        dismissed_alerts: std::collections::HashSet::new(),
         time_travel_ref_input: String::new(),
         time_travel_input_active: false,
         time_travel_diff: None,
@@ -21000,6 +21249,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23132,6 +23382,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23243,6 +23494,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23348,6 +23600,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23471,6 +23724,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23578,6 +23832,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23686,6 +23941,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23795,6 +24051,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23899,6 +24156,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24018,6 +24276,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24161,6 +24420,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24409,6 +24669,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24520,6 +24781,7 @@ mod tests {
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
+            dismissed_alerts: std::collections::HashSet::new(),
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24989,7 +25251,7 @@ mod tests {
             h.contains("[ Labels"),
             "wide header should expose secondary tabs"
         );
-        assert!(h.contains("] Flow"), "wide header should expose flow tab");
+        assert!(h.contains("f Flow"), "wide header should expose flow tab");
         assert!(
             h.contains("sort=default"),
             "wide header should show sort metric"
@@ -27855,19 +28117,19 @@ mod tests {
         assert!(matches!(app.mode, ViewMode::Main));
 
         // ] toggles to FlowMatrix
-        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        app.handle_key(KeyCode::Char('f'), Modifiers::NONE);
         assert!(matches!(app.mode, ViewMode::FlowMatrix));
         assert!(app.flow_matrix.is_some());
 
         // ] toggles back
-        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        app.handle_key(KeyCode::Char('f'), Modifiers::NONE);
         assert!(matches!(app.mode, ViewMode::Main));
     }
 
     #[test]
     fn flow_matrix_navigation() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        app.handle_key(KeyCode::Char('f'), Modifiers::NONE);
         assert_eq!(app.flow_matrix_row_cursor, 0);
         assert_eq!(app.flow_matrix_col_cursor, 0);
 
@@ -27890,7 +28152,7 @@ mod tests {
     #[test]
     fn flow_matrix_renders_list_and_detail() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        app.handle_key(KeyCode::Char('f'), Modifiers::NONE);
 
         let list = app.flow_matrix_list_text();
         assert!(
@@ -29113,24 +29375,82 @@ mod tests {
     }
 
     #[test]
+    fn alerts_panel_lists_jumps_and_dismisses() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let rows = app.active_alert_rows();
+        assert!(rows.len() >= 2, "sample data should raise alerts: {rows:?}");
+
+        app.handle_key(KeyCode::Char('!'), Modifiers::NONE);
+        let text = render_app(&app, 120, 30);
+        assert!(text.contains("🔔 Alerts Panel"), "{text}");
+        assert!(text.contains(&format!("{} total", rows.len())), "{text}");
+        assert!(text.contains("d: dismiss"), "{text}");
+
+        // Dismiss the first alert: it leaves the panel and the badge count.
+        app.handle_key(KeyCode::Char('d'), Modifiers::NONE);
+        assert_eq!(app.active_alert_rows().len(), rows.len() - 1);
+        assert!(app.dismissed_alerts.contains(&rows[0].key));
+        assert_eq!(app.status_alert_counts().0, rows.len() - 1);
+
+        // Enter jumps to the selected alert's issue and closes the panel.
+        let target = match &app.modal_overlay {
+            Some(ModalOverlay::Alerts { rows, cursor }) => rows[*cursor].issue_id.clone(),
+            other => panic!("alerts panel should stay open: {other:?}"),
+        };
+        app.handle_key(KeyCode::Enter, Modifiers::NONE);
+        assert!(app.modal_overlay.is_none());
+        if let Some(id) = target {
+            assert_eq!(app.selected_issue().map(|i| i.id.clone()), Some(id));
+        }
+
+        // `!` again reopens; Esc closes.
+        app.handle_key(KeyCode::Char('!'), Modifiers::NONE);
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::Alerts { .. })
+        ));
+        app.handle_key(KeyCode::Escape, Modifiers::NONE);
+        assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn alerts_panel_reports_when_nothing_is_active() {
+        let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
+        app.handle_key(KeyCode::Char('!'), Modifiers::NONE);
+        assert!(app.modal_overlay.is_none());
+        assert_eq!(app.status_msg, "No active alerts");
+    }
+
+    #[test]
+    fn go_view_keys_open_attention_flow_and_tree() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char(']'), Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::Attention);
+        app.handle_key(KeyCode::Char('f'), Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::FlowMatrix);
+        app.handle_key(KeyCode::Char('E'), Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::Tree);
+    }
+
+    #[test]
     fn attention_view_toggle_and_state() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
 
         // Press ! to enter Attention mode
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert!(matches!(app.mode, ViewMode::Attention));
         assert!(app.attention_result.is_some());
         assert_eq!(app.attention_cursor, 0);
 
         // Press ! again to return to Main
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert!(matches!(app.mode, ViewMode::Main));
     }
 
     #[test]
     fn attention_view_navigation() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert!(matches!(app.mode, ViewMode::Attention));
 
         let label_count = app.attention_result.as_ref().unwrap().labels.len();
@@ -29152,7 +29472,7 @@ mod tests {
     #[test]
     fn attention_view_renders_list_and_detail() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
 
         let list = app.list_panel_text();
         assert!(list.contains("Rank"));
@@ -29168,7 +29488,7 @@ mod tests {
     #[test]
     fn attention_view_empty_issues_no_panic() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert!(matches!(app.mode, ViewMode::Attention));
 
         let list = app.list_panel_text();
@@ -29198,7 +29518,7 @@ mod tests {
     #[test]
     fn refresh_preserves_mode() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert!(matches!(app.mode, ViewMode::Attention));
 
         // Refresh in Attention mode — fails silently but stays in Attention
@@ -29851,7 +30171,7 @@ mod tests {
     #[test]
     fn snap_attention_detail_focus() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         app.update(key(KeyCode::Tab));
         let text = render_app(&app, 100, 30);
         insta::assert_snapshot!(text);
@@ -29878,7 +30198,7 @@ mod tests {
     #[test]
     fn snap_flow_matrix_detail_focus() {
         let mut app = new_app(ViewMode::Main, 0);
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         app.update(key(KeyCode::Tab));
         let text = render_app(&app, 100, 30);
         insta::assert_snapshot!(text);
@@ -29970,7 +30290,7 @@ mod tests {
     #[test]
     fn flow_matrix_empty_issues_no_panic() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, vec![]);
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         let list = app.list_panel_text();
         assert!(!list.is_empty());
         app.update(key(KeyCode::Char('j')));
@@ -30118,10 +30438,10 @@ mod tests {
         assert_eq!(app.mode, ViewMode::Main);
 
         // Attention
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Attention);
         app.update(key(KeyCode::Char('j')));
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Main);
 
         // Tree
@@ -30140,7 +30460,7 @@ mod tests {
         assert_eq!(app.mode, ViewMode::Main);
 
         // FlowMatrix
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         assert_eq!(app.mode, ViewMode::FlowMatrix);
         app.update(key(KeyCode::Char('j')));
         app.update(key(KeyCode::Char('q')));
@@ -30233,13 +30553,13 @@ mod tests {
             KeyCode::Char('q'), // Back
             KeyCode::Char('a'), // Actionable
             KeyCode::Char('a'), // Back
-            KeyCode::Char('!'), // Attention
-            KeyCode::Char('!'), // Back
+            KeyCode::Char(']'), // Attention
+            KeyCode::Char(']'), // Back
             KeyCode::Char('T'), // Tree
             KeyCode::Char('q'), // Back
             KeyCode::Char('['), // LabelDashboard
             KeyCode::Char('q'), // Back
-            KeyCode::Char(']'), // FlowMatrix
+            KeyCode::Char('f'), // FlowMatrix
             KeyCode::Char('q'), // Back
             KeyCode::Char('t'), // TimeTravelDiff
             KeyCode::Escape,    // Cancel
@@ -30260,10 +30580,10 @@ mod tests {
         // Test j/k/Tab/Esc in each newer mode
         for mode_key in [
             KeyCode::Char('a'), // Actionable
-            KeyCode::Char('!'), // Attention
+            KeyCode::Char(']'), // Attention
             KeyCode::Char('T'), // Tree
             KeyCode::Char('['), // LabelDashboard
-            KeyCode::Char(']'), // FlowMatrix
+            KeyCode::Char('f'), // FlowMatrix
         ] {
             app.update(key(mode_key));
             app.update(key(KeyCode::Char('j')));
@@ -30275,7 +30595,7 @@ mod tests {
             // Return to main
             let exit_key = match mode_key {
                 KeyCode::Char('a') => KeyCode::Char('a'),
-                KeyCode::Char('!') => KeyCode::Char('!'),
+                KeyCode::Char(']') => KeyCode::Char(']'),
                 _ => KeyCode::Char('q'),
             };
             app.update(key(exit_key));
@@ -30296,7 +30616,7 @@ mod tests {
             KeyCode::Char('a'),
             KeyCode::Char('T'),
             KeyCode::Char('['),
-            KeyCode::Char(']'),
+            KeyCode::Char('f'),
         ] {
             app.update(key(mode_key));
             app.update(key(KeyCode::Char('?')));
@@ -30377,7 +30697,7 @@ mod tests {
     #[test]
     fn attention_detail_shows_correct_label_on_navigation() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         let labels_count = app.attention_result.as_ref().unwrap().labels.len();
         if labels_count >= 2 {
             let detail_0 = app.detail_panel_text();
@@ -31116,7 +31436,7 @@ mod tests {
         assert_eq!(app.mode, ViewMode::Main);
 
         // Enter Attention mode
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Attention);
         assert!(app.attention_result.is_some());
         assert_eq!(app.focus, FocusPane::List);
@@ -31157,14 +31477,14 @@ mod tests {
         assert!(!app.show_help);
 
         // Return to Main
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Main);
     }
 
     #[test]
     fn attention_narrow_width_rendering_no_panic() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Attention);
 
         // Render at narrow width — should not panic
@@ -31185,7 +31505,7 @@ mod tests {
     #[test]
     fn attention_tab_focus_updates_detail_context() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
 
         // In list focus, get detail for cursor 0
         let detail_at_0 = app.detail_panel_text();
@@ -31212,7 +31532,7 @@ mod tests {
     #[test]
     fn attention_cursor_clamp_at_boundary() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
 
         let label_count = app.attention_result.as_ref().unwrap().labels.len();
 
@@ -31237,7 +31557,7 @@ mod tests {
     #[test]
     fn snap_attention_list_overview() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         // List focus, cursor at 0
         let text = render_app(&app, 100, 30);
         insta::assert_snapshot!(text);
@@ -31251,7 +31571,7 @@ mod tests {
         assert_eq!(app.mode, ViewMode::Main);
 
         // Enter FlowMatrix mode
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         assert_eq!(app.mode, ViewMode::FlowMatrix);
         assert!(app.flow_matrix.is_some());
         assert_eq!(app.focus, FocusPane::List);
@@ -31300,14 +31620,14 @@ mod tests {
         assert!(!app.show_help);
 
         // Return to Main
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         assert_eq!(app.mode, ViewMode::Main);
     }
 
     #[test]
     fn flow_matrix_narrow_width_rendering_no_panic() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         assert_eq!(app.mode, ViewMode::FlowMatrix);
 
         // Render at narrow width — should not panic
@@ -31328,7 +31648,7 @@ mod tests {
     #[test]
     fn flow_matrix_detail_changes_on_cell_navigation() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
 
         let label_count = app.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
         if label_count >= 2 {
@@ -31358,7 +31678,7 @@ mod tests {
     #[test]
     fn flow_matrix_cursor_clamp_at_boundary() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
 
         let label_count = app.flow_matrix.as_ref().map_or(0, |f| f.labels.len());
         if label_count > 0 {
@@ -31399,7 +31719,7 @@ mod tests {
     #[test]
     fn snap_flow_matrix_list_overview() {
         let mut app = new_app_with_issues(ViewMode::Main, 0, labeled_issues());
-        app.update(key(KeyCode::Char(']')));
+        app.update(key(KeyCode::Char('f')));
         // List focus, cursors at (0,0)
         let text = render_app(&app, 100, 30);
         insta::assert_snapshot!(text);
@@ -31594,7 +31914,7 @@ mod tests {
         // Step 6: Return to Main, enter Attention
         app.update(key(KeyCode::Char('T')));
         assert_eq!(app.mode, ViewMode::Main);
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Attention);
         let text = journey_capture(&app, w, h, "attention_entry", &mut caps);
         assert!(
@@ -31608,7 +31928,7 @@ mod tests {
         journey_capture(&app, w, h, "attention_detail", &mut caps);
 
         // Step 8: Return to Main
-        app.update(key(KeyCode::Char('!')));
+        app.update(key(KeyCode::Char(']')));
         assert_eq!(app.mode, ViewMode::Main);
         journey_capture(&app, w, h, "main_return", &mut caps);
 

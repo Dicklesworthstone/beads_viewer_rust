@@ -297,10 +297,10 @@ JSONL → Loader → Issue Vec → Analyzer (IssueGraph + metrics) → Robot JSO
 | Graph | `g` | Dependency graph with centrality metrics |
 | History | `h` | Bead/git timeline with file tree |
 | Actionable | `a` | Track-based execution plan (Rust-only) |
-| Attention | `!` | Label attention scores (Rust-only) |
-| Tree | `T` | Dependency tree with collapse/expand (Rust-only) |
+| Attention | `]` | Label attention scores (Rust-only) |
+| Tree | `T` / `E` | Dependency tree with collapse/expand (Rust-only) |
 | LabelDashboard | `[` | Label health dashboard (Rust-only) |
-| FlowMatrix | `]` | Cross-label flow matrix (Rust-only) |
+| FlowMatrix | `f` | Cross-label flow matrix (Rust-only) |
 | TimeTravelDiff | `t` | Diff-against-ref view (Rust-only) |
 | Sprint | `S` | Sprint-based planning (Rust-only) |
 
