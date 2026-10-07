@@ -1827,3 +1827,74 @@ fn large_fixture_triage_does_not_panic() {
         "40-node graph should produce recommendations"
     );
 }
+
+// ============================================================================
+// --export-template (legacy Go text/template reports)
+// ============================================================================
+
+#[test]
+fn export_template_renders_custom_markdown_report() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let template = dir.path().join("report.tmpl");
+    fs::write(
+        &template,
+        "# {{.Title}}\n{{range .Issues}}- {{.ID}} P{{.Priority}}{{if eq .Status \"closed\"}} done{{end}}\n{{end}}{{if .Graph}}graph{{else}}no graph{{end}} {{len .Issues}}\n",
+    )
+    .expect("write template");
+    let out = dir.path().join("report.md");
+    bvr()
+        .arg("--beads-file")
+        .arg(repo_root().join("tests/testdata/minimal.jsonl"))
+        .arg("--export")
+        .arg(&out)
+        .arg("--export-template")
+        .arg(&template)
+        .arg("--export-include-graph=false")
+        .arg("--no-hooks")
+        .assert()
+        .success();
+    let report = fs::read_to_string(&out).expect("report written");
+    assert!(report.starts_with("# Beads Export\n- "), "{report}");
+    assert!(report.ends_with("- B P2\nno graph 2\n"), "{report}");
+}
+
+#[test]
+fn export_template_rejects_bad_combinations_and_templates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let template = dir.path().join("bad.tmpl");
+    fs::write(&template, "{{.Missing}}").expect("write template");
+    let fixture = repo_root().join("tests/testdata/minimal.jsonl");
+    for (args, needle) in [
+        (
+            vec!["--robot-triage", "--export-template"],
+            "requires --export or --export-md",
+        ),
+        (
+            vec![
+                "--export",
+                "out.csv",
+                "--export-format",
+                "csv",
+                "--export-include-graph=false",
+                "--export-template",
+            ],
+            "custom templates require markdown export",
+        ),
+        (
+            vec!["--export", "out.md", "--export-template"],
+            "map has no entry for key \"Missing\"",
+        ),
+    ] {
+        let output = bvr()
+            .current_dir(dir.path())
+            .arg("--beads-file")
+            .arg(&fixture)
+            .args(&args)
+            .arg(&template)
+            .output()
+            .expect("run bvr");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "{args:?}: {stderr}");
+    }
+}

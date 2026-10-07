@@ -2958,8 +2958,8 @@ struct HistoryGitCache {
 /// Modal overlays that take over the full screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ModalOverlay {
-    /// Welcome / first-run tutorial.
-    Tutorial,
+    /// Go bv's interactive tutorial (`` ` `` / Ctrl+T).
+    Tutorial(TutorialState),
     /// Reusable Y/N confirmation dialog.
     Confirm {
         title: String,
@@ -2988,6 +2988,36 @@ enum ModalOverlay {
     /// Go bv's alerts panel (`!`): active (non-dismissed) alerts with
     /// jump-to-issue and dismiss.
     Alerts { rows: Vec<AlertRow>, cursor: usize },
+}
+
+/// Navigation state of the interactive tutorial modal.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct TutorialState {
+    /// Index into [`crate::tutorial::pages`].
+    page: usize,
+    /// Content scroll within the page.
+    scroll: usize,
+    toc_visible: bool,
+    toc_focus: bool,
+    toc_cursor: usize,
+    /// Pages seen in this session (drives the progress percentage).
+    viewed: BTreeSet<usize>,
+}
+
+impl TutorialState {
+    fn new() -> Self {
+        Self {
+            viewed: BTreeSet::from([0]),
+            ..Self::default()
+        }
+    }
+
+    fn jump(&mut self, page: usize) {
+        let last = crate::tutorial::pages().len().saturating_sub(1);
+        self.page = page.min(last);
+        self.scroll = 0;
+        self.viewed.insert(self.page);
+    }
 }
 
 /// One alert as the alerts panel lists it.
@@ -3351,20 +3381,10 @@ impl Model for BvrApp {
         // -- Modal overlays --------------------------------------------------
         if let Some(ref overlay) = self.modal_overlay {
             match overlay {
-                ModalOverlay::Tutorial => {
-                    let text = concat!(
-                        "Welcome to bvr!\n\n",
-                        "Modes:  b=board  i=insights  g=graph  h=history\n",
-                        "Filter: o=open   c=closed    r=ready  a=all\n",
-                        "Nav:    j/k=up/down  Tab=focus  /=search  n/N=cycle\n",
-                        "Other:  ?=help   s=sort  Enter=select  Esc=back  q=quit\n\n",
-                        "Press any key to dismiss."
-                    );
-                    Paragraph::new(text)
-                        .block(semantic_panel_block("Tutorial", true, SemanticTone::Accent))
-                        .render(rows[1], frame);
-                    Paragraph::new("Press any key to continue.")
-                        .style(tokens::footer())
+                ModalOverlay::Tutorial(state) => {
+                    let area = Rect::new(full.x, full.y, full.width, full.height.saturating_sub(1));
+                    render_tutorial(frame, area, state);
+                    Paragraph::new(RichText::from_lines([tutorial_footer(state)]))
                         .render(rows[2], frame);
                     return;
                 }
@@ -5126,9 +5146,8 @@ impl BvrApp {
         // -- Modal overlay handling ------------------------------------------
         if let Some(ref overlay) = self.modal_overlay.clone() {
             match overlay {
-                ModalOverlay::Tutorial => {
-                    // Any key dismisses tutorial
-                    self.modal_overlay = None;
+                ModalOverlay::Tutorial(state) => {
+                    self.handle_tutorial_key(code, modifiers, state.clone());
                     return Cmd::None;
                 }
                 ModalOverlay::Confirm { resume_overlay, .. } => {
@@ -6535,6 +6554,7 @@ impl BvrApp {
             KeyCode::Char('t') if modifiers.contains(Modifiers::CTRL) => {
                 self.open_tutorial();
             }
+            KeyCode::Char('`') => self.open_tutorial(),
             KeyCode::Char('t') => {
                 self.toggle_time_travel_mode();
             }
@@ -6710,7 +6730,72 @@ impl BvrApp {
     }
 
     fn open_tutorial(&mut self) {
-        self.modal_overlay = Some(ModalOverlay::Tutorial);
+        self.modal_overlay = Some(ModalOverlay::Tutorial(TutorialState::new()));
+    }
+
+    /// Keys in the tutorial, as Go bv's `TutorialModel`: Esc/q close, t
+    /// toggles the table of contents, Tab switches focus to it (or turns the
+    /// page without it); in the content ←/→/h/l/n/p/Space turn pages, j/k and
+    /// Ctrl+d/u scroll, g/G jump, 1-9 pick a page; in the contents j/k move
+    /// and Enter opens.
+    fn handle_tutorial_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: Modifiers,
+        mut state: TutorialState,
+    ) {
+        let pages = crate::tutorial::pages().len();
+        let ctrl = modifiers.contains(Modifiers::CTRL);
+        match code {
+            KeyCode::Escape | KeyCode::Char('q') => {
+                self.modal_overlay = None;
+                return;
+            }
+            KeyCode::Char('t') if !ctrl => {
+                state.toc_visible = !state.toc_visible;
+                state.toc_focus = state.toc_visible;
+                state.toc_cursor = state.page;
+            }
+            KeyCode::Tab if state.toc_visible => {
+                state.toc_focus = !state.toc_focus;
+                state.toc_cursor = state.page;
+            }
+            KeyCode::Tab => state.jump(state.page + 1),
+            _ if state.toc_focus && state.toc_visible => match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    state.toc_cursor = (state.toc_cursor + 1).min(pages.saturating_sub(1));
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    state.toc_cursor = state.toc_cursor.saturating_sub(1);
+                }
+                KeyCode::Char('g') | KeyCode::Home => state.toc_cursor = 0,
+                KeyCode::Char('G') | KeyCode::End => state.toc_cursor = pages.saturating_sub(1),
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    state.jump(state.toc_cursor);
+                    state.toc_focus = false;
+                }
+                KeyCode::Char('h') | KeyCode::Left => state.toc_focus = false,
+                _ => {}
+            },
+            KeyCode::Char('d') if ctrl => state.scroll = state.scroll.saturating_add(8),
+            KeyCode::Char('u') if ctrl => state.scroll = state.scroll.saturating_sub(8),
+            KeyCode::Right | KeyCode::Char('l' | 'n' | ' ') => state.jump(state.page + 1),
+            KeyCode::Left | KeyCode::BackTab | KeyCode::Char('h' | 'p') => {
+                state.jump(state.page.saturating_sub(1));
+            }
+            KeyCode::Char('j') | KeyCode::Down => state.scroll = state.scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => state.scroll = state.scroll.saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => state.scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => state.scroll = usize::MAX / 2,
+            KeyCode::Char(digit @ '1'..='9') => {
+                let target = usize::from(digit as u8 - b'1');
+                if target < pages {
+                    state.jump(target);
+                }
+            }
+            _ => {}
+        }
+        self.modal_overlay = Some(ModalOverlay::Tutorial(state));
     }
 
     fn open_confirm_with_resume(
@@ -12467,7 +12552,7 @@ impl BvrApp {
         Paragraph::new(RichText::from_lines([RichLine::from_spans([
             RichSpan::styled("⌨  Keyboard Shortcuts", tokens::primary_bold()),
             RichSpan::styled(
-                "    Ctrl+T: Tutorial │ ? or Esc to close",
+                "    ` or Ctrl+T: Tutorial │ ? or Esc to close",
                 tokens::muted_text(),
             ),
         ])]))
@@ -19709,7 +19794,7 @@ fn help_sections() -> Vec<HelpSection> {
                 ("?/F1", "Toggle this help"),
                 ("Esc", "Back / clear / quit"),
                 ("q", "Quit / back to main"),
-                ("Ctrl+T", "Tutorial"),
+                ("` / Ctrl+T", "Interactive tutorial"),
                 ("Ctrl+C", "Quit immediately"),
             ],
         },
@@ -20768,6 +20853,416 @@ pub fn run_tui_with_background(
         .with_budget(interactive_frame_budget())
         .run()
         .map_err(|error| BvrError::Tui(error.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Interactive tutorial (Go bv's `TutorialModel`)
+// ---------------------------------------------------------------------------
+
+fn tutorial_accent(accent: crate::tutorial::Accent) -> PackedRgba {
+    use crate::tutorial::Accent;
+    match accent {
+        Accent::Open => tokens::status_fg("open"),
+        Accent::InProgress => tokens::status_fg("in_progress"),
+        Accent::Blocked => tokens::status_fg("blocked"),
+        Accent::Closed => tokens::status_fg("closed"),
+        Accent::Primary => tokens::status_fg("review"),
+        Accent::Feature => tokens::FG_WARNING,
+    }
+}
+
+/// Wrap `text` to `width` columns, each line prefixed by `indent`.
+fn tutorial_wrap(text: &str, width: usize, indent: &str, style: Style) -> Vec<RichLine> {
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let wrapped = ftui::text::wrap_text(
+            paragraph,
+            width.saturating_sub(display_width(indent)).max(8),
+            ftui::text::WrapMode::WordChar,
+        );
+        if wrapped.is_empty() {
+            lines.push(RichLine::raw(indent.to_string()));
+        }
+        for line in wrapped {
+            lines.push(RichLine::from_spans([
+                RichSpan::raw(indent.to_string()),
+                RichSpan::styled(line, style),
+            ]));
+        }
+    }
+    lines
+}
+
+/// A rounded box around wrapped text, its title span in `color`.
+fn tutorial_box(label: &str, text: &str, color: PackedRgba, width: usize) -> Vec<RichLine> {
+    let width = width.max(12);
+    let inner = width - 4;
+    let border = Style::new().fg(color);
+    let mut lines = vec![RichLine::from_spans([RichSpan::styled(
+        format!("╭{}╮", "─".repeat(width - 2)),
+        border,
+    )])];
+    let body = format!("{label}{text}");
+    for (idx, line) in ftui::text::wrap_text(&body, inner, ftui::text::WrapMode::WordChar)
+        .into_iter()
+        .enumerate()
+    {
+        let pad = inner.saturating_sub(display_width(&line));
+        let mut spans = vec![RichSpan::styled("│ ", border)];
+        if idx == 0 && line.starts_with(label) {
+            spans.push(RichSpan::styled(label.to_string(), border.bold()));
+            spans.push(RichSpan::raw(line[label.len()..].to_string()));
+        } else {
+            spans.push(RichSpan::raw(line));
+        }
+        spans.push(RichSpan::raw(" ".repeat(pad)));
+        spans.push(RichSpan::styled(" │", border));
+        lines.push(RichLine::from_spans(spans));
+    }
+    lines.push(RichLine::from_spans([RichSpan::styled(
+        format!("╰{}╯", "─".repeat(width - 2)),
+        border,
+    )]));
+    lines
+}
+
+fn tutorial_tree_lines(
+    nodes: &[crate::tutorial::TreeNode],
+    prefix: &str,
+    lines: &mut Vec<RichLine>,
+) {
+    for (idx, node) in nodes.iter().enumerate() {
+        let last = idx + 1 == nodes.len();
+        lines.push(RichLine::from_spans([
+            RichSpan::styled(
+                format!("{prefix}{}", if last { "└── " } else { "├── " }),
+                tokens::muted_text(),
+            ),
+            RichSpan::raw(node.label),
+        ]));
+        let child_prefix = format!("{prefix}{}", if last { "    " } else { "│   " });
+        tutorial_tree_lines(node.children, &child_prefix, lines);
+    }
+}
+
+/// Render one tutorial page's elements, as Go bv's tutorial components do.
+fn tutorial_page_lines(page: &crate::tutorial::Page, width: usize) -> Vec<RichLine> {
+    use crate::tutorial::Element;
+    let accent = tokens::primary_bold();
+    let mut lines = Vec::new();
+    for element in page.elements {
+        match element {
+            Element::Section(title) => {
+                lines.push(RichLine::from_spans([RichSpan::styled(*title, accent)]));
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    "─".repeat(display_width(title).max(3)),
+                    tokens::muted_text(),
+                )]));
+            }
+            Element::Paragraph(text) => {
+                lines.extend(tutorial_wrap(text, width, "", Style::new()));
+            }
+            Element::Spacer(count) => {
+                lines.extend((0..(*count).max(1)).map(|_| RichLine::raw("")));
+            }
+            Element::Bullet(items) => {
+                for item in *items {
+                    let mut wrapped = tutorial_wrap(item, width, "    ", Style::new());
+                    if let Some(first) = wrapped.first_mut() {
+                        let rest: Vec<RichSpan<'static>> =
+                            first.spans().iter().skip(1).cloned().collect();
+                        *first = RichLine::from_spans(
+                            std::iter::once(RichSpan::styled("  • ", accent)).chain(rest),
+                        );
+                    }
+                    lines.extend(wrapped);
+                }
+            }
+            Element::Tip(text) => {
+                lines.extend(tutorial_box("💡 TIP  ", text, tokens::FG_WARNING, width));
+            }
+            Element::Note(text) => {
+                lines.extend(tutorial_box(
+                    "ℹ️  NOTE ",
+                    text,
+                    tokens::status_fg("in_progress"),
+                    width,
+                ));
+            }
+            Element::Warning(text) => {
+                lines.extend(tutorial_box(
+                    "⚠️  WARN ",
+                    text,
+                    tokens::status_fg("blocked"),
+                    width,
+                ));
+            }
+            Element::InfoBox(title, text, color) => {
+                lines.extend(tutorial_box(
+                    &format!("{title} — "),
+                    text,
+                    tutorial_accent(*color),
+                    width,
+                ));
+            }
+            Element::ValueProp(icon, text) => {
+                let mut wrapped = tutorial_wrap(text, width, "    ", Style::new());
+                if let Some(first) = wrapped.first_mut() {
+                    let rest: Vec<RichSpan<'static>> =
+                        first.spans().iter().skip(1).cloned().collect();
+                    let icon = format!(
+                        "{icon}{}",
+                        " ".repeat(4usize.saturating_sub(display_width(icon)))
+                    );
+                    *first = RichLine::from_spans(
+                        std::iter::once(RichSpan::styled(icon, accent)).chain(rest),
+                    );
+                }
+                lines.extend(wrapped);
+            }
+            Element::Code(code) => {
+                for line in code.lines() {
+                    lines.push(RichLine::from_spans([
+                        RichSpan::styled("│ ", accent),
+                        RichSpan::styled(
+                            truncate_with_ellipsis(line, width.saturating_sub(2), "…"),
+                            tokens::success_text(),
+                        ),
+                    ]));
+                }
+            }
+            Element::KeyTable(rows) => {
+                for (key, desc) in *rows {
+                    lines.push(RichLine::from_spans([
+                        RichSpan::styled(format!(" {key:<17} "), accent),
+                        RichSpan::raw(truncate_with_ellipsis(desc, width.saturating_sub(20), "…")),
+                    ]));
+                }
+            }
+            Element::StatusFlow(steps) => {
+                let mut top = Vec::new();
+                let mut mid = Vec::new();
+                let mut bottom = Vec::new();
+                for (idx, (label, color)) in steps.iter().enumerate() {
+                    let style = Style::new().fg(tutorial_accent(*color));
+                    let w = display_width(label) + 2;
+                    top.push(RichSpan::styled(format!("╭{}╮", "─".repeat(w)), style));
+                    mid.push(RichSpan::styled(format!("│ {label} │"), style));
+                    bottom.push(RichSpan::styled(format!("╰{}╯", "─".repeat(w)), style));
+                    if idx + 1 < steps.len() {
+                        top.push(RichSpan::raw("   "));
+                        mid.push(RichSpan::styled(" → ", tokens::muted_text().bold()));
+                        bottom.push(RichSpan::raw("   "));
+                    }
+                }
+                lines.push(RichLine::from_spans(top));
+                lines.push(RichLine::from_spans(mid));
+                lines.push(RichLine::from_spans(bottom));
+            }
+            Element::Tree(root, children) => {
+                lines.push(RichLine::from_spans([RichSpan::styled(*root, accent)]));
+                tutorial_tree_lines(children, "", &mut lines);
+            }
+            Element::Divider => {
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    "─".repeat(width.saturating_sub(4).max(10)),
+                    tokens::muted_text(),
+                )]));
+            }
+        }
+    }
+    lines
+}
+
+/// Go bv's tutorial modal: title with page counter and viewed-progress bar,
+/// the page title and section, the page (with the table of contents beside
+/// it when toggled), and scroll cues.
+fn render_tutorial(frame: &mut Frame, area: Rect, state: &TutorialState) {
+    let pages = crate::tutorial::pages();
+    semantic_panel_block("", true, SemanticTone::Accent).render(area, frame);
+    let inner = block_inner_rect(area);
+    let body = Rect::new(
+        inner.x.saturating_add(2),
+        inner.y.saturating_add(1),
+        inner.width.saturating_sub(4),
+        inner.height.saturating_sub(2),
+    );
+    let Some(page) = pages.get(state.page) else {
+        Paragraph::new("No tutorial pages available.").render(body, frame);
+        return;
+    };
+    let width = usize::from(body.width);
+    let viewed = state.viewed.len().max(1);
+    let percent = viewed * 100 / pages.len().max(1);
+    let filled = (percent / 10).clamp(1, 10);
+    let header = vec![
+        RichLine::from_spans([
+            RichSpan::styled("📚 beads_viewer Tutorial", tokens::primary_bold()),
+            RichSpan::styled(
+                format!("  Page {}/{} · {percent}% ", state.page + 1, pages.len()),
+                Style::new().fg(tokens::FG_SUBTEXT),
+            ),
+            RichSpan::styled("█".repeat(filled), tokens::success_text()),
+            RichSpan::styled("░".repeat(10 - filled), tokens::muted_text()),
+        ]),
+        RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]),
+        RichLine::from_spans([
+            RichSpan::styled(page.title, tokens::primary_bold()),
+            RichSpan::styled(
+                format!(" — {}", page.section),
+                Style::new().fg(tokens::FG_SUBTEXT).italic(),
+            ),
+        ]),
+    ];
+    let header_rows = u16::try_from(header.len()).unwrap_or(3);
+    Paragraph::new(RichText::from_lines(header))
+        .wrap(ftui::text::WrapMode::None)
+        .render(
+            Rect::new(body.x, body.y, body.width, header_rows.min(body.height)),
+            frame,
+        );
+
+    let content_area = Rect::new(
+        body.x,
+        body.y + header_rows.min(body.height),
+        body.width,
+        body.height.saturating_sub(header_rows),
+    );
+    let (toc_area, page_area) = if state.toc_visible && content_area.width > 50 {
+        (
+            Some(Rect::new(
+                content_area.x,
+                content_area.y,
+                24,
+                content_area.height,
+            )),
+            Rect::new(
+                content_area.x + 26,
+                content_area.y,
+                content_area.width - 26,
+                content_area.height,
+            ),
+        )
+    } else {
+        (None, content_area)
+    };
+    if let Some(toc_area) = toc_area {
+        render_tutorial_toc(frame, toc_area, state);
+    }
+
+    let lines = tutorial_page_lines(page, usize::from(page_area.width));
+    let visible = usize::from(page_area.height).saturating_sub(2).max(1);
+    let max_scroll = lines.len().saturating_sub(visible);
+    let scroll = state.scroll.min(max_scroll);
+    let mut shown = Vec::with_capacity(visible + 2);
+    if scroll > 0 {
+        shown.push(RichLine::from_spans([RichSpan::styled(
+            "↑ more above",
+            tokens::muted_text(),
+        )]));
+    }
+    let more_below = scroll + visible < lines.len();
+    shown.extend(lines.into_iter().skip(scroll).take(visible));
+    if more_below {
+        shown.push(RichLine::from_spans([RichSpan::styled(
+            "↓ more below",
+            tokens::muted_text(),
+        )]));
+    }
+    Paragraph::new(RichText::from_lines(shown))
+        .wrap(ftui::text::WrapMode::None)
+        .render(page_area, frame);
+}
+
+fn render_tutorial_toc(frame: &mut Frame, area: Rect, state: &TutorialState) {
+    Block::bordered()
+        .border_style(if state.toc_focus {
+            tokens::primary_bold()
+        } else {
+            tokens::muted_text()
+        })
+        .render(area, frame);
+    let inner = block_inner_rect(area);
+    let mut lines = vec![RichLine::from_spans([
+        RichSpan::styled("Contents", tokens::primary_bold()),
+        RichSpan::styled(
+            if state.toc_focus { " ●" } else { "" },
+            tokens::primary_bold(),
+        ),
+    ])];
+    let mut section = "";
+    let mut cursor_line = 0;
+    for (idx, page) in crate::tutorial::pages().iter().enumerate() {
+        if page.section != section {
+            section = page.section;
+            lines.push(RichLine::raw(""));
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&format!("▸ {section}"), usize::from(inner.width), "…"),
+                tokens::row_id().bold(),
+            )]));
+        }
+        let (prefix, style) = if state.toc_focus && idx == state.toc_cursor {
+            cursor_line = lines.len();
+            (
+                " → ",
+                Style::new()
+                    .fg(tokens::status_fg("in_progress"))
+                    .bg(tokens::row_highlight_bg())
+                    .bold(),
+            )
+        } else if idx == state.page {
+            if !state.toc_focus {
+                cursor_line = lines.len();
+            }
+            (" ▶ ", tokens::primary_bold())
+        } else {
+            ("   ", Style::new().fg(tokens::FG_SUBTEXT))
+        };
+        let mut spans = vec![RichSpan::styled(
+            format!("{prefix}{}", truncate_with_ellipsis(page.title, 14, "…")),
+            style,
+        )];
+        if state.viewed.contains(&idx) {
+            spans.push(RichSpan::styled(" ✓", tokens::success_text()));
+        }
+        lines.push(RichLine::from_spans(spans));
+    }
+    let visible = usize::from(inner.height);
+    let offset = (cursor_line + 1).saturating_sub(visible);
+    Paragraph::new(RichText::from_lines(lines))
+        .wrap(ftui::text::WrapMode::None)
+        .scroll((saturating_scroll_offset(offset), 0))
+        .render(inner, frame);
+}
+
+/// Context-sensitive key hints under the tutorial.
+fn tutorial_footer(state: &TutorialState) -> RichLine {
+    let hints: &[(&str, &str)] = if state.toc_focus && state.toc_visible {
+        &[
+            ("j/k", " select"),
+            ("Enter", " go to page"),
+            ("Tab", " back to content"),
+            ("t", " hide TOC"),
+            ("q", " close"),
+        ]
+    } else {
+        &[
+            ("←/→/Space", " pages"),
+            ("j/k", " scroll"),
+            ("Ctrl+d/u", " half-page"),
+            ("t", " TOC"),
+            ("q", " close"),
+        ]
+    };
+    let mut spans = vec![RichSpan::raw(" ")];
+    for (idx, (key, desc)) in hints.iter().enumerate() {
+        if idx > 0 {
+            spans.push(RichSpan::styled(" │ ", tokens::footer_sep()));
+        }
+        spans.push(RichSpan::styled(*key, tokens::primary_bold()));
+        spans.push(RichSpan::styled(*desc, tokens::footer_hint()));
+    }
+    RichLine::from_spans(spans)
 }
 
 /// Render a named TUI view non-interactively at the given dimensions and
@@ -28549,13 +29044,40 @@ mod tests {
     // ── Modal overlay tests ─────────────────────────────────────────
 
     #[test]
-    fn modal_tutorial_dismisses_on_any_key() {
+    fn modal_tutorial_pages_toc_and_closes() {
+        let pages = crate::tutorial::pages().len();
         let mut app = new_app(ViewMode::Main, 0);
-        app.open_tutorial();
-        assert!(app.modal_overlay.is_some());
-        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial)));
+        app.update(key(KeyCode::Char('`')));
+        let page = |app: &BvrApp| match &app.modal_overlay {
+            Some(ModalOverlay::Tutorial(state)) => state.clone(),
+            other => panic!("tutorial should be open: {other:?}"),
+        };
+        assert_eq!(page(&app).page, 0);
+        let text = render_app(&app, 120, 40);
+        assert!(text.contains("📚 beads_viewer Tutorial"), "{text}");
+        assert!(text.contains(&format!("Page 1/{pages}")), "{text}");
 
-        app.update(key(KeyCode::Char('x')));
+        // Other keys page and scroll instead of closing.
+        app.update(key(KeyCode::Char(' ')));
+        app.update(key(KeyCode::Right));
+        assert_eq!(page(&app).page, 2.min(pages - 1));
+        app.update(key(KeyCode::Left));
+        assert_eq!(page(&app).page, 1.min(pages - 1));
+        app.update(key(KeyCode::Char('3')));
+        assert_eq!(page(&app).page, 2.min(pages - 1));
+        assert!(page(&app).viewed.len() >= 2.min(pages));
+
+        // The table of contents takes focus and Enter opens a page.
+        app.update(key(KeyCode::Char('t')));
+        assert!(page(&app).toc_visible && page(&app).toc_focus);
+        let text = render_app(&app, 120, 40);
+        assert!(text.contains("Contents"), "{text}");
+        app.update(key(KeyCode::Char('g')));
+        app.update(key(KeyCode::Enter));
+        assert_eq!(page(&app).page, 0);
+        assert!(!page(&app).toc_focus);
+
+        app.update(key(KeyCode::Char('q')));
         assert!(app.modal_overlay.is_none());
     }
 
@@ -28564,9 +29086,9 @@ mod tests {
         let mut app = new_app(ViewMode::Main, 0);
 
         app.update(key_ctrl(KeyCode::Char('t')));
-        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial)));
+        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial(_))));
 
-        app.update(key(KeyCode::Char('x')));
+        app.update(key(KeyCode::Escape));
         assert!(app.modal_overlay.is_none());
     }
 
@@ -28766,7 +29288,10 @@ mod tests {
         assert!(app.modal_overlay.is_some());
         assert!(!app.show_help);
 
+        // Enter does not close the tutorial (it pages in the contents); Esc does.
         app.update(key(KeyCode::Enter));
+        assert!(app.modal_overlay.is_some());
+        app.update(key(KeyCode::Escape));
         assert!(app.modal_overlay.is_none());
     }
 
@@ -29343,10 +29868,10 @@ mod tests {
 
         // Open tutorial
         app.open_tutorial();
-        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial)));
+        assert!(matches!(app.modal_overlay, Some(ModalOverlay::Tutorial(_))));
 
         // Dismiss
-        app.update(key(KeyCode::Enter));
+        app.update(key(KeyCode::Char('q')));
         assert!(app.modal_overlay.is_none());
 
         // Open confirm

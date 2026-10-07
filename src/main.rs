@@ -109,6 +109,10 @@ where
 fn validate_orphaned_modifier_flags(cli: &Cli) -> Option<String> {
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
 
+    if cli.export_template.is_some() && cli.export.is_none() && cli.export_md.is_none() {
+        return Some("error: --export-template requires --export or --export-md".to_string());
+    }
+
     let insights_flags = ["--robot-full-stats", "--insight-limit"];
     if !cli.robot_insights
         && insights_flags
@@ -2663,6 +2667,11 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let export_template = cli
+        .export_template
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
     if let Some(export_path) = cli.export.as_deref() {
         if cli.export_md.is_some() {
             eprintln!("error: --export and --export-md specify conflicting output paths");
@@ -2675,7 +2684,14 @@ fn main() -> ExitCode {
             .trim()
             .to_ascii_lowercase();
         let include_graph = cli.export_include_graph.unwrap_or(format != "csv");
-        let content = match render_export_report(&issues, &format, include_graph) {
+        let rendered = match export_template {
+            Some(_) if format != "markdown" => {
+                Err("custom templates require markdown export".to_string())
+            }
+            Some(template) => render_report_template(&issues, Path::new(template), include_graph),
+            None => render_export_report(&issues, &format, include_graph),
+        };
+        let content = match rendered {
             Ok(content) => content,
             Err(error) => {
                 eprintln!("error: {error}");
@@ -2725,12 +2741,41 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        if let Err(error) = bvr::export_md::export_markdown_with_hooks(
-            &issues,
-            export_path,
-            cli.no_hooks,
-            Some(hook_project_dir.as_path()),
-        ) {
+        let result = if let Some(template) = export_template {
+            let include_graph = cli.export_include_graph.unwrap_or(true);
+            let content = match render_report_template(&issues, Path::new(template), include_graph)
+            {
+                Ok(content) => content,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            bvr::export_md::run_export_with_hooks(
+                export_path,
+                "markdown",
+                issues.len(),
+                cli.no_hooks,
+                Some(hook_project_dir.as_path()),
+                |resolved| {
+                    if let Some(parent) = resolved.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(resolved, content.as_bytes())?;
+                    Ok(())
+                },
+            )
+        } else {
+            bvr::export_md::export_markdown_with_hooks(
+                &issues,
+                export_path,
+                cli.no_hooks,
+                Some(hook_project_dir.as_path()),
+            )
+        };
+        if let Err(error) = result {
             eprintln!("error: {error}");
             return ExitCode::from(1);
         }
@@ -5153,6 +5198,63 @@ fn extract_graph_subgraph(
 /// Render an `--export` report. `include_graph` adds dependency context: a
 /// Mermaid section (markdown), a `graph` object (json); it is required for
 /// mermaid and rejected for csv, which is a flat issue table.
+/// Render a legacy `--export-template` report: read the Go text/template
+/// (at most 1 MiB), expose the escaped report fields, and cap the output at
+/// 16 MiB, as legacy bv does.
+fn render_report_template(
+    issues: &[bvr::model::Issue],
+    template_path: &Path,
+    include_graph: bool,
+) -> Result<String, String> {
+    use bvr::report_template::{Value, escape_report_text};
+    const MAX_TEMPLATE: u64 = 1 << 20;
+    let size = fs::metadata(template_path)
+        .map_err(|error| format!("read export template: {error}"))?
+        .len();
+    if size > MAX_TEMPLATE {
+        return Err(format!("export template exceeds {MAX_TEMPLATE} bytes"));
+    }
+    let template = fs::read_to_string(template_path)
+        .map_err(|error| format!("read export template: {error}"))?;
+    let text = |value: &str| Value::Str(escape_report_text(value));
+    let issue_values = issues
+        .iter()
+        .map(|issue| {
+            Value::Map(BTreeMap::from([
+                ("ID".to_string(), text(&issue.id)),
+                ("Title".to_string(), text(&issue.title)),
+                ("Status".to_string(), text(&issue.status)),
+                ("IssueType".to_string(), text(&issue.issue_type)),
+                ("Description".to_string(), text(&issue.description)),
+                (
+                    "Priority".to_string(),
+                    Value::Int(i64::from(issue.priority)),
+                ),
+                (
+                    "Labels".to_string(),
+                    Value::List(issue.labels.iter().map(|label| text(label)).collect()),
+                ),
+            ]))
+        })
+        .collect();
+    let graph = if include_graph {
+        generate_mermaid(issues, &build_graph_edges(issues))
+    } else {
+        String::new()
+    };
+    let data = Value::Map(BTreeMap::from([
+        ("Title".to_string(), text("Beads Export")),
+        (
+            "GeneratedAt".to_string(),
+            Value::Str(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        ),
+        ("Graph".to_string(), Value::Str(graph)),
+        ("Issues".to_string(), Value::List(issue_values)),
+    ]));
+    bvr::report_template::render(&template, &data, 16 << 20)
+        .map_err(|error| format!("render export template: {error}"))
+}
+
 fn render_export_report(
     issues: &[bvr::model::Issue],
     format: &str,

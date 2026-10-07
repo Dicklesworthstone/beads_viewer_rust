@@ -299,7 +299,7 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--export` | `--export` | complete | Report export through the export-hook pipeline. |
 | `--export-format` | `--export-format` | complete | `markdown` (default), `json`, `csv`, or `mermaid`. |
 | `--export-include-graph` | `--export-include-graph` | complete | Dependency context (Mermaid section / `graph` object); required for mermaid, rejected for csv. |
-| `--export-template` | — | missing | Go `text/template` report templates are not ported. |
+| `--export-template` | `--export-template` | complete | Go `text/template` Markdown reports (with `--export` or `--export-md`): fields, `range`/`if`/`with`, variables, pipelines, and the standard builtins; legacy's escaped `.Title/.GeneratedAt/.Graph/.Issues` data, 1 MiB template and 16 MiB output caps, `missingkey=error`. |
 
 ### Workspace/Repo Scoping — 3 complete
 | Legacy Flag | bvr Flag | Status |
@@ -571,5 +571,5 @@ Prerequisites: Wave 3 complete.
 All core robot commands, export surfaces, pages workflows, workspace semantics, and quality gates are passing with the current proof surface. The Rust port now has full legacy parity across robot, CLI, export, and interactive TUI behavior.
 
 ## Open Gaps to 100%
-1. Legacy `bv` kept evolving after the original parity pass. Flags it added since that are still unported: `--export-template` and `--generate-docs`. (`--id-pattern`, `--search-min-score`, and `--robot-history-timeout-ms` are ported.) (Agent-intent invocation aliases — `bvr triage --json`, `bvr robot-next`, `bvr search <q>` — are ported.)
+1. Legacy `bv` kept evolving after the original parity pass. The only flag it added since that is still unported is `--generate-docs` (a generator for legacy's own repository docs). (`--export-template`, `--id-pattern`, `--search-min-score`, and `--robot-history-timeout-ms` are ported.) (Agent-intent invocation aliases — `bvr triage --json`, `bvr robot-next`, `bvr search <q>` — are ported.)
 2. Future additions should keep the current proof surface green rather than reopen parity debt.

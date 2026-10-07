@@ -70,6 +70,36 @@ Each view was compared side by side with the Go binary in a real terminal.
 - **Help**: Go's color-coded keyboard-shortcut modal. ([6b893b4](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/6b893b4))
 - No tab strip in the Go-styled views. `--theme light|dark|auto`.
   ([2b32917](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/2b32917))
+- **History**: Go's HISTORY header (mode indicator, stats badges, filter
+  line) over rounded BEADS WITH HISTORY / COMMITS / COMMIT DETAILS panes, a
+  TIMELINE pane in wide bead mode, rich commit cards (type glyph, linked SHA,
+  author badge, conventional subject, confidence, files), and a stats footer.
+  ([7f5be75](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/7f5be75))
+- **Tree, label dashboard, attention, flow matrix, sprint**: Go's layouts —
+  the hierarchy with fold glyphs and status dots (Go's node order), the label
+  health table, the top-ten attention table, the DEPENDENCY FLOW dashboard
+  with a blocking-pair drilldown, and the centered sprint dashboard with an
+  ASCII burndown and at-risk beads. Enter on a label filters the list.
+  ([4dd8b67](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/4dd8b67))
+- **Alerts panel** on `!` (jump to the issue, `d` dismiss), and Go's view keys:
+  `]` attention, `f` flow matrix, `E` tree.
+  ([0055151](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/0055151))
+- **Shortcuts sidebar** on `;` / `F2`, context-aware, with the body reflowing
+  beside it. ([27845e6](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/27845e6))
+- **Interactive tutorial** on `` ` `` / Ctrl+T: legacy's structured pages with
+  a table of contents and viewed progress, rewritten for bvr's keys.
+
+### Legacy flags added after the original parity pass
+
+- `--id-pattern` (custom bead-ID regexes for commit correlation and orphan
+  detection), `--search-min-score`, and `--robot-history-timeout-ms`.
+  ([93902eb](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/93902eb))
+- `--robot-burndown` reports legacy's `at_risk` sprint beads (blocked too
+  long, no activity, critical blocked, blockers not closing).
+  ([4dd8b67](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/4dd8b67))
+- `--export-template`: legacy Go `text/template` Markdown reports.
+- `--update`, `--update-dry-run`, `--yes`, and `--rollback` map onto
+  `bvr upgrade`. ([9286c01](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/9286c01))
 
 ---
 

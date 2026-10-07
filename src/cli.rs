@@ -532,6 +532,13 @@ pub struct Cli {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub export_include_graph: Option<bool>,
 
+    /// Go text/template file for a custom Markdown report (--export or
+    /// --export-md). Fields: .Title, .GeneratedAt, .Graph (Mermaid, when the
+    /// graph is included), and .Issues with .ID, .Title, .Status, .IssueType,
+    /// .Description, .Priority, .Labels. An explicit empty value disables it.
+    #[arg(long)]
+    pub export_template: Option<String>,
+
     #[arg(long, action = ArgAction::SetTrue)]
     pub no_hooks: bool,
 

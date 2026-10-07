@@ -20,8 +20,10 @@ pub mod export_sqlite;
 pub mod loader;
 pub mod model;
 pub mod pages_wizard;
+pub mod report_template;
 pub mod robot;
 pub mod tui;
+pub mod tutorial;
 pub mod viewer_assets;
 
 pub use error::{BvrError, Result};
