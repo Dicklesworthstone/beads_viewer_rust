@@ -635,6 +635,7 @@ Bare `bvr` launches the interactive terminal UI. For automation, do not run the 
 | `j` / `k` | Move within the focused pane |
 | `/` | Search in supported views |
 | `!` | Alerts panel: j/k navigate, Enter jumps to the issue, `d` dismisses |
+| `;` / `F2` | Shortcuts sidebar for the current view (Ctrl+j/k scroll) |
 
 ## TUI Design Goals
 

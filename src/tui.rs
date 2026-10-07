@@ -438,6 +438,9 @@ thread_local! {
     static LAST_VIEW_HEIGHT: Cell<u16> = const { Cell::new(24) };
     static LAST_DETAIL_CONTENT_AREA: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
     static LAST_MAIN_LIST_AREA: Cell<Rect> = const { Cell::new(Rect::new(0, 0, 0, 0)) };
+    /// Full terminal width of the last frame (the view size shrinks by the
+    /// shortcuts sidebar's column while it is shown).
+    static LAST_TERMINAL_WIDTH: Cell<u16> = const { Cell::new(0) };
     /// Alert counts for the status bar, keyed by the loaded issue set
     /// (vector address and length) so they are computed once per load.
     static ALERT_COUNTS: Cell<Option<(u64, usize, usize, usize)>> = const { Cell::new(None) };
@@ -1943,6 +1946,12 @@ fn go_flow_mini_bar(count: usize, width: usize) -> (RichSpan<'static>, String) {
     )
 }
 
+/// Go bv's shortcuts sidebar: fixed width, gap to the body, and the
+/// narrowest body it leaves room for.
+const SHORTCUTS_SIDEBAR_WIDTH: u16 = 34;
+const SHORTCUTS_SIDEBAR_GAP: u16 = 2;
+const SHORTCUTS_MIN_BODY_WIDTH: u16 = 20;
+
 /// Go bv's attention view shows the top ten labels; 1-9 jump to a rank.
 const ATTENTION_ROW_LIMIT: usize = 10;
 
@@ -3169,6 +3178,9 @@ struct BvrApp {
     /// Alerts dismissed in the alerts panel (`d`), by `AlertRow::key`;
     /// cleared when the data reloads.
     dismissed_alerts: HashSet<String>,
+    /// Go bv's shortcuts sidebar (`;`/F2) and its scroll offset.
+    show_shortcuts_sidebar: bool,
+    shortcuts_sidebar_scroll: usize,
     sprint_data: Vec<Sprint>,
     sprint_cursor: usize,
     sprint_issue_cursor: usize,
@@ -3261,8 +3273,8 @@ impl Model for BvrApp {
     fn view(&self, frame: &mut Frame) {
         let full = Rect::from_size(frame.buffer.width(), frame.buffer.height());
         record_view_size(full.width, full.height);
+        LAST_TERMINAL_WIDTH.with(|cell| cell.set(full.width));
         record_detail_content_area(Rect::default());
-        let bp = Breakpoint::from_width(full.width);
 
         let rows = Flex::vertical()
             .constraints([
@@ -3513,7 +3525,28 @@ impl Model for BvrApp {
         }
 
         // -- Body: mode-aware panes with breakpoint-aware widths --------------
-        let body = rows[1];
+        // The shortcuts sidebar reserves its column on the right; the views
+        // lay out into the remaining width (overlays above use it all).
+        let body = if self.shortcuts_sidebar_visible() {
+            let reserved = SHORTCUTS_SIDEBAR_WIDTH + SHORTCUTS_SIDEBAR_GAP;
+            let sidebar = Rect::new(
+                rows[1].x + rows[1].width - SHORTCUTS_SIDEBAR_WIDTH,
+                rows[1].y,
+                SHORTCUTS_SIDEBAR_WIDTH,
+                rows[1].height,
+            );
+            self.render_shortcuts_sidebar(frame, sidebar);
+            record_view_size(full.width - reserved, full.height);
+            Rect::new(
+                rows[1].x,
+                rows[1].y,
+                rows[1].width - reserved,
+                rows[1].height,
+            )
+        } else {
+            rows[1]
+        };
+        let bp = Breakpoint::from_width(body.width);
         if matches!(self.mode, ViewMode::History) {
             self.render_go_history(frame, body);
             Paragraph::new(RichText::from_lines([
@@ -5496,6 +5529,17 @@ impl BvrApp {
         }
 
         match code {
+            KeyCode::Char(';') | KeyCode::F(2) => self.toggle_shortcuts_sidebar(),
+            KeyCode::Char('j') | KeyCode::Down
+                if modifiers.contains(Modifiers::CTRL) && self.shortcuts_sidebar_visible() =>
+            {
+                self.shortcuts_sidebar_scroll = self.shortcuts_sidebar_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if modifiers.contains(Modifiers::CTRL) && self.shortcuts_sidebar_visible() =>
+            {
+                self.shortcuts_sidebar_scroll = self.shortcuts_sidebar_scroll.saturating_sub(1);
+            }
             KeyCode::Char('H') => {
                 self.toggle_history_mode();
             }
@@ -10331,6 +10375,226 @@ impl BvrApp {
             tokens::muted_text().italic(),
         )]));
         lines
+    }
+
+    /// Whether the shortcuts sidebar is on and the terminal is wide enough
+    /// to show it beside a usable body.
+    fn shortcuts_sidebar_visible(&self) -> bool {
+        self.show_shortcuts_sidebar
+            && LAST_TERMINAL_WIDTH.with(Cell::get)
+                >= SHORTCUTS_SIDEBAR_WIDTH + SHORTCUTS_SIDEBAR_GAP + SHORTCUTS_MIN_BODY_WIDTH
+    }
+
+    /// `;`/F2: toggle Go bv's shortcuts sidebar.
+    fn toggle_shortcuts_sidebar(&mut self) {
+        self.show_shortcuts_sidebar = !self.show_shortcuts_sidebar;
+        self.shortcuts_sidebar_scroll = 0;
+        self.status_msg = if !self.show_shortcuts_sidebar {
+            String::new()
+        } else if self.shortcuts_sidebar_visible() {
+            "Shortcuts sidebar: ; hide | ctrl+j/k scroll".to_string()
+        } else {
+            format!(
+                "Shortcuts sidebar needs a terminal at least {} columns wide (; to turn off)",
+                SHORTCUTS_SIDEBAR_WIDTH + SHORTCUTS_SIDEBAR_GAP + SHORTCUTS_MIN_BODY_WIDTH
+            )
+        };
+    }
+
+    /// The sidebar's sections for the current view, as Go bv's
+    /// `hardcodedSections` filtered by context, with bvr's keys.
+    fn shortcuts_sidebar_sections(&self) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+        let context = match self.mode {
+            ViewMode::Main if matches!(self.focus, FocusPane::Detail) => "detail",
+            ViewMode::Main => "list",
+            ViewMode::Board => "board",
+            ViewMode::Graph => "graph",
+            ViewMode::Insights => "insights",
+            ViewMode::History => "history",
+            ViewMode::Tree => "tree",
+            ViewMode::Actionable => "actionable",
+            _ => "label",
+        };
+        let mut sections = vec![(
+            "Navigation",
+            vec![
+                ("j/k", "Move ↓/↑"),
+                ("G/gg", "End/Start"),
+                ("^d/^u", "Page ↓/↑"),
+                ("Enter", "Details"),
+                ("Esc", "Back"),
+            ],
+        )];
+        let in_list = matches!(context, "list" | "detail");
+        if in_list {
+            sections.push((
+                "Views",
+                vec![
+                    ("a", "Actionable"),
+                    ("b", "Board"),
+                    ("g", "Graph"),
+                    ("H", "History"),
+                    ("i", "Insights"),
+                    ("E/T", "Tree"),
+                    ("[", "Label health"),
+                    ("]", "Attention"),
+                    ("f", "Flow matrix"),
+                    ("S", "Sprint"),
+                    ("!", "Alerts"),
+                    ("?", "Help"),
+                    (";", "This sidebar"),
+                    ("p", "Priority hints"),
+                ],
+            ));
+        }
+        let specific: Option<(&'static str, Vec<(&'static str, &'static str)>)> = match context {
+            "graph" => Some((
+                "Graph",
+                vec![
+                    ("hjkl", "Navigate"),
+                    ("Tab", "Edges"),
+                    ("/", "Search"),
+                    ("Enter", "Jump to issue"),
+                ],
+            )),
+            "insights" => Some((
+                "Insights",
+                vec![
+                    ("h/l", "Switch panel"),
+                    ("j/k", "Select item"),
+                    ("^j/^k", "Scroll detail"),
+                    ("e", "Explanations"),
+                    ("x", "Calc proof"),
+                    ("m", "Heatmap"),
+                    ("Enter", "Jump to issue"),
+                ],
+            )),
+            "history" => Some((
+                "History",
+                vec![
+                    ("v", "Git/Bead mode"),
+                    ("/", "Search"),
+                    ("j/k", "Navigate ↓/↑"),
+                    ("J/K", "Detail ↓/↑"),
+                    ("Tab", "Focus toggle"),
+                    ("y", "Copy SHA"),
+                    ("o", "Open in browser"),
+                    ("f", "File tree"),
+                    ("c", "Cycle filter"),
+                ],
+            )),
+            "board" => Some((
+                "Board",
+                vec![
+                    ("h/l", "Columns ←/→"),
+                    ("j/k", "Items ↓/↑"),
+                    ("Tab", "Toggle detail"),
+                    ("s", "Grouping"),
+                    ("e", "Empty lanes"),
+                    ("Enter", "Full view"),
+                ],
+            )),
+            "tree" => Some((
+                "Tree",
+                vec![
+                    ("h/l", "Fold/unfold"),
+                    ("Enter", "Toggle"),
+                    ("zR/zM", "Open/close all"),
+                    ("/", "Search"),
+                    ("Tab", "Detail"),
+                ],
+            )),
+            "actionable" => Some((
+                "Actionable",
+                vec![("j/k", "Items"), ("Tab", "Tracks/items"), ("Enter", "View")],
+            )),
+            "label" => Some((
+                "Labels",
+                vec![
+                    ("Enter", "Filter list"),
+                    ("Tab", "Detail"),
+                    ("1-9", "Attention rank"),
+                ],
+            )),
+            _ => None,
+        };
+        sections.extend(specific);
+        if in_list {
+            sections.push((
+                "Filters",
+                vec![
+                    ("o", "Open only"),
+                    ("c", "Closed only"),
+                    ("r", "Ready (no blocks)"),
+                    ("L", "Label picker"),
+                    ("/", "Search"),
+                ],
+            ));
+            sections.push((
+                "Actions",
+                vec![
+                    ("t", "Time-travel"),
+                    ("x", "Export .md"),
+                    ("C", "Copy ID"),
+                    ("O", "Open in $EDITOR"),
+                    ("'", "Recipe picker"),
+                    ("w", "Repo picker"),
+                ],
+            ));
+        }
+        sections
+    }
+
+    /// Go bv's shortcuts sidebar: a rounded box titled Shortcuts listing the
+    /// current view's key sections, scrollable with Ctrl+j/k.
+    fn render_shortcuts_sidebar(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::bordered()
+            .border_type(ftui::widgets::borders::BorderType::Rounded)
+            .border_style(tokens::row_id());
+        block.render(area, frame);
+        let inner = block_inner_rect(area);
+        let inner = Rect::new(
+            inner.x.saturating_add(1),
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height,
+        );
+        let width = usize::from(inner.width);
+        let pad = width.saturating_sub("Shortcuts".len()) / 2;
+        let mut lines = vec![RichLine::from_spans([
+            RichSpan::raw(" ".repeat(pad)),
+            RichSpan::styled("Shortcuts", tokens::primary_bold()),
+        ])];
+        for (title, items) in self.shortcuts_sidebar_sections() {
+            lines.push(RichLine::raw(""));
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                title,
+                tokens::row_id().bold(),
+            )]));
+            for (key, desc) in items {
+                lines.push(RichLine::from_spans([
+                    RichSpan::styled(format!("{key:<8}"), tokens::primary_bold()),
+                    RichSpan::raw(truncate_with_ellipsis(desc, width.saturating_sub(8), "…")),
+                ]));
+            }
+        }
+        let available = usize::from(inner.height).saturating_sub(1).max(1);
+        let max_scroll = lines.len().saturating_sub(available);
+        let offset = self.shortcuts_sidebar_scroll.min(max_scroll);
+        let footer = (offset * 100)
+            .checked_div(max_scroll)
+            .map_or_else(|| "; hide".to_string(), |pct| format!("j/k scroll {pct}%"));
+        let mut shown: Vec<RichLine> = lines.into_iter().skip(offset).take(available).collect();
+        while shown.len() < available {
+            shown.push(RichLine::raw(""));
+        }
+        shown.push(RichLine::from_spans([RichSpan::styled(
+            footer,
+            tokens::footer_hint().italic(),
+        )]));
+        Paragraph::new(RichText::from_lines(shown))
+            .wrap(ftui::text::WrapMode::None)
+            .render(inner, frame);
     }
 
     /// Active alerts for the alerts panel: the `--robot-alerts` engine's
@@ -20398,6 +20662,8 @@ fn new_app_with_background(
         flow_matrix_col_cursor: 0,
         flow_drilldown: None,
         dismissed_alerts: std::collections::HashSet::new(),
+        show_shortcuts_sidebar: false,
+        shortcuts_sidebar_scroll: 0,
         time_travel_ref_input: String::new(),
         time_travel_input_active: false,
         time_travel_diff: None,
@@ -21250,6 +21516,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23383,6 +23651,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23495,6 +23765,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23601,6 +23873,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23725,6 +23999,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23833,6 +24109,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23942,6 +24220,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24052,6 +24332,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24157,6 +24439,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24277,6 +24561,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24421,6 +24707,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24670,6 +24958,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -24782,6 +25072,8 @@ mod tests {
             flow_matrix_col_cursor: 0,
             flow_drilldown: None,
             dismissed_alerts: std::collections::HashSet::new(),
+            show_shortcuts_sidebar: false,
+            shortcuts_sidebar_scroll: 0,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -29411,6 +29703,45 @@ mod tests {
         ));
         app.handle_key(KeyCode::Escape, Modifiers::NONE);
         assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn shortcuts_sidebar_toggles_and_reserves_its_column() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let _ = render_app(&app, 140, 30);
+        app.handle_key(KeyCode::Char(';'), Modifiers::NONE);
+        assert!(app.show_shortcuts_sidebar);
+        assert!(app.status_msg.contains("; hide"), "{}", app.status_msg);
+        let text = render_app(&app, 140, 30);
+        assert!(text.contains("Shortcuts"), "{text}");
+        assert!(text.contains("This sidebar"), "{text}");
+        // The body lays out into the remaining width.
+        assert_eq!(super::cached_view_width(), 140 - 36);
+
+        // Context follows the view: the board lists board keys.
+        app.handle_key(KeyCode::Char('b'), Modifiers::NONE);
+        let text = render_app(&app, 140, 30);
+        assert!(text.contains("Columns ←/→"), "{text}");
+
+        app.handle_key(KeyCode::Char(';'), Modifiers::NONE);
+        assert!(!app.show_shortcuts_sidebar);
+        let _ = render_app(&app, 140, 30);
+        assert_eq!(super::cached_view_width(), 140);
+    }
+
+    #[test]
+    fn shortcuts_sidebar_waits_for_a_wide_enough_terminal() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let _ = render_app(&app, 50, 20);
+        app.handle_key(KeyCode::F(2), Modifiers::NONE);
+        assert!(app.show_shortcuts_sidebar);
+        assert!(
+            app.status_msg.contains("at least 56 columns"),
+            "{}",
+            app.status_msg
+        );
+        let text = render_app(&app, 50, 20);
+        assert!(!text.contains("This sidebar"));
     }
 
     #[test]
