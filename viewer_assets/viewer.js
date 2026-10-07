@@ -2659,7 +2659,12 @@ function beadsApp() {
           this.graphDetailNode = null;
           this.showDepGraph = false;
           this.whatIfResult = null;
-          this.filters = { ...this.filters, ...urlState.filters };
+          // The route is a complete snapshot, including omitted (cleared) filters.
+          this.filters = {
+            status: [], type: [], priority: [], labels: [], assignee: '',
+            hasBlockers: null, isBlocking: null,
+            ...urlState.filters,
+          };
           this.sort = urlState.sort;
           this.searchQuery = urlState.searchQuery;
           this.page = 1;
@@ -2994,7 +2999,9 @@ function beadsApp() {
      * Alias for applyFilter (used by dashboard click handlers)
      */
     applyFilters() {
-      this.applyFilter();
+      // Dashboard shortcuts create a history entry rather than replacing it.
+      this.page = 1;
+      this.openIssues();
     },
 
     /**
@@ -3059,7 +3066,18 @@ function beadsApp() {
      */
     search() {
       this.page = 1;
+      if (this.searchQuery && (this.view !== 'issues' || this.selectedIssue)) {
+        this.openIssues();
+        return;
+      }
       this.loadIssues();
+    },
+
+    /**
+     * Navigate from any view without discarding the current search and filters.
+     */
+    openIssues() {
+      navigateToIssues(this.filters, this.sort, this.searchQuery);
     },
 
     /**

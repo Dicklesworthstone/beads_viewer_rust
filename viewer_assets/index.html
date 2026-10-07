@@ -275,7 +275,7 @@
               Dashboard
             </a>
             <a href="#/issues"
-               @click.prevent="window.location.hash = '#/issues'"
+               @click.prevent="openIssues()"
                :class="view === 'issues' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200 shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'"
                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer hover:scale-[1.02] active:scale-95">
               Issues
@@ -450,7 +450,7 @@
             Dashboard
           </a>
           <a href="#/issues"
-             @click.prevent="window.location.hash = '#/issues'; mobileMenuOpen = false"
+             @click.prevent="openIssues(); mobileMenuOpen = false"
              :class="view === 'issues' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'"
              class="block px-4 py-3 rounded-lg text-base font-medium transition-colors">
             Issues
@@ -496,7 +496,7 @@
         </a>
         <!-- Issues -->
         <a href="#/issues"
-           @click.prevent="window.location.hash = '#/issues'"
+           @click.prevent="openIssues()"
            class="nav-item-mobile haptic-light relative"
            :class="view === 'issues' ? 'active' : ''">
           <div class="absolute top-0 left-1/2 -translate-x-1/2 h-[3px] w-6 rounded-b-full transition-all duration-200"
