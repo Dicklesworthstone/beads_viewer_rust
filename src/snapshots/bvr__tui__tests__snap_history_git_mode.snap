@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights H History | mode=History ◉ Git | focus=list | issues=3/3 | filter=all
-┌Commits [focus]─────────────┐┌Related Beads────────────────────┐┌Commit Details───────────────────┐
+ HISTORY  ◉ Git                                                               [/] search  [H] close
+ 2 beads  •  4 commits  •  1 authors  •  2.0 commits/bead
+ Showing all 4 commits
+────────────────────────────────────────────────────────────────────────────────────────────────────
+┌────────────────────────────┐┌─────────────────────────────────┐┌─────────────────────────────────┐
+│COMMITS                     ││RELATED BEADS                    ││RELATED BEADS                    │
+│────────────────────────────││─────────────────────────────────││─────────────────────────────────│
+│▸ aaaa111 feat: ui wiri… [1]││  ○ Root                         ││  ○ A Root                       │
+│  bbbb222 feat: graph c… [1]││                                 ││                                 │
+│  cccc333 docs: readme   [1]││                                 ││─────────────────────────────────│
+│  dddd444 chore: cargo … [1]││                                 ││COMMIT DETAILS                   │
+│                            ││                                 ││─────────────────────────────────│
+│                            ││                                 ││SHA: aaaa1111                    │
+│                            ││                                 ││Author: Test Author              │
+│                            ││                                 ││Date: 2026-01-10T00:00:00Z       │
+│                            ││                                 ││Files: 2 changed                 │
 │                            ││                                 ││                                 │
-│ Git commits (4/4 correlate ││ 1 related bead(s) for aaaa111   ││ Commit 1/4 | confidence >= 0%   │
-│ Min confidence: >= 0%      ││                                 ││                                 │
-│                            ││   [o] A        Root             ││ COMMIT DETAILS:                 │
-│ > F aaaa111 A        feat: ││                                 ││   SHA: aaaa1111                 │
-│   F bbbb222 A        feat: ││                                 ││   [TA] Test Author <test@exampl │
-│   D cccc333 B        docs: ││                                 ││   Date: 2026-01-10T00:00:00Z    │
-│   C dddd444 B        chore ││                                 ││   F feat: ui wiring             │
-│                            ││                                 ││   Files: 2 changed +2/-0        │
-│                            ││                                 ││     ~ src/ui/app.rs +1/-0       │
-│                            ││                                 ││     ~ src/ui/detail.rs +1/-0    │
-│                            ││                                 ││                                 │
-│                            ││                                 ││ RELATED BEADS:                  │
-│                            ││                                 ││   [o] A (95%) Root              │
-│                            ││                                 ││                                 │
-│                            ││                                 ││ SELECTED BEAD CHANGE (A):       │
-│                            ││                                 ││   (no field-level bead changes  │
-│                            ││                                 ││                                 │
-│                            ││                                 ││ Enter: jump to related bead | J │
-│                            ││                                 ││ v: switch to bead timeline | c: │
-│                            ││                                 ││ y: copy SHA | o: open in browse │
-│                            ││                                 ││                                 │
-│                            ││                                 ││ Browser Link: open selected com │
+│                            ││                                 ││feat: ui wiring                  │
 │                            ││                                 ││                                 │
 │                            ││                                 ││                                 │
 │                            ││                                 ││                                 │
+│                            ││                                 ││                                 │
+│                            ││                                 ││                                 │
+│                            ││                                 ││                                 │
+│                            ││                                 ││                                 │
+│                            ││                                 ││                                 │
+│                            ││                                 ││─────────────────────────────────│
+│                            ││                                 ││J/K:bead  y:copy  o:open  g:graph│
 └────────────────────────────┘└─────────────────────────────────┘└─────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ o open commit │ f file-tree
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1               3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy

@@ -5,24 +5,19 @@ expression: artifact
 === E2E Journey: history-deep-dive | 120x35 ===
 
 --- Step 1: history_entry ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all | sort=def
-┌Beads With History [focus]────────┐┌Commits─────────────────────────────────┐┌Commit Details──────────────────────────┐
+ HISTORY  ◈ Beads                                                                                 [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Showing all 3 beads
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│BEADS WITH HISTORY                ││COMMITS                                 ││COMMIT DETAILS                          │
+│──────────────────────────────────││────────────────────────────────────────││○ A: Root                               │
+│▸ ○ A Root           0 commits ⚡2││No commits correlated with A            ││────────────────────────────────────────│
+│  ○ B Dependent      2 commits ⚡2││                                        ││LIFECYCLE (2)                           │
+│  ✓ C Closed         0 commits ⚡3││                                        │││ ✎ 5mo ago                             │
+│                                  ││                                        ││└ 🆕 5mo ago                            │
 │                                  ││                                        ││                                        │
-│ Bead history list (3 beads) | v  ││ No commits correlated with A.          ││ History Summary: beads=3 closed-like=1 │
-│                                  ││                                        ││                                        │
-│ ▸ oT A             2▪ open       ││                                        ││ Issue: A (Root)                        │
-│   oT B             3▪ open       ││                                        ││ Status: open                           │
-│   xT C             3▪ closed     ││                                        ││ Min confidence filter: >= 0%           │
-│                                  ││                                        ││ Created/Updated/Closed: 2026-01-01 / 2 │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Timeline:                              │
-│                                  ││                                        ││   (no timeline data)                   │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ LIFECYCLE:                             │
-│                                  ││                                        ││   (no events)                          │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Enter: backtrace selected commit | v:  │
-│                                  ││                                        ││ y: copy bead ID | f: file tree         │
+│                                  ││                                        ││No commits correlated with A            │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
@@ -38,72 +33,70 @@ bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││0 commits • 0 files • 0% avg            │
+│                                  ││                                        ││J/K:nav  y:copy  o:open  g:graph        │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ H close
 
 --- Step 2: history_bead_nav ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all | sort=def
-┌Beads With History [focus]────────┐┌Commits─────────────────────────────────┐┌Commit Details──────────────────────────┐
+ HISTORY  ◈ Beads                                                                                 [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Showing all 3 beads
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│BEADS WITH HISTORY                ││COMMITS                                 ││COMMIT DETAILS                          │
+│──────────────────────────────────││────────────────────────────────────────││○ B: Dependent                          │
+│  ○ A Root           0 commits ⚡2││  aaaa111 feat: ui wiring               ││────────────────────────────────────────│
+│▸ ○ B Dependent      2 commits ⚡2││  bbbb222 feat: graph core              ││LIFECYCLE (2)                           │
+│  ✓ C Closed         0 commits ⚡3││                                        │││ ✎ 4mo ago                             │
+│                                  ││                                        ││└ 🆕 4mo ago                            │
 │                                  ││                                        ││                                        │
-│ Bead history list (3 beads) | v  ││ 2 commit(s) for B                      ││ History Summary: beads=3 closed-like=1 │
+│                                  ││                                        ││  ✨ aaaa111 (4mo ago)                  │
+│                                  ││                                        ││     TA  Test Author • 2026-01-10 00:00 │
+│                                  ││                                        ││    feat: ui wiring                     │
+│                                  ││                                        ││    95% confidence (co-committed)       │
+│                                  ││                                        ││    2 file(s) +2 -0                     │
+│                                  ││                                        ││      ~ app.rs +1/-0                    │
+│                                  ││                                        ││      ~ detail.rs +1/-0                 │
 │                                  ││                                        ││                                        │
-│   oT A             2▪ open       ││   aaaa111  95% feat: ui wiring         ││ Issue: B (Dependent)                   │
-│ ▸ oT B             3▪ open       ││   bbbb222  80% feat: graph core        ││ Status: open                           │
-│   xT C             3▪ closed     ││                                        ││ Min confidence filter: >= 0%           │
-│                                  ││                                        ││ Created/Updated/Closed: 2026-01-03 / 2 │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Timeline:                              │
-│                                  ││                                        ││   ├──├  2 commits                      │
-│                                  ││                                        ││ Last author: Test Author               │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ LIFECYCLE:                             │
-│                                  ││                                        ││   (no events)                          │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ COMMIT DETAILS (1/2):                  │
-│                                  ││                                        ││   F aaaa111  2026-01-10T00:00:00Z      │
-│                                  ││                                        ││   [TA] Test Author <test@example.com>  │
-│                                  ││                                        ││   feat: ui wiring                      │
-│                                  ││                                        ││   95% confidence (co_committed)        │
-│                                  ││                                        ││   Reason: fixture                      │
-│                                  ││                                        ││   2 file(s) +2/-0                      │
-│                                  ││                                        ││     ~ src/ui/app.rs +1/-0              │
-│                                  ││                                        ││     ~ src/ui/detail.rs +1/-0           │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Enter: backtrace selected commit | v:  │
-│                                  ││                                        ││ y: copy bead ID | o: open commit | f:  │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Browser Link: open selected commit (o  │
+│                                  ││                                        ││  ✨ bbbb222 (4mo ago)                  │
+│                                  ││                                        ││     TA  Test Author • 2026-01-10 00:00 │
+│                                  ││                                        ││    feat: graph core                    │
+│                                  ││                                        ││    80% confidence (co-committed)       │
+│                                  ││                                        ││    1 file(s) +1 -0                     │
+│                                  ││                                        ││      ~ graph.rs +1/-0                  │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││2 commits • 3 files • +3/-0 • 88% avg   │
+│                                  ││                                        ││J/K:nav  y:copy  o:open  g:graph        │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ o open commit │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ o open commit │ H close
 
 --- Step 3: history_git_mode ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◉ Git | focus=list | issues=3/3 | filter=all | sort=defau
-┌Commits [focus]───────────────────┐┌Related Beads───────────────────────────┐┌Commit Details──────────────────────────┐
+ HISTORY  ◉ Git                                                                                   [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Showing all 2 commits
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│COMMITS                           ││RELATED BEADS                           ││RELATED BEADS                           │
+│──────────────────────────────────││────────────────────────────────────────││────────────────────────────────────────│
+│▸ aaaa111 feat: ui wiring      [1]││  ○ Dependent                           ││  ○ B Dependent                         │
+│  bbbb222 feat: graph core     [1]││                                        ││                                        │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││COMMIT DETAILS                          │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││SHA: aaaa1111                           │
+│                                  ││                                        ││Author: Test Author                     │
+│                                  ││                                        ││Date: 2026-01-10T00:00:00Z              │
+│                                  ││                                        ││Files: 2 changed                        │
 │                                  ││                                        ││                                        │
-│ Git commits (2/2 correlated) | v ││ 1 related bead(s) for aaaa111          ││ Commit 1/2 | confidence >= 0%          │
-│ Min confidence: >= 0%            ││                                        ││                                        │
-│                                  ││   [o] B        Dependent               ││ COMMIT DETAILS:                        │
-│ > F aaaa111 B        feat: ui wi ││                                        ││   SHA: aaaa1111                        │
-│   F bbbb222 B        feat: graph ││                                        ││   [TA] Test Author <test@example.com>  │
-│                                  ││                                        ││   Date: 2026-01-10T00:00:00Z           │
-│                                  ││                                        ││   F feat: ui wiring                    │
-│                                  ││                                        ││   Files: 2 changed +2/-0               │
-│                                  ││                                        ││     ~ src/ui/app.rs +1/-0              │
-│                                  ││                                        ││     ~ src/ui/detail.rs +1/-0           │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ RELATED BEADS:                         │
-│                                  ││                                        ││   [o] B (95%) Dependent                │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ SELECTED BEAD CHANGE (B):              │
-│                                  ││                                        ││   (no field-level bead changes detecte │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Enter: jump to related bead | J/K: cyc │
-│                                  ││                                        ││ v: switch to bead timeline | c: cycle  │
-│                                  ││                                        ││ y: copy SHA | o: open in browser | f:  │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Browser Link: open selected commit (o  │
+│                                  ││                                        ││feat: ui wiring                         │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
@@ -112,35 +105,35 @@ bvr 1 Main b Board i Insights g Graph H History | mode=History ◉ Git | focus=l
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││J/K:bead  y:copy  o:open  g:graph       │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ o open commit │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ o open commit │ H close
 
 --- Step 4: history_search ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◉ Git | focus=list | issues=3/3 | filter=all | sort=defau
-┌Commits [focus]───────────────────┐┌Related Beads───────────────────────────┐┌Commit Details──────────────────────────┐
+ HISTORY  ◉ Git                                                                                   [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Filter: "test"  │  Showing all 2 commits
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│COMMITS                           ││RELATED BEADS                           ││RELATED BEADS                           │
+│──────────────────────────────────││────────────────────────────────────────││────────────────────────────────────────│
+│▸ aaaa111 feat: ui wiring      [1]││  ○ Dependent                           ││  ○ B Dependent                         │
+│  bbbb222 feat: graph core     [1]││                                        ││                                        │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││COMMIT DETAILS                          │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││SHA: aaaa1111                           │
+│                                  ││                                        ││Author: Test Author                     │
+│                                  ││                                        ││Date: 2026-01-10T00:00:00Z              │
+│                                  ││                                        ││Files: 2 changed                        │
 │                                  ││                                        ││                                        │
-│ Git commits (matches: 2/2) | v b ││ 1 related bead(s) for aaaa111          ││ Commit 1/2 | confidence >= 0%          │
-│ Min confidence: >= 0%            ││                                        ││                                        │
-│ Search [all]: /test (2 matches,  ││   [o] B        Dependent               ││ COMMIT DETAILS:                        │
-│                                  ││                                        ││   SHA: aaaa1111                        │
-│ > F aaaa111 B        feat: ui wi ││                                        ││   [TA] Test Author <test@example.com>  │
-│   F bbbb222 B        feat: graph ││                                        ││   Date: 2026-01-10T00:00:00Z           │
-│                                  ││                                        ││   F feat: ui wiring                    │
-│                                  ││                                        ││   Files: 2 changed +2/-0               │
-│                                  ││                                        ││     ~ src/ui/app.rs +1/-0              │
-│                                  ││                                        ││     ~ src/ui/detail.rs +1/-0           │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ RELATED BEADS:                         │
-│                                  ││                                        ││   [o] B (95%) Dependent                │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ SELECTED BEAD CHANGE (B):              │
-│                                  ││                                        ││   (no field-level bead changes detecte │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Enter: jump to related bead | J/K: cyc │
-│                                  ││                                        ││ v: switch to bead timeline | c: cycle  │
-│                                  ││                                        ││ y: copy SHA | o: open in browser | f:  │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││ Browser Link: open selected commit (o  │
+│                                  ││                                        ││feat: ui wiring                         │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
@@ -149,18 +142,25 @@ bvr 1 Main b Board i Insights g Graph H History | mode=History ◉ Git | focus=l
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││                                        │
+│                                  ││                                        ││────────────────────────────────────────│
+│                                  ││                                        ││J/K:bead  y:copy  o:open  g:graph       │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ o open commit │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ o open commit │ H close
 
 --- Step 5: history_bead_return ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus=list | issues=3/3 | filter=all | sort=def
-┌Beads With History [focus]────────┐┌Commits─────────────────────────────────┐┌Commit Details──────────────────────────┐
-│                                  ││                                        ││                                        │
-│ (no issues match history search: ││ Select a bead to view correlated commi ││ No issues match the active filter (all │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
+ HISTORY  ◈ Beads                                                                                 [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Filter: "test"  │  Showing 0/3 beads
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│BEADS WITH HISTORY                ││COMMITS                                 ││No bead selected                        │
+│──────────────────────────────────││────────────────────────────────────────││                                        │
+│No beads match "test"             ││Select a bead to view commits           ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
@@ -187,17 +187,17 @@ bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ H close
 
 --- Step 6: history_middle_focus ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus=middle | issues=3/3 | filter=all | sort=d
-┌Beads With History────────────────┐┌Commits [focus]─────────────────────────┐┌Commit Details──────────────────────────┐
-│                                  ││                                        ││                                        │
-│ (no issues match history search: ││ Select a bead to view correlated commi ││ No issues match the active filter (all │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
+ HISTORY  ◈ Beads                                                                                 [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Filter: "test"  │  Showing 0/3 beads
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│BEADS WITH HISTORY                ││COMMITS                                 ││No bead selected                        │
+│──────────────────────────────────││────────────────────────────────────────││                                        │
+│No beads match "test"             ││Select a bead to view commits           ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
@@ -224,17 +224,17 @@ bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ H close
 
 --- Step 7: history_detail_focus ---
-bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus=detail | issues=3/3 | filter=all | sort=d
-┌Beads With History────────────────┐┌Commits─────────────────────────────────┐┌Commit Details [focus]──────────────────┐
-│                                  ││                                        ││                                        │
-│ (no issues match history search: ││ Select a bead to view correlated commi ││ No issues match the active filter (all │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
-│                                  ││                                        ││                                        │
+ HISTORY  ◈ Beads                                                                                 [/] search  [H] close
+ 1 beads  •  2 commits  •  1 authors  •  2.0 commits/bead
+ Filter: "test"  │  Showing 0/3 beads
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+┌──────────────────────────────────┐┌────────────────────────────────────────┐┌────────────────────────────────────────┐
+│BEADS WITH HISTORY                ││COMMITS                                 ││No bead selected                        │
+│──────────────────────────────────││────────────────────────────────────────││                                        │
+│No beads match "test"             ││Select a bead to view commits           ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
@@ -261,7 +261,7 @@ bvr 1 Main b Board i Insights g Graph H History | mode=History ◈ Beads | focus
 │                                  ││                                        ││                                        │
 │                                  ││                                        ││                                        │
 └──────────────────────────────────┘└────────────────────────────────────────┘└────────────────────────────────────────┘
-c confidence >= 0% │ v bead/git │ / search │ Tab mode │ y copy │ f file-tree │ H/Esc back │ ^←/→ resize
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                         3 issues  j/k nav │ tab focus │ ⏎ jump │ y copy │ H close
 
 --- Step 8: main_after_history ---
 ┌────────────────────────────────────────────┐┌────────────────────────────────────────────────────────────────────────┐

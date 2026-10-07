@@ -1,7 +1,7 @@
 use std::cell::Cell;
 #[cfg(not(test))]
 use std::collections::VecDeque;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -530,6 +530,7 @@ fn header_height(app: &BvrApp) -> u16 {
             | ViewMode::Insights
             | ViewMode::Graph
             | ViewMode::Actionable
+            | ViewMode::History
     ))
 }
 
@@ -1001,6 +1002,11 @@ mod tokens {
     /// Info text (comment counts).
     pub fn info_text() -> Style {
         Style::new().fg(p(FG_INFO_LIGHT, FG_INFO))
+    }
+
+    /// Success text (Go bv's `Open` green: additions, high confidence).
+    pub fn success_text() -> Style {
+        Style::new().fg(p(FG_SUCCESS_LIGHT, FG_SUCCESS))
     }
 
     /// Triage marker for a blocker that unblocks work.
@@ -1812,6 +1818,236 @@ fn go_time_rel(time: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
     } else {
         format!("{}mo ago", days / 30)
     }
+}
+
+/// A lifecycle event as Go bv's history view shows it, normalized from the
+/// git-correlated history or, without git, from the bead's own timestamps.
+struct GoHistoryEvent {
+    kind: String,
+    at: Option<DateTime<Utc>>,
+    author: String,
+}
+
+fn parse_history_timestamp(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw.trim())
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// Go bv's history status glyph: ✓ closed, ● in progress, ○ otherwise.
+fn go_history_status_icon(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "closed" => "✓",
+        "in_progress" => "●",
+        _ => "○",
+    }
+}
+
+/// Go bv's history `relativeTime`: just now, 5m ago, 3h ago, 2d ago,
+/// 1w ago, 4mo ago, 2y ago.
+fn go_history_relative_time(at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    let Some(at) = at else {
+        return "unknown".to_string();
+    };
+    let diff = now - at;
+    if diff < chrono::Duration::zero() {
+        return "in future".to_string();
+    }
+    let hours = diff.num_hours();
+    let days = diff.num_days();
+    if diff.num_minutes() < 1 {
+        "just now".to_string()
+    } else if hours < 1 {
+        format!("{}m ago", diff.num_minutes())
+    } else if days < 1 {
+        format!("{hours}h ago")
+    } else if days < 7 {
+        format!("{days}d ago")
+    } else if days < 30 {
+        format!("{}w ago", days / 7)
+    } else if days < 365 {
+        format!("{}mo ago", days / 30)
+    } else {
+        format!("{}y ago", days / 365)
+    }
+}
+
+/// Go bv's `authorInitials`: first letters of the first and last name, or
+/// the first two letters of a single name.
+fn go_author_initials(name: &str) -> String {
+    let parts: Vec<&str> = name.split_whitespace().collect();
+    match parts.as_slice() {
+        [] => "??".to_string(),
+        [single] => single
+            .chars()
+            .take(2)
+            .flat_map(char::to_uppercase)
+            .collect(),
+        [first, .., last] => first
+            .chars()
+            .take(1)
+            .chain(last.chars().take(1))
+            .flat_map(char::to_uppercase)
+            .collect(),
+    }
+}
+
+/// Go bv's `cycleTime` badge: minutes, hours, days, or weeks.
+fn go_format_cycle_time(days: f64) -> String {
+    if days < 1.0 {
+        let hours = days * 24.0;
+        if hours < 1.0 {
+            format!("{:.0}m", hours * 60.0)
+        } else {
+            format!("{hours:.1}h")
+        }
+    } else if days < 7.0 {
+        format!("{days:.1}d")
+    } else {
+        format!("{:.1}w", days / 7.0)
+    }
+}
+
+/// A commit subject parsed as a conventional commit (`type(scope)!: subject`).
+struct GoConventionalCommit {
+    kind: Option<&'static str>,
+    scope: String,
+    breaking: bool,
+    subject: String,
+}
+
+fn go_parse_conventional_commit(message: &str) -> GoConventionalCommit {
+    const TYPES: [&str; 12] = [
+        "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
+        "revert", "wip",
+    ];
+    let first_line = message.lines().next().unwrap_or_default().trim();
+    let lower = first_line.to_ascii_lowercase();
+    for kind in TYPES {
+        if !lower.starts_with(kind) {
+            continue;
+        }
+        let mut rest = &first_line[kind.len()..];
+        let mut scope = String::new();
+        if let Some(inner) = rest.strip_prefix('(') {
+            if let Some(end) = inner.find(')') {
+                if end > 0 {
+                    scope = inner[..end].to_string();
+                    rest = &inner[end + 1..];
+                }
+            }
+        }
+        let breaking = rest.starts_with('!');
+        if breaking {
+            rest = &rest[1..];
+        }
+        if let Some(subject) = rest.strip_prefix(':') {
+            return GoConventionalCommit {
+                kind: Some(kind),
+                scope,
+                breaking,
+                subject: subject.trim().to_string(),
+            };
+        }
+    }
+    GoConventionalCommit {
+        kind: None,
+        scope: String::new(),
+        breaking: false,
+        subject: first_line.to_string(),
+    }
+}
+
+/// Go bv's `commitTypeIndicator` glyph for a commit message.
+fn go_commit_type_indicator(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.starts_with("merge ") {
+        return "⊕";
+    }
+    if lower.starts_with("revert ") {
+        return "↩";
+    }
+    match go_parse_conventional_commit(message).kind {
+        Some("feat") => "✨",
+        Some("fix") => "🐛",
+        Some("docs") => "📝",
+        Some("refactor") => "♻",
+        Some("perf") => "⚡",
+        Some("test") => "🧪",
+        Some("chore") => "🔧",
+        Some("ci") => "🔄",
+        Some("build") => "📦",
+        Some("style") => "💄",
+        _ => "",
+    }
+}
+
+/// Go bv's correlation-method label.
+fn go_correlation_method_label(method: &str) -> &'static str {
+    match method {
+        "co_committed" => "(co-committed)",
+        "explicit_id" => "(explicit ID)",
+        "temporal_author" => "(temporal)",
+        _ => "",
+    }
+}
+
+/// Go bv's file-action glyph and color for a commit's changed file.
+fn go_file_action(action: &str) -> (&'static str, Style) {
+    match action {
+        "A" => ("+", tokens::success_text()),
+        "D" => ("-", tokens::muted_text()),
+        "M" => ("~", tokens::info_text()),
+        "R" => ("→", tokens::row_id()),
+        _ => ("?", tokens::muted_text()),
+    }
+}
+
+/// Go bv's lifecycle-event glyph and color.
+fn go_history_event_icon(kind: &str) -> (&'static str, Style) {
+    match kind {
+        "created" => ("🆕", tokens::primary_bold()),
+        "claimed" => ("👤", tokens::info_text()),
+        "closed" => ("✓", tokens::success_text()),
+        "reopened" => ("↺", tokens::row_id()),
+        "modified" | "updated" => ("✎", tokens::muted_text()),
+        _ => ("•", tokens::muted_text()),
+    }
+}
+
+/// Confidence coloring shared by the history detail: green at 80%+,
+/// secondary at 50%+, muted below.
+fn go_confidence_style(confidence: f64) -> Style {
+    if confidence >= 0.8 {
+        tokens::success_text()
+    } else if confidence >= 0.5 {
+        tokens::row_id()
+    } else {
+        tokens::muted_text()
+    }
+}
+
+/// Pad a line of spans with blanks to `width` and paint it with the
+/// selected-row background.
+fn go_highlight_row(spans: Vec<RichSpan<'static>>, width: usize) -> RichLine {
+    let used: usize = spans
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum();
+    RichLine::from_spans(
+        spans
+            .into_iter()
+            .chain(std::iter::once(RichSpan::raw(
+                " ".repeat(width.saturating_sub(used)),
+            )))
+            .map(|span| {
+                let style = span
+                    .style
+                    .unwrap_or_default()
+                    .bg(tokens::row_highlight_bg());
+                span.with_style(style)
+            }),
+    )
 }
 
 /// Issue scan line: dense single-line summary for list views.
@@ -3099,6 +3335,14 @@ impl Model for BvrApp {
 
         // -- Body: mode-aware panes with breakpoint-aware widths --------------
         let body = rows[1];
+        if matches!(self.mode, ViewMode::History) {
+            self.render_go_history(frame, body);
+            Paragraph::new(RichText::from_lines([
+                self.main_go_status_bar(rows[2].width)
+            ]))
+            .render(rows[2], frame);
+            return;
+        }
         let graph_single_pane =
             matches!(self.mode, ViewMode::Graph) && matches!(bp, Breakpoint::Narrow);
         let history_layout = if matches!(self.mode, ViewMode::History) {
@@ -9151,6 +9395,1211 @@ impl BvrApp {
             .render(area, frame);
     }
 
+    /// Render the history view as Go bv does: a four-line header (title and
+    /// mode, stats badges, filter status, rule) over rounded panes — beads |
+    /// commits | details, with a timeline pane in wide bead mode, and
+    /// commits | related beads | details in git mode.
+    fn render_go_history(&self, frame: &mut Frame, area: Rect) {
+        let header_rows = area.height.min(4);
+        let header = Rect::new(area.x, area.y, area.width, header_rows);
+        Paragraph::new(RichText::from_lines(
+            self.go_history_header_lines(usize::from(area.width)),
+        ))
+        .wrap(ftui::text::WrapMode::None)
+        .render(header, frame);
+        let body = Rect::new(
+            area.x,
+            area.y.saturating_add(header_rows),
+            area.width,
+            area.height.saturating_sub(header_rows),
+        );
+        if body.height < 3 {
+            return;
+        }
+
+        let git = matches!(self.history_view_mode, HistoryViewMode::Git);
+        let layout = HistoryLayout::from_width(area.width);
+        let split_state = pane_split_state();
+        let list_focused = self.focus == FocusPane::List && !self.history_file_tree_focus;
+        let middle_focused = self.focus == FocusPane::Middle;
+        let detail_focused = self.focus == FocusPane::Detail;
+
+        let render_panel = |frame: &mut Frame, area: Rect, focused: bool, lines: Vec<RichLine>| {
+            semantic_panel_block("", focused, SemanticTone::Accent).render(area, frame);
+            Paragraph::new(RichText::from_lines(lines))
+                .wrap(ftui::text::WrapMode::None)
+                .render(block_inner_rect(area), frame);
+        };
+        let render_list = |frame: &mut Frame, area: Rect| {
+            let (list_area, tree_area) = if self.history_show_file_tree && area.height >= 10 {
+                let tree_height = area.height / 2;
+                (
+                    Rect::new(area.x, area.y, area.width, area.height - tree_height),
+                    Some(Rect::new(
+                        area.x,
+                        area.y + area.height - tree_height,
+                        area.width,
+                        tree_height,
+                    )),
+                )
+            } else {
+                (area, None)
+            };
+            let inner = block_inner_rect(list_area);
+            let lines = if git {
+                self.go_history_commit_list_lines(usize::from(inner.width), inner.height)
+            } else {
+                self.go_history_bead_list_lines(usize::from(inner.width), inner.height)
+            };
+            render_panel(frame, list_area, list_focused, lines);
+            if let Some(tree_area) = tree_area {
+                let inner = block_inner_rect(tree_area);
+                render_panel(
+                    frame,
+                    tree_area,
+                    self.history_file_tree_focus,
+                    self.go_history_file_tree_lines(usize::from(inner.width), inner.height),
+                );
+            }
+        };
+        let render_middle = |frame: &mut Frame, area: Rect| {
+            let inner = block_inner_rect(area);
+            let lines = if git {
+                self.go_history_related_bead_lines(usize::from(inner.width), inner.height)
+            } else {
+                self.go_history_bead_commit_lines(usize::from(inner.width), inner.height)
+            };
+            render_panel(frame, area, middle_focused, lines);
+        };
+        let render_detail = |frame: &mut Frame, area: Rect| {
+            let inner = block_inner_rect(area);
+            let lines = if git {
+                self.go_history_git_detail_lines(usize::from(inner.width), inner.height)
+            } else {
+                self.go_history_bead_detail_lines(usize::from(inner.width), inner.height)
+            };
+            render_panel(frame, area, detail_focused, lines);
+            record_detail_content_area(inner);
+        };
+
+        if !layout.has_middle_pane() {
+            let bp = Breakpoint::from_width(area.width);
+            let panes = Flex::horizontal()
+                .constraints([
+                    Constraint::Percentage(split_state.two_pane_list_pct(bp)),
+                    Constraint::Percentage(split_state.two_pane_detail_pct(bp)),
+                ])
+                .split(body);
+            render_list(frame, panes[0]);
+            render_detail(frame, panes[1]);
+            return;
+        }
+
+        match split_state.history_pcts(layout, self.history_view_mode) {
+            PaneSplitPreset::Two(pcts) => {
+                let panes = Flex::horizontal()
+                    .constraints(pcts.map(Constraint::Percentage))
+                    .split(body);
+                render_list(frame, panes[0]);
+                render_detail(frame, panes[1]);
+            }
+            PaneSplitPreset::Four(pcts) => {
+                let panes = Flex::horizontal()
+                    .constraints(pcts.map(Constraint::Percentage))
+                    .split(body);
+                render_list(frame, panes[0]);
+                let inner = block_inner_rect(panes[1]);
+                render_panel(
+                    frame,
+                    panes[1],
+                    false,
+                    self.go_history_timeline_lines(panes[1], usize::from(inner.width)),
+                );
+                render_middle(frame, panes[2]);
+                render_detail(frame, panes[3]);
+            }
+            PaneSplitPreset::Three(pcts) => {
+                let panes = Flex::horizontal()
+                    .constraints(pcts.map(Constraint::Percentage))
+                    .split(body);
+                render_list(frame, panes[0]);
+                render_middle(frame, panes[1]);
+                render_detail(frame, panes[2]);
+            }
+        }
+    }
+
+    /// Go bv's history header: `HISTORY ◈ Beads` with the search box or
+    /// close hint on the right, the stats badges, the filter status, and a
+    /// full-width rule.
+    fn go_history_header_lines(&self, width: usize) -> Vec<RichLine> {
+        let git = matches!(self.history_view_mode, HistoryViewMode::Git);
+        let mut title = vec![
+            RichSpan::styled(" HISTORY ", tokens::primary_bold()),
+            RichSpan::styled(
+                if git { " ◉ Git " } else { " ◈ Beads " },
+                Style::new().fg(tokens::status_fg("in_progress")).bold(),
+            ),
+        ];
+        let right = if self.history_search_active {
+            vec![
+                RichSpan::styled("╭ ", tokens::primary_bold()),
+                RichSpan::styled(
+                    format!("[{}] ", self.history_search_mode.label()),
+                    tokens::row_id(),
+                ),
+                RichSpan::raw(format!("{}▏", self.history_search_query)),
+                RichSpan::styled(" ╮", tokens::primary_bold()),
+                RichSpan::styled(" [Esc] cancel ", tokens::muted_text()),
+            ]
+        } else {
+            vec![RichSpan::styled(
+                " [/] search  [H] close ",
+                tokens::muted_text(),
+            )]
+        };
+        let used: usize = title
+            .iter()
+            .chain(right.iter())
+            .map(|span| display_width(span.content.as_ref()))
+            .sum();
+        title.push(RichSpan::raw(" ".repeat(width.saturating_sub(used).max(1))));
+        title.extend(right);
+
+        // Stats badges.
+        let value = |text: String| RichSpan::styled(text, tokens::primary_bold());
+        let label = |text: &str| RichSpan::styled(text.to_string(), tokens::row_id());
+        let mut badges: Vec<Vec<RichSpan<'static>>> = Vec::new();
+        if let Some(cache) = self.history_git_cache.as_ref() {
+            let commit_index: BTreeMap<String, Vec<String>> = cache
+                .commit_bead_confidence
+                .iter()
+                .map(|(sha, beads)| {
+                    (
+                        sha.clone(),
+                        beads.iter().map(|(id, _)| id.clone()).collect(),
+                    )
+                })
+                .collect();
+            let stats = crate::analysis::git_history::compute_history_stats(
+                &cache.histories,
+                &commit_index,
+                BTreeMap::new(),
+            );
+            badges.push(vec![
+                value(stats.beads_with_commits.to_string()),
+                label(" beads"),
+            ]);
+            badges.push(vec![
+                value(stats.total_commits.to_string()),
+                label(" commits"),
+            ]);
+            badges.push(vec![
+                value(stats.unique_authors.to_string()),
+                label(" authors"),
+            ]);
+            if let Some(days) = stats.avg_cycle_time_days {
+                badges.push(vec![
+                    label("⌀ "),
+                    value(go_format_cycle_time(days)),
+                    label(" cycle"),
+                ]);
+            }
+            if stats.avg_commits_per_bead > 0.0 {
+                badges.push(vec![
+                    value(format!("{:.1}", stats.avg_commits_per_bead)),
+                    label(" commits/bead"),
+                ]);
+            }
+        } else {
+            badges.push(vec![
+                value(self.analyzer.issues.len().to_string()),
+                label(" beads"),
+            ]);
+            badges.push(vec![label("git history not loaded")]);
+        }
+        let mut stats = vec![RichSpan::raw(" ")];
+        for (idx, badge) in badges.into_iter().enumerate() {
+            if idx > 0 {
+                stats.push(RichSpan::styled("  •  ", tokens::muted_text()));
+            }
+            stats.extend(badge);
+        }
+
+        // Filter status.
+        let mut active = Vec::new();
+        let min_confidence = self.history_min_confidence();
+        if min_confidence > 0.0 {
+            active.push(format!("≥{:.0}% conf", min_confidence * 100.0));
+        }
+        if let Some(path) = self.history_file_tree_filter.as_deref() {
+            active.push(format!("file:{path}"));
+        }
+        let query = self.history_search_query.trim();
+        if !query.is_empty() {
+            active.push(format!("\"{query}\""));
+        }
+        let mut filter = Vec::new();
+        if !active.is_empty() {
+            filter.push(RichSpan::styled(
+                format!(" Filter: {} ", active.join(", ")),
+                tokens::row_id(),
+            ));
+            filter.push(RichSpan::styled(" │ ", tokens::muted_text()));
+        }
+        let showing = if git {
+            let total = self
+                .history_git_cache
+                .as_ref()
+                .map_or(0, |cache| cache.commits.len());
+            let shown = self.history_git_visible_commit_indices().len();
+            if shown == total {
+                format!(" Showing all {total} commits")
+            } else {
+                format!(" Showing {shown}/{total} commits")
+            }
+        } else {
+            let total = self.visible_issue_indices().len();
+            let shown = self.history_visible_issue_indices().len();
+            if shown == total {
+                format!(" Showing all {total} beads")
+            } else {
+                format!(" Showing {shown}/{total} beads")
+            }
+        };
+        filter.push(RichSpan::styled(showing, tokens::muted_text().italic()));
+
+        vec![
+            RichLine::from_spans(title),
+            RichLine::from_spans(stats),
+            RichLine::from_spans(filter),
+            RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]),
+        ]
+    }
+
+    /// Bold primary pane header plus its rule, as every Go history pane has.
+    fn go_history_pane_header(title: &str, width: usize) -> [RichLine; 2] {
+        [
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(title, width, "…"),
+                tokens::primary_bold(),
+            )]),
+            RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]),
+        ]
+    }
+
+    /// First row to show so that `selected` stays inside `rows` visible rows.
+    const fn go_history_scroll_start(selected: usize, rows: usize) -> usize {
+        if rows == 0 || selected < rows {
+            0
+        } else {
+            selected + 1 - rows
+        }
+    }
+
+    /// Lifecycle events for a bead: git-derived when correlation ran,
+    /// otherwise from the bead's own created/updated/closed timestamps.
+    fn go_history_events(&self, issue_id: &str) -> Vec<GoHistoryEvent> {
+        if let Some(history) = self
+            .history_git_cache
+            .as_ref()
+            .and_then(|cache| cache.histories.get(issue_id))
+            .filter(|history| !history.events.is_empty())
+        {
+            return history
+                .events
+                .iter()
+                .map(|event| GoHistoryEvent {
+                    kind: event.event_type.clone(),
+                    at: parse_history_timestamp(&event.timestamp),
+                    author: event.author.clone(),
+                })
+                .collect();
+        }
+        self.analyzer
+            .history(Some(issue_id), 1)
+            .into_iter()
+            .next()
+            .map(|history| {
+                history
+                    .events
+                    .into_iter()
+                    .filter(|event| event.kind != "dependency")
+                    .map(|event| GoHistoryEvent {
+                        kind: event.kind,
+                        at: event.timestamp,
+                        author: String::new(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Left pane in bead mode: `BEADS WITH HISTORY` rows of status glyph,
+    /// ID, title, commit count, and lifecycle-event badge.
+    fn go_history_bead_list_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let mut lines = Vec::from(Self::go_history_pane_header("BEADS WITH HISTORY", width));
+        let visible = self.history_visible_issue_indices();
+        if visible.is_empty() {
+            let query = self.history_search_query.trim();
+            let message = if !query.is_empty() {
+                format!("No beads match \"{query}\"")
+            } else if self.visible_issue_indices().is_empty() {
+                format!("No issues match filter: {}", self.list_filter.label())
+            } else {
+                "No beads match the current filters".to_string()
+            };
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&message, width, "…"),
+                tokens::muted_text(),
+            )]));
+            return lines;
+        }
+        let rows = usize::from(height).saturating_sub(2);
+        let selected_pos = visible
+            .iter()
+            .position(|&index| index == self.selected)
+            .unwrap_or(0);
+        let start = Self::go_history_scroll_start(selected_pos, rows);
+        let has_git = self.history_git_cache.is_some();
+        let id_width = visible
+            .iter()
+            .skip(start)
+            .take(rows)
+            .filter_map(|&index| self.analyzer.issues.get(index))
+            .map(|issue| display_width(&issue.id))
+            .max()
+            .unwrap_or(1)
+            .min(12)
+            .min(width / 3);
+        for &index in visible.iter().skip(start).take(rows) {
+            let Some(issue) = self.analyzer.issues.get(index) else {
+                continue;
+            };
+            let selected = index == self.selected;
+            let commit_count = if has_git {
+                format!(
+                    "{} commits",
+                    self.history_filtered_bead_commits(&issue.id).len()
+                )
+            } else {
+                String::new()
+            };
+            let events = self.go_history_events(&issue.id).len();
+            // The event badge gives way before the title shrinks to nothing.
+            let fixed = 2 + 2 + id_width + 1 + display_width(&commit_count) + 1;
+            let badge = if events > 0 && fixed + 4 + display_width(&format!(" ⚡{events}")) <= width
+            {
+                format!("⚡{events}")
+            } else {
+                String::new()
+            };
+            let right_width = display_width(&commit_count)
+                + if badge.is_empty() {
+                    0
+                } else {
+                    display_width(&badge) + 1
+                };
+            let title_width = width.saturating_sub(2 + 2 + id_width + 1 + right_width + 1);
+            let title = truncate_with_ellipsis(&issue.title, title_width, "…");
+            let title_pad = title_width.saturating_sub(display_width(&title));
+            let highlight = selected && self.focus == FocusPane::List;
+            let mut spans = vec![
+                RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+                RichSpan::styled(
+                    format!("{} ", go_history_status_icon(&issue.status)),
+                    Style::new().fg(tokens::status_fg(&issue.status)),
+                ),
+                RichSpan::styled(
+                    format!(
+                        "{:<id_width$} ",
+                        truncate_with_ellipsis(&issue.id, id_width, "…")
+                    ),
+                    if highlight {
+                        tokens::primary_bold()
+                    } else {
+                        tokens::row_id()
+                    },
+                ),
+                RichSpan::styled(
+                    format!("{title}{} ", " ".repeat(title_pad)),
+                    tokens::row_title(highlight),
+                ),
+                RichSpan::styled(commit_count, tokens::muted_text()),
+            ];
+            if !badge.is_empty() {
+                spans.push(RichSpan::raw(" "));
+                spans.push(RichSpan::styled(badge, tokens::row_id()));
+            }
+            lines.push(if selected {
+                go_highlight_row(spans, width)
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        lines
+    }
+
+    /// Left pane in git mode: `COMMITS` rows of short SHA, subject, and the
+    /// count of related beads.
+    fn go_history_commit_list_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let mut lines = Vec::from(Self::go_history_pane_header("COMMITS", width));
+        let Some(cache) = self.history_git_cache.as_ref() else {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "Git history not loaded",
+                tokens::muted_text(),
+            )]));
+            return lines;
+        };
+        let visible = self.history_git_visible_commit_indices();
+        if visible.is_empty() {
+            let query = self.history_search_query.trim();
+            let message = if query.is_empty() {
+                "No commits with bead correlations found".to_string()
+            } else {
+                format!("No commits match \"{query}\"")
+            };
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&message, width, "…"),
+                tokens::muted_text(),
+            )]));
+            return lines;
+        }
+        let rows = usize::from(height).saturating_sub(2);
+        let cursor = self.history_event_cursor.min(visible.len() - 1);
+        let start = Self::go_history_scroll_start(cursor, rows);
+        for (slot, &commit_idx) in visible.iter().enumerate().skip(start).take(rows) {
+            let Some(commit) = cache.commits.get(commit_idx) else {
+                continue;
+            };
+            let selected = slot == cursor;
+            let highlight = selected && self.focus == FocusPane::List;
+            let count = format!(
+                "[{}]",
+                self.history_git_related_beads_for_commit(&commit.sha).len()
+            );
+            let subject = commit.message.lines().next().unwrap_or_default();
+            let msg_width = width.saturating_sub(
+                2 + display_width(&commit.short_sha) + 1 + 1 + display_width(&count),
+            );
+            let msg = truncate_with_ellipsis(subject, msg_width, "…");
+            let pad = msg_width.saturating_sub(display_width(&msg));
+            let sha_style = if highlight {
+                tokens::primary_bold()
+            } else {
+                Style::new().fg(tokens::status_fg("review"))
+            };
+            let spans = vec![
+                RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+                RichSpan::styled(format!("{} ", commit.short_sha), sha_style),
+                RichSpan::styled(
+                    format!("{msg}{} ", " ".repeat(pad)),
+                    tokens::row_title(highlight),
+                ),
+                RichSpan::styled(count, tokens::row_id()),
+            ];
+            lines.push(if selected {
+                go_highlight_row(spans, width)
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        lines
+    }
+
+    /// Middle pane in bead mode: the selected bead's commits, scrolled to
+    /// the commit cursor, with Go's `↕ shown/total (pct%)` indicator.
+    fn go_history_bead_commit_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let mut lines = Vec::from(Self::go_history_pane_header("COMMITS", width));
+        let Some(issue) = self.selected_issue() else {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "Select a bead to view commits",
+                tokens::muted_text(),
+            )]));
+            return lines;
+        };
+        let commits = self.history_filtered_bead_commits(&issue.id);
+        if commits.is_empty() {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(
+                    &format!("No commits correlated with {}", issue.id),
+                    width,
+                    "…",
+                ),
+                tokens::muted_text(),
+            )]));
+            return lines;
+        }
+        let total = commits.len();
+        let mut rows = usize::from(height).saturating_sub(2);
+        if total > rows {
+            rows = rows.saturating_sub(1);
+        }
+        let cursor = self.history_bead_commit_cursor.min(total - 1);
+        let start = Self::go_history_scroll_start(cursor, rows);
+        let end = (start + rows).min(total);
+        for (idx, commit) in commits.iter().enumerate().take(end).skip(start) {
+            let selected = idx == cursor && self.focus == FocusPane::Middle;
+            let msg_width = width.saturating_sub(2 + display_width(&commit.short_sha) + 1);
+            let subject = commit.message.lines().next().unwrap_or_default();
+            let spans = vec![
+                RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+                RichSpan::styled(
+                    format!("{} ", commit.short_sha),
+                    if selected {
+                        tokens::primary_bold()
+                    } else {
+                        Style::new().fg(tokens::status_fg("review"))
+                    },
+                ),
+                RichSpan::styled(
+                    truncate_with_ellipsis(subject, msg_width, "…"),
+                    tokens::row_title(selected),
+                ),
+            ];
+            lines.push(if selected {
+                go_highlight_row(spans, width)
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        if total > rows {
+            let max_scroll = total - rows;
+            let pct = start * 100 / max_scroll.max(1);
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                format!("↕ {end}/{total} ({pct}%)"),
+                tokens::muted_text().italic(),
+            )]));
+        }
+        lines
+    }
+
+    /// Middle pane in git mode: beads related to the selected commit.
+    fn go_history_related_bead_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let mut lines = Vec::from(Self::go_history_pane_header("RELATED BEADS", width));
+        let Some(commit) = self.selected_history_git_commit() else {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "Select a commit to view beads",
+                tokens::muted_text(),
+            )]));
+            return lines;
+        };
+        let related = self.history_git_related_beads_for_commit(&commit.sha);
+        let total = related.len();
+        let mut rows = usize::from(height).saturating_sub(2);
+        if total > rows {
+            rows = rows.saturating_sub(1);
+        }
+        let cursor = self
+            .history_related_bead_cursor
+            .min(total.saturating_sub(1));
+        let start = Self::go_history_scroll_start(cursor, rows);
+        let end = (start + rows).min(total);
+        for (idx, bead_id) in related.iter().enumerate().take(end).skip(start) {
+            let selected = idx == cursor && self.focus == FocusPane::Middle;
+            lines.push(self.go_history_related_bead_row(bead_id, selected, width, false));
+        }
+        if total > rows {
+            let pct = start * 100 / (total - rows).max(1);
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                format!("↕ {end}/{total} ({pct}%)"),
+                tokens::muted_text().italic(),
+            )]));
+        }
+        lines
+    }
+
+    fn go_history_related_bead_row(
+        &self,
+        bead_id: &str,
+        selected: bool,
+        width: usize,
+        with_id: bool,
+    ) -> RichLine {
+        let issue = self.issue_by_id(bead_id);
+        let status = issue.map_or("open", |issue| issue.status.as_str());
+        let title = issue.map_or(bead_id, |issue| issue.title.as_str());
+        let mut spans = vec![
+            RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+            RichSpan::styled(
+                format!("{} ", go_history_status_icon(status)),
+                Style::new().fg(tokens::status_fg(status)),
+            ),
+        ];
+        if with_id {
+            spans.push(RichSpan::styled(format!("{bead_id} "), tokens::row_id()));
+        }
+        let used: usize = spans
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum();
+        spans.push(RichSpan::styled(
+            truncate_with_ellipsis(title, width.saturating_sub(used), "…"),
+            tokens::row_title(selected),
+        ));
+        if selected {
+            go_highlight_row(spans, width)
+        } else {
+            RichLine::from_spans(spans)
+        }
+    }
+
+    /// Wide bead mode's timeline pane: `TIMELINE: <id>` centered over the
+    /// bead's lifecycle-and-commit timeline.
+    fn go_history_timeline_lines(&self, pane: Rect, width: usize) -> Vec<RichLine> {
+        let title = self.selected_issue().map_or_else(
+            || "TIMELINE".to_string(),
+            |issue| format!("TIMELINE: {}", issue.id),
+        );
+        let title = truncate_with_ellipsis(&title, width, "…");
+        let pad = width.saturating_sub(display_width(&title)) / 2;
+        let mut lines = vec![RichLine::from_spans([
+            RichSpan::raw(" ".repeat(pad)),
+            RichSpan::styled(title, tokens::primary_bold()),
+        ])];
+        let text = self.history_timeline_text(pane.width, pane.height);
+        let mut body = text.lines().peekable();
+        if body
+            .peek()
+            .is_some_and(|line| line.starts_with("Timeline:") || line.starts_with("Cycle view for"))
+        {
+            body.next();
+        }
+        for line in body {
+            let style = if line.starts_with("Cycle:") || line.starts_with("Commits:") {
+                tokens::row_id()
+            } else {
+                Style::new()
+            };
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(line, width, "…"),
+                style,
+            )]));
+        }
+        lines
+    }
+
+    /// File tree pane (`f`): directories and files touched by correlated
+    /// commits, with change counts; the cursor shows while it has focus.
+    fn go_history_file_tree_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let mut lines = Vec::from(Self::go_history_pane_header("FILE TREE", width));
+        let flat = self.history_flat_file_list();
+        if flat.is_empty() {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "No file data available",
+                tokens::muted_text(),
+            )]));
+            return lines;
+        }
+        if let Some(filter) = self.history_file_tree_filter.as_deref() {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&format!("Filter: {filter}"), width, "…"),
+                tokens::info_text(),
+            )]));
+        }
+        let rows = usize::from(height).saturating_sub(lines.len());
+        let cursor = self.history_file_tree_cursor.min(flat.len() - 1);
+        let start = Self::go_history_scroll_start(cursor, rows);
+        for (idx, entry) in flat.iter().enumerate().skip(start).take(rows) {
+            let selected = self.history_file_tree_focus && idx == cursor;
+            let filtered = self
+                .history_file_tree_filter
+                .as_deref()
+                .is_some_and(|filter| filter == entry.path);
+            let name = if entry.is_dir {
+                format!("{}/", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            let spans = vec![
+                RichSpan::styled(if selected { "▸ " } else { "  " }, tokens::primary_bold()),
+                RichSpan::raw("  ".repeat(entry.level)),
+                RichSpan::styled(
+                    if entry.is_dir { "📁 " } else { "📄 " },
+                    tokens::muted_text(),
+                ),
+                RichSpan::styled(
+                    name,
+                    if filtered {
+                        tokens::primary_bold()
+                    } else if entry.is_dir {
+                        tokens::info_text()
+                    } else {
+                        tokens::row_title(selected)
+                    },
+                ),
+                RichSpan::styled(format!(" ({})", entry.change_count), tokens::muted_text()),
+            ];
+            let line = RichLine::from_spans(spans);
+            let plain = line.to_plain_text();
+            let line = if display_width(&plain) > width {
+                RichLine::from_spans([RichSpan::raw(truncate_with_ellipsis(&plain, width, "…"))])
+            } else {
+                line
+            };
+            lines.push(if selected {
+                go_highlight_row(line.spans().to_vec(), width)
+            } else {
+                line
+            });
+        }
+        lines
+    }
+
+    /// Right pane in bead mode: `COMMIT DETAILS` with the bead, its recent
+    /// lifecycle events, every correlated commit (type glyph, SHA, age,
+    /// author badge, conventional subject, confidence and method, changed
+    /// files), and a stats footer.
+    fn go_history_bead_detail_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let height = usize::from(height);
+        let Some(issue) = self.selected_issue() else {
+            return vec![RichLine::from_spans([RichSpan::styled(
+                "No bead selected",
+                tokens::muted_text(),
+            )])];
+        };
+        let now = tui_now();
+        let mut lines = vec![RichLine::from_spans([RichSpan::styled(
+            "COMMIT DETAILS",
+            tokens::primary_bold(),
+        )])];
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            truncate_with_ellipsis(
+                &format!(
+                    "{} {}: {}",
+                    go_history_status_icon(&issue.status),
+                    issue.id,
+                    issue.title
+                ),
+                width,
+                "…",
+            ),
+            tokens::row_id(),
+        )]));
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "─".repeat(width),
+            tokens::muted_text(),
+        )]));
+
+        // Lifecycle: header plus the most recent events, newest first.
+        let events = self.go_history_events(&issue.id);
+        if !events.is_empty() {
+            const MAX_EVENT_LINES: usize = 5;
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                format!("LIFECYCLE ({})", events.len()),
+                tokens::row_id().bold(),
+            )]));
+            let mut available = MAX_EVENT_LINES - 1;
+            let needs_more = events.len() > available;
+            if needs_more {
+                available -= 1;
+            }
+            let mut shown = 0usize;
+            for (idx, event) in events.iter().enumerate().rev().take(available) {
+                let (icon, icon_style) = go_history_event_icon(&event.kind);
+                let mut age = go_history_relative_time(event.at, now);
+                age.truncate(age.char_indices().nth(7).map_or(age.len(), |(i, _)| i));
+                let mut spans = vec![
+                    RichSpan::styled(if idx == 0 { "└ " } else { "│ " }, tokens::muted_text()),
+                    RichSpan::styled(format!("{icon} "), icon_style),
+                    RichSpan::styled(format!("{age:<8}"), tokens::muted_text()),
+                ];
+                if !event.author.is_empty() {
+                    spans.push(RichSpan::styled(
+                        format!(" {}", go_author_initials(&event.author)),
+                        tokens::row_id(),
+                    ));
+                }
+                lines.push(RichLine::from_spans(spans));
+                shown += 1;
+            }
+            if needs_more {
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    format!("  +{} more", events.len() - shown),
+                    tokens::muted_text().italic(),
+                )]));
+            }
+            lines.push(RichLine::raw(""));
+        }
+
+        let commits = self.history_filtered_bead_commits(&issue.id);
+        let cursor = self
+            .history_bead_commit_cursor
+            .min(commits.len().saturating_sub(1));
+        let mut body: Vec<RichLine> = Vec::new();
+        let mut selected_span = (0usize, 0usize);
+        if commits.is_empty() {
+            let message = if self.history_git_cache.is_some() {
+                format!("No commits correlated with {}", issue.id)
+            } else {
+                "Git history not loaded".to_string()
+            };
+            body.push(RichLine::from_spans([RichSpan::styled(
+                message,
+                tokens::muted_text(),
+            )]));
+        }
+        for (idx, commit) in commits.iter().enumerate() {
+            let selected = idx == cursor && self.focus != FocusPane::List;
+            let start = body.len();
+            let url = if selected {
+                self.history_selected_commit_url()
+            } else {
+                None
+            };
+            body.extend(Self::go_history_commit_detail(
+                commit, width, selected, now, url,
+            ));
+            if selected {
+                selected_span = (start, body.len());
+            }
+            if idx + 1 < commits.len() {
+                body.push(RichLine::raw(""));
+            }
+        }
+
+        // Stats footer (rule, totals, key hints) pinned to the bottom.
+        let footer_height = 3usize;
+        let content_rows = height.saturating_sub(lines.len() + footer_height);
+        let mut offset = if selected_span.1 > content_rows {
+            selected_span
+                .0
+                .min(selected_span.1.saturating_sub(content_rows))
+        } else {
+            0
+        };
+        if self.focus == FocusPane::Detail {
+            offset = offset.saturating_add(self.detail_scroll_offset);
+        }
+        offset = offset.min(body.len().saturating_sub(content_rows));
+        let shown = body
+            .into_iter()
+            .skip(offset)
+            .take(content_rows)
+            .collect::<Vec<_>>();
+        let pad = content_rows.saturating_sub(shown.len());
+        lines.extend(shown);
+        lines.extend(std::iter::repeat_with(|| RichLine::raw("")).take(pad));
+
+        let mut files = BTreeSet::new();
+        let (mut additions, mut deletions) = (0i64, 0i64);
+        for commit in &commits {
+            for file in &commit.files {
+                files.insert(file.path.as_str());
+                additions += file.insertions;
+                deletions += file.deletions;
+            }
+        }
+        let avg_confidence = if commits.is_empty() {
+            0.0
+        } else {
+            commits.iter().map(|commit| commit.confidence).sum::<f64>() / commits.len() as f64
+        };
+        let sep = || RichSpan::styled(" • ", tokens::muted_text());
+        let mut stats = vec![
+            RichSpan::styled(format!("{} commits", commits.len()), tokens::muted_text()),
+            sep(),
+            RichSpan::styled(format!("{} files", files.len()), tokens::muted_text()),
+        ];
+        if additions > 0 || deletions > 0 {
+            stats.push(sep());
+            stats.push(RichSpan::styled(
+                format!("+{additions}"),
+                tokens::success_text(),
+            ));
+            stats.push(RichSpan::styled("/", tokens::muted_text()));
+            stats.push(RichSpan::styled(
+                format!("-{deletions}"),
+                tokens::muted_text(),
+            ));
+        }
+        stats.push(sep());
+        stats.push(RichSpan::styled(
+            format!("{:.0}% avg", avg_confidence * 100.0),
+            go_confidence_style(avg_confidence),
+        ));
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "─".repeat(width),
+            tokens::muted_text(),
+        )]));
+        lines.push(RichLine::from_spans(stats));
+        lines.push(self.go_history_detail_hint("J/K:nav  y:copy  o:open  g:graph", width));
+        lines
+    }
+
+    /// Footer hint of a history detail pane; a pending status message (copy
+    /// or open result) takes its place.
+    fn go_history_detail_hint(&self, hint: &str, width: usize) -> RichLine {
+        if self.history_status_msg.is_empty() {
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(hint, width, "…"),
+                tokens::footer_hint().italic(),
+            )])
+        } else {
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&self.history_status_msg, width, "…"),
+                tokens::success_text().bold(),
+            )])
+        }
+    }
+
+    /// One commit in Go bv's bead-mode detail pane.
+    fn go_history_commit_detail(
+        commit: &HistoryCommitCompat,
+        width: usize,
+        selected: bool,
+        now: DateTime<Utc>,
+        url: Option<String>,
+    ) -> Vec<RichLine> {
+        let mut lines = Vec::new();
+        let at = parse_history_timestamp(&commit.timestamp);
+        let icon = go_commit_type_indicator(&commit.message);
+        let mut header = vec![RichSpan::styled(
+            if selected { "▸ " } else { "  " },
+            tokens::primary_bold(),
+        )];
+        if !icon.is_empty() {
+            header.push(RichSpan::raw(format!("{icon} ")));
+        }
+        let sha = RichSpan::styled(
+            commit.short_sha.clone(),
+            if selected {
+                tokens::primary_bold()
+            } else {
+                Style::new().fg(tokens::status_fg("review"))
+            },
+        );
+        header.push(match url {
+            Some(url) => sha.link(url),
+            None => sha,
+        });
+        header.push(RichSpan::styled(
+            format!(" ({})", go_history_relative_time(at, now)),
+            tokens::muted_text().italic(),
+        ));
+        lines.push(if selected {
+            go_highlight_row(header, width)
+        } else {
+            RichLine::from_spans(header)
+        });
+
+        let date = at.map_or_else(
+            || commit.timestamp.clone(),
+            |at| at.format("%Y-%m-%d %H:%M").to_string(),
+        );
+        let initials = format!(" {} ", go_author_initials(&commit.author));
+        let author_width = width.saturating_sub(4 + display_width(&initials) + 1 + 3 + 16);
+        lines.push(RichLine::from_spans([
+            RichSpan::raw("    "),
+            RichSpan::styled(
+                initials,
+                Style::new()
+                    .fg(tokens::status_fg("open"))
+                    .bg(tokens::row_highlight_bg())
+                    .bold(),
+            ),
+            RichSpan::raw(" "),
+            RichSpan::styled(
+                truncate_with_ellipsis(&commit.author, author_width.max(4), "…"),
+                tokens::row_id(),
+            ),
+            RichSpan::styled(format!(" • {date}"), tokens::muted_text()),
+        ]));
+
+        let cc = go_parse_conventional_commit(&commit.message);
+        if let Some(kind) = cc.kind {
+            let scope = if cc.scope.is_empty() {
+                String::new()
+            } else {
+                format!("({})", cc.scope)
+            };
+            let mut spans = vec![
+                RichSpan::raw("    "),
+                RichSpan::styled(kind, tokens::primary_bold()),
+                RichSpan::raw(scope),
+            ];
+            if cc.breaking {
+                spans.push(RichSpan::styled("!", tokens::status_message(true)));
+            }
+            spans.push(RichSpan::raw(": "));
+            let used: usize = spans
+                .iter()
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            spans.push(RichSpan::raw(truncate_with_ellipsis(
+                &cc.subject,
+                width.saturating_sub(used),
+                "…",
+            )));
+            lines.push(RichLine::from_spans(spans));
+        } else {
+            lines.push(RichLine::from_spans([
+                RichSpan::raw("    "),
+                RichSpan::raw(truncate_with_ellipsis(
+                    &cc.subject,
+                    width.saturating_sub(4),
+                    "…",
+                )),
+            ]));
+        }
+
+        lines.push(RichLine::from_spans([
+            RichSpan::raw("    "),
+            RichSpan::styled(
+                format!("{:.0}% confidence", commit.confidence * 100.0),
+                go_confidence_style(commit.confidence),
+            ),
+            RichSpan::styled(
+                format!(" {}", go_correlation_method_label(&commit.method)),
+                tokens::muted_text(),
+            ),
+        ]));
+
+        if !commit.files.is_empty() {
+            let additions: i64 = commit.files.iter().map(|file| file.insertions).sum();
+            let deletions: i64 = commit.files.iter().map(|file| file.deletions).sum();
+            let mut summary = vec![RichSpan::raw(format!("    {} file(s)", commit.files.len()))];
+            if additions > 0 || deletions > 0 {
+                summary.push(RichSpan::styled(
+                    format!(" +{additions}"),
+                    tokens::success_text(),
+                ));
+                summary.push(RichSpan::styled(
+                    format!(" -{deletions}"),
+                    tokens::muted_text(),
+                ));
+            }
+            lines.push(RichLine::from_spans(summary));
+
+            // Files grouped by directory (in first-seen order), at most five.
+            const MAX_FILES: usize = 5;
+            let mut dirs: Vec<&str> = Vec::new();
+            for file in &commit.files {
+                let dir = file.path.rsplit_once('/').map_or(".", |(dir, _)| dir);
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+            let ordered = dirs.iter().flat_map(|dir| {
+                commit
+                    .files
+                    .iter()
+                    .filter(move |file| file.path.rsplit_once('/').map_or(".", |(d, _)| d) == *dir)
+            });
+            for file in ordered.take(MAX_FILES) {
+                let name = file
+                    .path
+                    .rsplit_once('/')
+                    .map_or(file.path.as_str(), |(_, n)| n);
+                let (glyph, style) = go_file_action(&file.action);
+                let mut spans = vec![
+                    RichSpan::raw("      "),
+                    RichSpan::styled(format!("{glyph} "), style),
+                    RichSpan::raw(truncate_with_ellipsis(
+                        name,
+                        width.saturating_sub(15).max(4),
+                        "…",
+                    )),
+                ];
+                if file.insertions > 0 || file.deletions > 0 {
+                    spans.push(RichSpan::styled(
+                        format!(" +{}", file.insertions),
+                        tokens::success_text(),
+                    ));
+                    spans.push(RichSpan::styled("/", tokens::muted_text()));
+                    spans.push(RichSpan::styled(
+                        format!("-{}", file.deletions),
+                        tokens::muted_text(),
+                    ));
+                }
+                lines.push(RichLine::from_spans(spans));
+            }
+            if commit.files.len() > MAX_FILES {
+                lines.push(RichLine::from_spans([RichSpan::styled(
+                    format!("      +{} more files...", commit.files.len() - MAX_FILES),
+                    tokens::muted_text().italic(),
+                )]));
+            }
+        }
+        lines
+    }
+
+    /// Right pane in git mode: the commit's related beads above its SHA,
+    /// author, date, file count, and full message.
+    fn go_history_git_detail_lines(&self, width: usize, height: u16) -> Vec<RichLine> {
+        let height = usize::from(height);
+        let Some(commit) = self.selected_history_git_commit() else {
+            return vec![RichLine::from_spans([RichSpan::styled(
+                "No commit selected",
+                tokens::muted_text(),
+            )])];
+        };
+        let rule =
+            || RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]);
+        let mut lines = Vec::from(Self::go_history_pane_header("RELATED BEADS", width));
+        let related = self.history_git_related_beads_for_commit(&commit.sha);
+        let cursor = self
+            .history_related_bead_cursor
+            .min(related.len().saturating_sub(1));
+        for (idx, bead_id) in related.iter().enumerate() {
+            let selected = idx == cursor && self.focus == FocusPane::Detail;
+            lines.push(self.go_history_related_bead_row(bead_id, selected, width, true));
+        }
+        lines.push(RichLine::raw(""));
+        lines.push(rule());
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "COMMIT DETAILS",
+            tokens::primary_bold(),
+        )]));
+        lines.push(rule());
+        let field = |text: String, style: Style| {
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&text, width, "…"),
+                style,
+            )])
+        };
+        let sha = field(format!("SHA: {}", commit.sha), tokens::primary_bold());
+        lines.push(match self.history_selected_commit_url() {
+            Some(url) => RichLine::from_spans(
+                sha.spans()
+                    .iter()
+                    .map(|span| span.clone().link(url.clone())),
+            ),
+            None => sha,
+        });
+        lines.push(field(
+            format!("Author: {}", commit.author),
+            tokens::row_id(),
+        ));
+        lines.push(field(
+            format!("Date: {}", commit.timestamp),
+            tokens::muted_text(),
+        ));
+        lines.push(field(
+            format!("Files: {} changed", commit.files.len()),
+            tokens::muted_text(),
+        ));
+        lines.push(RichLine::raw(""));
+        for line in commit.message.lines() {
+            lines.push(field(line.to_string(), Style::new()));
+        }
+
+        let content_rows = height.saturating_sub(2);
+        let offset = if self.focus == FocusPane::Detail {
+            self.detail_scroll_offset
+                .min(lines.len().saturating_sub(content_rows))
+        } else {
+            0
+        };
+        let mut lines: Vec<RichLine> = lines.into_iter().skip(offset).take(content_rows).collect();
+        while lines.len() < content_rows {
+            lines.push(RichLine::raw(""));
+        }
+        lines.push(rule());
+        lines.push(self.go_history_detail_hint("J/K:bead  y:copy  o:open  g:graph", width));
+        lines
+    }
+
     /// Render `?` help as Go bv's keyboard-shortcut modal: a titled frame of
     /// color-coded rounded section boxes in balanced columns. Returns false
     /// when the sections do not fit, so the caller can use the scrollable
@@ -10151,6 +11600,16 @@ impl BvrApp {
             }
         } else if matches!(self.mode, ViewMode::Insights) {
             format!(" {} • L:labels • h:detail ", self.insights_panel.label())
+        } else if matches!(self.mode, ViewMode::History) {
+            let view = if matches!(self.history_view_mode, HistoryViewMode::Git) {
+                "b:beads"
+            } else {
+                "v:git"
+            };
+            format!(
+                " ≥{:.0}% c:conf • {view} • f:files • /:search ",
+                self.history_min_confidence() * 100.0
+            )
         } else if matches!(self.mode, ViewMode::Board) {
             if self.board_search_active || !self.board_search_query.is_empty() {
                 let matches = self.board_search_matches().len();
@@ -10241,7 +11700,22 @@ impl BvrApp {
 
         let sep = " │ ";
         let mut hints: Vec<(&str, &str)> = Vec::new();
-        if matches!(self.mode, ViewMode::Actionable) {
+        if matches!(self.mode, ViewMode::History) {
+            if self.history_file_tree_focus {
+                hints.extend([("j/k", " tree"), ("⏎", " filter"), ("esc", " close tree")]);
+            } else {
+                hints.extend([
+                    ("j/k", " nav"),
+                    ("tab", " focus"),
+                    ("⏎", " jump"),
+                    ("y", " copy"),
+                ]);
+                if self.history_selected_commit_url().is_some() {
+                    hints.push(("o", " open commit"));
+                }
+                hints.push(("H", " close"));
+            }
+        } else if matches!(self.mode, ViewMode::Actionable) {
             hints.extend([
                 ("j/k", " nav"),
                 ("tab", " tracks/items"),
@@ -17373,6 +18847,12 @@ pub fn render_debug_view(
     if matches!(mode, ViewMode::History) && matches!(kind, DebugRenderKind::Layout) {
         app.history_view_mode = HistoryViewMode::Bead;
     }
+    // Show history as the interactive viewer does once git correlation has
+    // run. Tests keep the repository's live git log out of their renders.
+    #[cfg(not(test))]
+    if matches!(mode, ViewMode::History) {
+        app.ensure_git_history_loaded();
+    }
     let mut pool = ftui::GraphemePool::default();
     let mut frame = Frame::new(width, height, &mut pool);
     app.view(&mut frame);
@@ -22732,28 +24212,32 @@ mod tests {
     fn history_standard_bead_renders_three_legacy_panes() {
         let app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
         let text = render_app(&app, 120, 30);
-        assert!(text.contains("Beads With History [focus]"));
-        assert!(text.contains("Commits"));
-        assert!(text.contains("Commit Details"));
+        assert!(text.contains("HISTORY  ◈ Beads"));
+        assert!(text.contains("BEADS WITH HISTORY"));
+        assert!(text.contains("COMMITS"));
+        assert!(text.contains("COMMIT DETAILS"));
+        assert!(!text.contains("TIMELINE"));
     }
 
     #[test]
     fn history_standard_git_renders_three_legacy_panes() {
         let app = history_app_with_git_cache(HistoryViewMode::Git, 0);
         let text = render_app(&app, 120, 30);
-        assert!(text.contains("Commits [focus]"));
-        assert!(text.contains("Related Beads"));
-        assert!(text.contains("Commit Details"));
+        assert!(text.contains("HISTORY  ◉ Git"));
+        assert!(text.contains("COMMITS"));
+        assert!(text.contains("RELATED BEADS"));
+        assert!(text.contains("COMMIT DETAILS"));
+        assert!(text.contains("SHA: aaaa1111"));
     }
 
     #[test]
     fn history_wide_bead_renders_timeline_pane() {
         let app = history_app_with_git_cache(HistoryViewMode::Bead, 0);
         let text = render_app(&app, 160, 30);
-        assert!(text.contains("Beads With History [focus]"));
-        assert!(text.contains("Timeline: A"));
-        assert!(text.contains("Commits"));
-        assert!(text.contains("Commit Details"));
+        assert!(text.contains("BEADS WITH HISTORY"));
+        assert!(text.contains("TIMELINE: A"));
+        assert!(text.contains("COMMITS"));
+        assert!(text.contains("COMMIT DETAILS"));
     }
 
     #[test]
@@ -23070,7 +24554,7 @@ mod tests {
     fn history_status_line_shows_legacy_mode_indicator() {
         let bead_view =
             render_debug_view(sample_issues(), "history", 100, 30).expect("history view renders");
-        assert!(bead_view.contains("mode=History ◈ Beads"));
+        assert!(bead_view.contains("HISTORY  ◈ Beads"));
 
         let mut app = new_app(ViewMode::History, 0);
         app.handle_key(KeyCode::Char('v'), Modifiers::NONE);
@@ -23078,7 +24562,7 @@ mod tests {
         let mut frame = ftui::render::frame::Frame::new(100, 30, &mut pool);
         app.view(&mut frame);
         let git_view = buffer_to_text(&frame.buffer, &pool);
-        assert!(git_view.contains("mode=History ◉ Git"));
+        assert!(git_view.contains("HISTORY  ◉ Git"));
     }
 
     #[test]
@@ -23492,11 +24976,11 @@ mod tests {
             "expected history footer to advertise file-tree navigation, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("Enter filter"),
+            rendered.contains("⏎ filter"),
             "expected history footer to advertise file-tree filtering, got:\n{rendered}"
         );
         assert!(
-            rendered.contains("Esc close tree"),
+            rendered.contains("esc close tree"),
             "expected history footer to advertise closing the file tree, got:\n{rendered}"
         );
         assert!(
