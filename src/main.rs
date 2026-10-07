@@ -4334,6 +4334,12 @@ fn build_robot_burndown_output(
         daily_points,
         ideal_line,
         scope_changes,
+        at_risk: bvr::analysis::alerts::detect_at_risk(
+            issues,
+            &sprint.bead_ids,
+            now,
+            bvr::analysis::alerts::AtRiskThresholds::default(),
+        ),
     })
 }
 
@@ -7295,6 +7301,9 @@ struct RobotBurndownOutput {
     ideal_line: Vec<BurndownPointCompat>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     scope_changes: Vec<ScopeChangeCompat>,
+    /// Sprint beads flagged by the legacy at-risk signals (blocked too
+    /// long, no activity, critical blocked, blockers not closing).
+    at_risk: Vec<bvr::analysis::alerts::AtRiskItem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -9568,9 +9577,12 @@ mod tests {
             daily_points: Vec::new(),
             ideal_line: Vec::new(),
             scope_changes: Vec::new(),
+            at_risk: Vec::new(),
         };
 
         let json = serde_json::to_value(&output).unwrap();
+        // Legacy bv always emits at_risk, even when nothing is flagged.
+        assert_eq!(json["at_risk"], serde_json::json!([]));
         assert!(json.get("start_date").is_none());
         assert!(json.get("end_date").is_none());
         assert!(json.get("projected_complete").is_none());

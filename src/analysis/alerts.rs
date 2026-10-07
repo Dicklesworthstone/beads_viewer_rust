@@ -368,11 +368,210 @@ fn summarize_alerts(alerts: &[Alert]) -> AlertSummary {
     summary
 }
 
+// ---------------------------------------------------------------------------
+// Sprint at-risk detection (legacy bv `analysis.DetectAtRisk`)
+// ---------------------------------------------------------------------------
+
+/// Day thresholds behind the time-based sprint at-risk signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AtRiskThresholds {
+    /// Minimum blocked duration for `blocked_too_long`.
+    pub blocked_days: i64,
+    /// Minimum inactivity for `no_activity`, and for a blocker to count as
+    /// stalled in `blockers_not_closing`.
+    pub inactive_days: i64,
+}
+
+impl Default for AtRiskThresholds {
+    /// Legacy defaults: blocked for 2+ days, inactive for 4+ days.
+    fn default() -> Self {
+        Self {
+            blocked_days: 2,
+            inactive_days: 4,
+        }
+    }
+}
+
+/// One sprint bead flagged by [`detect_at_risk`].
+#[derive(Debug, Clone, Serialize)]
+pub struct AtRiskItem {
+    pub id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    pub status: String,
+    pub priority: i32,
+    /// `blocked_too_long`, `no_activity`, `critical_blocked`,
+    /// `blockers_not_closing`, in evaluation order.
+    pub signals: Vec<&'static str>,
+    /// Earliest instant behind any signal: the start of the blocked period,
+    /// the last activity, or a stalled blocker's last activity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    /// Human-readable explanation of each signal.
+    pub detail: String,
+}
+
+/// Flag the non-closed beads of a sprint that are at risk, as legacy bv's
+/// `--robot-burndown` and sprint dashboard do. Four signals:
+///
+/// - `blocked_too_long`: blocked (status `blocked`, or waiting on an open
+///   blocking dependency) for at least `blocked_days`;
+/// - `no_activity`: no update for at least `inactive_days`;
+/// - `critical_blocked`: a P0/P1 bead blocked at all;
+/// - `blockers_not_closing`: an open blocker itself idle `inactive_days`.
+///
+/// There is no status-transition history, so "blocked since" is the later of
+/// the bead's last activity and the creation of an open blocking dependency
+/// — a lower bound that never overstates the blocked duration. Blockers
+/// resolve against all issues, so one outside the sprint still counts.
+/// Results are sorted by ID.
+#[must_use]
+pub fn detect_at_risk(
+    issues: &[Issue],
+    sprint_bead_ids: &[String],
+    now: DateTime<Utc>,
+    thresholds: AtRiskThresholds,
+) -> Vec<AtRiskItem> {
+    let by_id: std::collections::HashMap<&str, &Issue> = issues
+        .iter()
+        .map(|issue| (issue.id.as_str(), issue))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut items: Vec<AtRiskItem> = sprint_bead_ids
+        .iter()
+        .filter(|id| seen.insert(id.as_str()))
+        .filter_map(|id| by_id.get(id.as_str()).copied())
+        .filter(|issue| !issue.is_closed_like())
+        .filter_map(|issue| evaluate_at_risk(issue, &by_id, now, thresholds))
+        .collect();
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    items
+}
+
+fn last_activity(issue: &Issue) -> Option<DateTime<Utc>> {
+    issue.updated_at.or(issue.created_at)
+}
+
+fn days_between(from: DateTime<Utc>, now: DateTime<Utc>) -> f64 {
+    (now - from).num_seconds() as f64 / f64::from(SECS_PER_DAY)
+}
+
+fn evaluate_at_risk(
+    issue: &Issue,
+    by_id: &std::collections::HashMap<&str, &Issue>,
+    now: DateTime<Utc>,
+    thresholds: AtRiskThresholds,
+) -> Option<AtRiskItem> {
+    let last = last_activity(issue);
+    let mut open_blockers: Vec<(&str, Option<DateTime<Utc>>)> = Vec::new();
+    let mut blocked_since = last;
+    for dep in issue.dependencies.iter().filter(|dep| dep.is_blocking()) {
+        let Some(target) = by_id.get(dep.depends_on_id.as_str()) else {
+            continue;
+        };
+        if target.is_closed_like() {
+            continue;
+        }
+        open_blockers.push((target.id.as_str(), last_activity(target)));
+        if let Some(created) = dep.created_at {
+            if blocked_since.is_none_or(|since| created > since) {
+                blocked_since = Some(created);
+            }
+        }
+    }
+    open_blockers.sort_by(|a, b| a.0.cmp(b.0));
+    let blocked = issue.normalized_status() == "blocked" || !open_blockers.is_empty();
+
+    let mut signals = Vec::new();
+    let mut details = Vec::new();
+    let mut since: Option<DateTime<Utc>> = None;
+    let mut note_since = |at: Option<DateTime<Utc>>| {
+        if let Some(at) = at {
+            if since.is_none_or(|current| at < current) {
+                since = Some(at);
+            }
+        }
+    };
+
+    if blocked {
+        if let Some(start) = blocked_since {
+            let days = days_between(start, now);
+            if days >= thresholds.blocked_days as f64 {
+                signals.push("blocked_too_long");
+                details.push(format!(
+                    "blocked for {days:.0}d (threshold {}d)",
+                    thresholds.blocked_days
+                ));
+                note_since(Some(start));
+            }
+        }
+    }
+    if let Some(at) = last {
+        let idle = days_between(at, now);
+        if idle >= thresholds.inactive_days as f64 {
+            signals.push("no_activity");
+            details.push(format!(
+                "no activity for {idle:.0}d (threshold {}d)",
+                thresholds.inactive_days
+            ));
+            note_since(Some(at));
+        }
+    }
+    if blocked && issue.priority <= 1 {
+        signals.push("critical_blocked");
+        let by = if open_blockers.is_empty() {
+            "status=blocked".to_string()
+        } else {
+            format!(
+                "blocked by {}",
+                open_blockers
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        details.push(format!("P{} {by}", issue.priority));
+        note_since(blocked_since.or(last));
+    }
+    let stalled: Vec<String> = open_blockers
+        .iter()
+        .filter_map(|(id, activity)| {
+            let at = (*activity)?;
+            let idle = days_between(at, now);
+            (idle >= thresholds.inactive_days as f64).then(|| {
+                note_since(Some(at));
+                format!("{id} ({idle:.0}d idle)")
+            })
+        })
+        .collect();
+    if !stalled.is_empty() {
+        signals.push("blockers_not_closing");
+        details.push(format!("blockers stalled: {}", stalled.join(", ")));
+    }
+
+    if signals.is_empty() {
+        return None;
+    }
+    Some(AtRiskItem {
+        id: issue.id.clone(),
+        title: issue.title.clone(),
+        status: issue.status.clone(),
+        priority: issue.priority,
+        signals,
+        since: since.or(last),
+        detail: details.join("; "),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;
 
-    use super::{AlertOptions, AlertSeverity, AlertType, generate_robot_alerts_output};
+    use super::{
+        AlertOptions, AlertSeverity, AlertType, AtRiskThresholds, detect_at_risk,
+        generate_robot_alerts_output,
+    };
     use crate::analysis::graph::IssueGraph;
     use crate::model::{Dependency, Issue};
 
@@ -1018,5 +1217,93 @@ mod tests {
             ..AlertOptions::default()
         };
         assert!(super::matches_alert_filters(&alert, &opts));
+    }
+
+    fn ago(days: i64) -> chrono::DateTime<chrono::Utc> {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-06-10T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        now - Duration::days(days)
+    }
+
+    fn sprint_issue(id: &str, status: &str, priority: i32, updated_days_ago: i64) -> Issue {
+        Issue {
+            id: id.to_string(),
+            title: format!("{id} title"),
+            status: status.to_string(),
+            priority,
+            created_at: Some(ago(30)),
+            updated_at: Some(ago(updated_days_ago)),
+            ..Issue::default()
+        }
+    }
+
+    fn blocks(on: &str, created_days_ago: i64) -> Dependency {
+        Dependency {
+            depends_on_id: on.to_string(),
+            dep_type: "blocks".to_string(),
+            created_at: Some(ago(created_days_ago)),
+            ..Dependency::default()
+        }
+    }
+
+    #[test]
+    fn at_risk_flags_each_legacy_signal() {
+        let now = ago(0);
+        let mut critical = sprint_issue("A", "open", 1, 3);
+        critical.dependencies = vec![blocks("STALL", 3)];
+        let idle = sprint_issue("B", "open", 3, 9);
+        let fresh = sprint_issue("C", "in_progress", 2, 0);
+        let done = sprint_issue("D", "closed", 0, 40);
+        // Outside the sprint, but blocking A and idle for 6 days.
+        let stall = sprint_issue("STALL", "open", 2, 6);
+        let issues = vec![critical, idle, fresh, done, stall];
+        let ids: Vec<String> = ["A", "B", "C", "D", "A"].map(String::from).to_vec();
+
+        let items = detect_at_risk(&issues, &ids, now, AtRiskThresholds::default());
+        let summary: Vec<(&str, Vec<&str>)> = items
+            .iter()
+            .map(|item| (item.id.as_str(), item.signals.clone()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (
+                    "A",
+                    vec![
+                        "blocked_too_long",
+                        "critical_blocked",
+                        "blockers_not_closing"
+                    ]
+                ),
+                ("B", vec!["no_activity"]),
+            ]
+        );
+        let a = &items[0];
+        assert!(
+            a.detail.contains("blocked for 3d (threshold 2d)"),
+            "{}",
+            a.detail
+        );
+        assert!(a.detail.contains("P1 blocked by STALL"), "{}", a.detail);
+        assert!(a.detail.contains("STALL (6d idle)"), "{}", a.detail);
+        // The stalled blocker's last activity is the earliest trigger.
+        assert_eq!(a.since, Some(ago(6)));
+    }
+
+    #[test]
+    fn at_risk_respects_thresholds_and_empty_inputs() {
+        let now = ago(0);
+        let issues = vec![sprint_issue("A", "blocked", 2, 1)];
+        let ids = vec!["A".to_string()];
+        assert!(detect_at_risk(&issues, &ids, now, AtRiskThresholds::default()).is_empty());
+        let strict = AtRiskThresholds {
+            blocked_days: 1,
+            inactive_days: 1,
+        };
+        let items = detect_at_risk(&issues, &ids, now, strict);
+        assert_eq!(items[0].signals, vec!["blocked_too_long", "no_activity"]);
+        assert!(detect_at_risk(&[], &ids, now, strict).is_empty());
+        assert!(detect_at_risk(&issues, &[], now, strict).is_empty());
     }
 }
