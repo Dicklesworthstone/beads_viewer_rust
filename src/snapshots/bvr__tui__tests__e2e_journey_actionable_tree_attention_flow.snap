@@ -116,152 +116,152 @@ expression: artifact
  📋 ALL  L:labels • h:detail  ○3 ◉3 ◈0 ●0               3 issues  j/k nav │ tab tracks/items │ ⏎ view │ a list │ ? help
 
 --- Step 4: tree_entry ---
-bvr 1 Main b Board i Insights g Graph H History T Tree | mode=Tree | focus=list | issues=3/3 | filter=all | sort=default
-┌Dependency Tree [focus]─────────────────────┐┌Issue Detail────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Dependency tree  3 nodes | Enter/za toggle ││ ID: A                                                                  │
-│ ────────────────────────────────────────── ││ Title: Feature work                                                    │
-│ ▸     o P1 A Feature work                  ││ Status: open                                                           │
-│       o P2 B Bug fix                       ││ Type: feature                                                          │
-│       o P3 C UI polish                     ││ Depth: 0                                                               │
-│                                            ││ Labels: backend, urgent                                                │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Tree: 3 nodes │ j/k navigate │ Enter expand/collapse │ Tab focus │ T/Esc back
+┃ • ✨ P1 A Feature work 🟢
+  • 🐛 P2 B Bug fix 🟢
+  • 📋 P3 C UI polish 🟢
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  ○3 ◉3 ◈0 ●0                                      3 issues  j/k nav │ h/l fold │ ⏎ toggle │ tab detail │ T list
 
 --- Step 5: tree_navigate ---
-bvr 1 Main b Board i Insights g Graph H History T Tree | mode=Tree | focus=list | issues=3/3 | filter=all | sort=default
-┌Dependency Tree [focus]─────────────────────┐┌Issue Detail────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Dependency tree  3 nodes | Enter/za toggle ││ ID: A                                                                  │
-│ ────────────────────────────────────────── ││ Title: Feature work                                                    │
-│ ▸     o P1 A Feature work                  ││ Status: open                                                           │
-│       o P2 B Bug fix                       ││ Type: feature                                                          │
-│       o P3 C UI polish                     ││ Depth: 0                                                               │
-│                                            ││ Labels: backend, urgent                                                │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Tree: 3 nodes │ j/k navigate │ Enter expand/collapse │ Tab focus │ T/Esc back
+┃ • ✨ P1 A Feature work 🟢
+  • 🐛 P2 B Bug fix 🟢
+  • 📋 P3 C UI polish 🟢
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  ○3 ◉3 ◈0 ●0                                      3 issues  j/k nav │ h/l fold │ ⏎ toggle │ tab detail │ T list
 
 --- Step 6: attention_entry ---
-bvr 1 Main b Board i Insights g Graph H History ! Attention | mode=Attention | focus=list | issues=3/3 | filter=all | so
-┌Label Attention [focus]─────────────────────┐┌Label Detail────────────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Rank  Label                 Score  Reason  ││ Label: backend                                                         │
-│ ────────────────────────────────────────── ││ Rank: #1                                                               │
-│ ▸  1  backend                0.7  2 open i ││ Attention Score: 0.667                                                 │
-│    2  frontend               0.3  1 open i ││ Normalized: 1.000                                                      │
-│    3  urgent                 0.3  1 open i ││                                                                        │
-│                                            ││ Breakdown:                                                             │
-│                                            ││   Open:     2                                                          │
-│                                            ││   Blocked:  0                                                          │
-│                                            ││   Stale:    0                                                          │
-│                                            ││                                                                        │
-│                                            ││ Factors:                                                               │
-│                                            ││   PageRank sum:     0.6667                                             │
-│                                            ││   Staleness factor: 1.00                                               │
-│                                            ││   Block impact:     0.0                                                │
-│                                            ││   Velocity factor:  1.00                                               │
-│                                            ││                                                                        │
-│                                            ││ Reason: 2 open issue(s)                                                │
-│                                            ││                                                                        │
-│                                            ││ Open issues (2):                                                       │
-│                                            ││   A                                                                    │
-│                                            ││   B                                                                    │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Attention: 3 labels ranked │ j/k navigate │ Tab focus │ !/Esc back
+  Rank | Label              | Attention  | Reason
+┃ 1    | backend            | 0.67       | pr=0.67 stale=1.00 block=0 closed30=0
+  2    | frontend           | 0.33       | pr=0.33 stale=1.00 block=0 closed30=0
+  3    | urgent             | 0.33       | pr=0.33 stale=1.00 block=0 closed30=0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  ○3 ◉3 ◈0 ●0                                 3 issues  j/k nav │ 1-9 filter │ ⏎ filter │ tab detail │ esc close
 
 --- Step 7: attention_detail ---
-bvr 1 Main b Board i Insights g Graph H History ! Attention | mode=Attention | focus=detail | issues=3/3 | filter=all |
-┌Label Attention─────────────────────────────┐┌Label Detail [focus]────────────────────────────────────────────────────┐
-│                                            ││                                                                        │
-│ Rank  Label                 Score  Reason  ││ Label: frontend                                                        │
-│ ────────────────────────────────────────── ││ Rank: #2                                                               │
-│    1  backend                0.7  2 open i ││ Attention Score: 0.333                                                 │
-│ ▸  2  frontend               0.3  1 open i ││ Normalized: 0.000                                                      │
-│    3  urgent                 0.3  1 open i ││                                                                        │
-│                                            ││ Breakdown:                                                             │
-│                                            ││   Open:     1                                                          │
-│                                            ││   Blocked:  0                                                          │
-│                                            ││   Stale:    0                                                          │
-│                                            ││                                                                        │
-│                                            ││ Factors:                                                               │
-│                                            ││   PageRank sum:     0.3333                                             │
-│                                            ││   Staleness factor: 1.00                                               │
-│                                            ││   Block impact:     0.0                                                │
-│                                            ││   Velocity factor:  1.00                                               │
-│                                            ││                                                                        │
-│                                            ││ Reason: 1 open issue(s)                                                │
-│                                            ││                                                                        │
-│                                            ││ Open issues (1):                                                       │
-│                                            ││   C                                                                    │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-│                                            ││                                                                        │
-└────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘
-Attention: 3 labels ranked │ j/k navigate │ Tab focus │ !/Esc back
+  Rank | Label              | Attention  | Reason                       ┌──────────────────────────────────────────────┐
+  1    | backend            | 0.67       | pr=0.67 stale=1.00 block=0 c…│ Label: frontend                              │
+┃ 2    | frontend           | 0.33       | pr=0.33 stale=1.00 block=0 c…│ Rank: #2                                     │
+  3    | urgent             | 0.33       | pr=0.33 stale=1.00 block=0 c…│ Attention Score: 0.333                       │
+                                                                        │ Normalized: 0.000                            │
+                                                                        │                                              │
+                                                                        │ Breakdown:                                   │
+                                                                        │   Open:     1                                │
+                                                                        │   Blocked:  0                                │
+                                                                        │   Stale:    0                                │
+                                                                        │                                              │
+                                                                        │ Factors:                                     │
+                                                                        │   PageRank sum:     0.3333                   │
+                                                                        │   Staleness factor: 1.00                     │
+                                                                        │   Block impact:     0.0                      │
+                                                                        │   Velocity factor:  1.00                     │
+                                                                        │                                              │
+                                                                        │ Reason: 1 open issue(s)                      │
+                                                                        │                                              │
+                                                                        │ Open issues (1):                             │
+                                                                        │   C                                          │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        │                                              │
+                                                                        └──────────────────────────────────────────────┘
+ 📋 ALL  ○3 ◉3 ◈0 ●0                   3 issues  ^j/k scroll │ j/k nav │ 1-9 filter │ ⏎ filter │ tab detail │ esc close
 
 --- Step 8: main_return ---
 ┌────────────────────────────────────────────┐┌────────────────────────────────────────────────────────────────────────┐

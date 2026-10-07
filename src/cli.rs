@@ -537,7 +537,8 @@ pub struct Cli {
     pub list_filter: Option<String>,
 
     /// Render a named TUI view non-interactively and output to stdout.
-    /// Supported views: insights, board, history, main, graph.
+    /// Supported views: main, board, insights, graph, history, actionable,
+    /// attention, tree, labels, flow, timediff, sprint.
     #[arg(long)]
     pub debug_render: Option<String>,
 

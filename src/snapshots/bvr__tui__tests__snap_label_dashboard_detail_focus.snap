@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights [ Labels | mode=Labels | focus=detail | issues=3/3 | filter=all |
-┌Label Health────────────────────────────┐┌Label Detail [focus]────────────────────────────────────┐
-│                                        ││                                                        │
-│ Label health (3 labels) | healthy:0 wa ││ Label: backend                                         │
-│                                        ││ Health: 63/100 (warning)                               │
-│ > !  [######....]  63  ▁▁▁ backend     ││ Issues: 2 total (2 open, 0 closed, 0 blocked)          │
-│   !  [######....]  63  ▁▁▁ frontend    ││                                                        │
-│   !  [######....]  63  ▁▁▁ urgent      ││ Velocity (score: 0/100):                               │
-│                                        ││   Closed 7d: 0 | 30d: 0                                │
-│                                        ││   Trend: stable (+0%)                                  │
-│                                        ││                                                        │
-│                                        ││ Freshness (score: 100/100):                            │
-│                                        ││   Avg days since update: 0.0                           │
-│                                        ││   Stale: 0 (threshold: 14d)                            │
-│                                        ││                                                        │
-│                                        ││ Flow (score: 100/100):                                 │
-│                                        ││   Deps in: 0 | out: 0                                  │
-│                                        ││   Blocked by external: 0 | Blocking external: 0        │
-│                                        ││                                                        │
-│                                        ││ Criticality (score: 50/100):                           │
-│                                        ││   Avg PageRank: 0.3333 | Avg betweenness: 0.0000       │
-│                                        ││   Critical paths: 2 | Bottlenecks: 0                   │
-│                                        ││                                                        │
-│                                        ││ Issues (2):                                            │
-│                                        ││   A - Feature work                                     │
-│                                        ││   B - Bug fix                                          │
-│                                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Labels: 3 │ j/k navigate │ Tab focus │ [/Esc back
+  Label    Health         Blocked Velocity 7d/30d Stale     ┌──────────────────────────────────────┐
+┃ backend   63 ██████░░░░ 0       0/0             0         │ Label: backend                       │
+  frontend  63 ██████░░░░ 0       0/0             0         │ Health: 63/100 (warning)             │
+  urgent    63 ██████░░░░ 0       0/0             0         │ Issues: 2 total (2 open, 0 closed, 0 │
+                                                            │ blocked)                             │
+                                                            │                                      │
+                                                            │ Velocity (score: 0/100):             │
+                                                            │   Closed 7d: 0 | 30d: 0              │
+                                                            │   Trend: stable (+0%)                │
+                                                            │                                      │
+                                                            │ Freshness (score: 100/100):          │
+                                                            │   Avg days since update: 0.0         │
+                                                            │   Stale: 0 (threshold: 14d)          │
+                                                            │                                      │
+                                                            │ Flow (score: 100/100):               │
+                                                            │   Deps in: 0 | out: 0                │
+                                                            │   Blocked by external: 0 | Blocking  │
+                                                            │ external: 0                          │
+                                                            │                                      │
+                                                            │ Criticality (score: 50/100):         │
+                                                            │   Avg PageRank: 0.3333 | Avg         │
+                                                            │ betweenness: 0.0000                  │
+                                                            │   Critical paths: 2 | Bottlenecks: 0 │
+                                                            │                                      │
+                                                            │ Issues (2):                          │
+                                                            │   A - Feature work                   │
+                                                            │   B - Bug fix                        │
+                                                            │                                      │
+                                                            └──────────────────────────────────────┘
+ 📋 ALL  ○3 ◉3 ◈0 ●0            3 issues  ^j/k scroll │ j/k nav │ ⏎ filter │ tab detail │ esc close

@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights g Graph H History a Actionable [ Labels ] Flow | mode=Labels | focus=list | issues=3/3 | filter=all | sort=def
-┌Label Health [focus]───────────────────────────────┐┌Label Detail─────────────────────────────────────────────────────────────────────────┐
-│                                                   ││                                                                                     │
-│ (computing label health...)                       ││ (no data)                                                                           │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-│                                                   ││                                                                                     │
-└───────────────────────────────────────────────────┘└─────────────────────────────────────────────────────────────────────────────────────┘
-Labels: 0 │ j/k navigate │ Tab focus │ [/Esc back
+No labels found
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1                                                 3 issues  j/k nav │ ⏎ filter │ tab detail │ esc close

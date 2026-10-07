@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i In g Graph H Hist S Sprint  | 3/3 | all
-┌Sprints [focus]────┐┌Sprint Detail────────────────────────┐
-│                   ││                                     │
-│  No sprints found ││  Select a sprint from the list.     │
-│                   ││                                     │
-│  Sprints are defi ││                                     │
-│  Each line: {"id" ││                                     │
-│  "start_date":".. ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-│                   ││                                     │
-└───────────────────┘└─────────────────────────────────────┘
-Sprint: 0 sprint(s) │ j/k navigate │ Tab focus │ S/Esc back
+  ┌──────────────────────────────────────────────────────┐
+  │                                                      │
+  │  📅 Sprints                                          │
+  │                                                      │
+  │  No sprints defined (.beads/sprints.jsonl)           │
+  │                                                      │
+  │  Each line: {"id":"sprint-1","name":"Sprint Alpha",  │
+  │    "start_date":"…","end_date":"…","bead_ids":[…]}   │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  │                                                      │
+  └──────────────────────────────────────────────────────┘
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1  3 issues  j/k sprint

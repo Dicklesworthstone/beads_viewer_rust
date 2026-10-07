@@ -531,6 +531,11 @@ fn header_height(app: &BvrApp) -> u16 {
             | ViewMode::Graph
             | ViewMode::Actionable
             | ViewMode::History
+            | ViewMode::Tree
+            | ViewMode::LabelDashboard
+            | ViewMode::Attention
+            | ViewMode::FlowMatrix
+            | ViewMode::Sprint
     ))
 }
 
@@ -1834,6 +1839,148 @@ fn parse_history_timestamp(raw: &str) -> Option<DateTime<Utc>> {
         .map(|t| t.with_timezone(&Utc))
 }
 
+/// Go bv's `activeSprintIndex`: the sprint whose window contains `now`
+/// (latest start wins), else the most recent by end then start date, else
+/// the last; 0 when there are none.
+fn go_active_sprint_index(sprints: &[Sprint], now: DateTime<Utc>) -> usize {
+    let active = sprints
+        .iter()
+        .enumerate()
+        .filter(|(_, sprint)| sprint.is_active_at(now))
+        .max_by(|(ia, a), (ib, b)| a.start_date.cmp(&b.start_date).then(ib.cmp(ia)));
+    if let Some((idx, _)) = active {
+        return idx;
+    }
+    let mut best = sprints.len().saturating_sub(1);
+    for (idx, sprint) in sprints.iter().enumerate() {
+        let current = &sprints[best];
+        if sprint.end_date > current.end_date
+            || (sprint.end_date == current.end_date && sprint.start_date > current.start_date)
+        {
+            best = idx;
+        }
+    }
+    best
+}
+
+/// Per-label totals behind Go bv's flow dashboard.
+#[derive(Debug, Clone)]
+struct GoFlowLabelStat {
+    label: String,
+    /// Cross-label blocking edges out of this label (it blocks others).
+    outgoing: usize,
+    /// Cross-label blocking edges into this label (others block it).
+    incoming: usize,
+    outgoing_labels: Vec<String>,
+    incoming_labels: Vec<String>,
+    /// Outgoing count normalized by the busiest label.
+    score: f64,
+    is_bottleneck: bool,
+}
+
+/// Go bv's `computeStats`: row sums are what a label blocks, column sums
+/// what blocks it; labels sort by blocking power, then name.
+fn go_flow_label_stats(
+    flow: &crate::analysis::label_intel::CrossLabelFlow,
+) -> Vec<GoFlowLabelStat> {
+    let n = flow.labels.len();
+    if flow.flow_matrix.len() < n || flow.flow_matrix.iter().any(|row| row.len() < n) {
+        return Vec::new();
+    }
+    let cell = |i: usize, j: usize| usize::try_from(flow.flow_matrix[i][j]).unwrap_or(0);
+    let mut stats: Vec<GoFlowLabelStat> = (0..n)
+        .map(|i| {
+            let others = (0..n).filter(|&j| j != i);
+            GoFlowLabelStat {
+                label: flow.labels[i].clone(),
+                outgoing: others.clone().map(|j| cell(i, j)).sum(),
+                incoming: others.clone().map(|j| cell(j, i)).sum(),
+                outgoing_labels: others
+                    .clone()
+                    .filter(|&j| cell(i, j) > 0)
+                    .map(|j| flow.labels[j].clone())
+                    .collect(),
+                incoming_labels: others
+                    .filter(|&j| cell(j, i) > 0)
+                    .map(|j| flow.labels[j].clone())
+                    .collect(),
+                score: 0.0,
+                is_bottleneck: flow.bottleneck_labels.contains(&flow.labels[i]),
+            }
+        })
+        .collect();
+    let max_out = stats.iter().map(|stat| stat.outgoing).max().unwrap_or(0);
+    if max_out > 0 {
+        for stat in &mut stats {
+            stat.score = stat.outgoing as f64 / max_out as f64;
+        }
+    }
+    stats.sort_by(|a, b| {
+        b.outgoing
+            .cmp(&a.outgoing)
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    stats
+}
+
+/// Go bv's flow `miniBar`: up to `width` ■ colored by count (red at 5+,
+/// orange at 2+, yellow below), padded with ·.
+fn go_flow_mini_bar(count: usize, width: usize) -> (RichSpan<'static>, String) {
+    if count == 0 {
+        return (RichSpan::raw(""), "·".repeat(width));
+    }
+    let filled = count.min(width);
+    let color = if count >= 5 {
+        tokens::status_fg("blocked")
+    } else if count >= 2 {
+        tokens::FG_WARNING
+    } else {
+        tokens::PRIO_P2
+    };
+    (
+        RichSpan::styled("■".repeat(filled), Style::new().fg(color)),
+        "·".repeat(width - filled),
+    )
+}
+
+/// Go bv's attention view shows the top ten labels; 1-9 jump to a rank.
+const ATTENTION_ROW_LIMIT: usize = 10;
+
+/// Go bv's tree ordering (`sortNodes`): priority (P0 first), then type
+/// (epic, feature, task, bug, chore, other), then oldest created; the ID
+/// breaks remaining ties so the order is total.
+fn go_tree_order(a: &Issue, b: &Issue) -> std::cmp::Ordering {
+    let type_rank = |issue: &Issue| match issue.issue_type.trim().to_ascii_lowercase().as_str() {
+        "epic" => 0,
+        "feature" => 1,
+        "task" => 2,
+        "bug" => 3,
+        "chore" => 4,
+        _ => 5,
+    };
+    a.priority
+        .cmp(&b.priority)
+        .then_with(|| type_rank(a).cmp(&type_rank(b)))
+        .then_with(|| match (a.created_at, b.created_at) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        })
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// Go bv's colored status dot (`GetStatusIcon`).
+fn go_status_dot(status: &str) -> &'static str {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "open" => "🟢",
+        "in_progress" => "🔵",
+        "blocked" => "🔴",
+        "closed" => "⚫",
+        _ => "⚪",
+    }
+}
+
 /// Go bv's history status glyph: ✓ closed, ● in progress, ○ otherwise.
 fn go_history_status_icon(status: &str) -> &'static str {
     match status.trim().to_ascii_lowercase().as_str() {
@@ -3001,6 +3148,9 @@ struct BvrApp {
     flow_matrix: Option<crate::analysis::label_intel::CrossLabelFlow>,
     flow_matrix_row_cursor: usize,
     flow_matrix_col_cursor: usize,
+    /// Go bv's flow drilldown: the endpoint cursor over the selected
+    /// label's blocker/blocked pairs, `None` while the dashboard shows.
+    flow_drilldown: Option<usize>,
     sprint_data: Vec<Sprint>,
     sprint_cursor: usize,
     sprint_issue_cursor: usize,
@@ -3511,6 +3661,37 @@ impl Model for BvrApp {
 
             if matches!(self.mode, ViewMode::Insights) && self.insights_heatmap.is_none() {
                 self.render_go_insights(frame, body);
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
+            if matches!(
+                self.mode,
+                ViewMode::LabelDashboard | ViewMode::Attention | ViewMode::FlowMatrix
+            ) {
+                match self.mode {
+                    ViewMode::LabelDashboard => self.render_go_label_dashboard(frame, body),
+                    ViewMode::Attention => self.render_go_attention(frame, body),
+                    _ => self.render_go_flow_matrix(frame, body),
+                }
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
+            if matches!(self.mode, ViewMode::Sprint) {
+                self.render_go_sprint(frame, body);
+                Paragraph::new(RichText::from_lines([
+                    self.main_go_status_bar(rows[2].width)
+                ]))
+                .render(rows[2], frame);
+                return;
+            }
+            if matches!(self.mode, ViewMode::Tree) {
+                self.render_go_tree(frame, body);
                 Paragraph::new(RichText::from_lines([
                     self.main_go_status_bar(rows[2].width)
                 ]))
@@ -5299,6 +5480,56 @@ impl BvrApp {
                     && matches!(self.focus, FocusPane::Middle) =>
             {
                 self.jump_from_history_bead_commit_to_git();
+            }
+            KeyCode::Enter if self.flow_matrix_shortcut_focus() => {
+                if self.flow_drilldown.is_some() {
+                    if let Some(id) = self.go_flow_drilldown_issue().map(|issue| issue.id.clone()) {
+                        self.flow_drilldown = None;
+                        self.select_issue_by_id(&id);
+                        self.mode = ViewMode::Main;
+                        self.focus = FocusPane::Detail;
+                    }
+                } else {
+                    self.flow_drilldown = Some(0);
+                }
+            }
+            KeyCode::Escape
+                if self.flow_matrix_shortcut_focus() && self.flow_drilldown.is_some() =>
+            {
+                self.flow_drilldown = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down
+                if self.flow_matrix_shortcut_focus() && self.flow_drilldown.is_some() =>
+            {
+                let endpoints = self.go_flow_drilldown_pairs().len() * 2;
+                if let Some(cursor) = self.flow_drilldown.as_mut() {
+                    *cursor = (*cursor + 1).min(endpoints.saturating_sub(1));
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up
+                if self.flow_matrix_shortcut_focus() && self.flow_drilldown.is_some() =>
+            {
+                if let Some(cursor) = self.flow_drilldown.as_mut() {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter if self.label_dashboard_shortcut_focus() => {
+                if let Some(label) = self.selected_dashboard_label() {
+                    self.filter_list_by_label_from_view(&label);
+                }
+            }
+            KeyCode::Enter if self.attention_shortcut_focus() => {
+                if let Some(label) = self.attention_label_at(self.attention_cursor) {
+                    self.filter_list_by_label_from_view(&label);
+                }
+            }
+            KeyCode::Char(digit @ '1'..='9') if self.attention_shortcut_focus() => {
+                let rank = usize::from(digit as u8 - b'1');
+                if let Some(label) = self.attention_label_at(rank) {
+                    self.filter_list_by_label_from_view(&label);
+                    self.status_msg =
+                        format!("Filtered to label {label} (attention #{})", rank + 1);
+                }
             }
             KeyCode::Enter
                 if !(matches!(self.mode, ViewMode::History) && self.history_file_tree_focus)
@@ -9395,6 +9626,1099 @@ impl BvrApp {
             .render(area, frame);
     }
 
+    /// Render the tree view as Go bv does: full-width hierarchy rows (tree
+    /// connectors, ▾/▸/• fold glyph, type icon, priority, ID, title, status
+    /// dot) with the selected row highlighted behind a primary bar, and a
+    /// `[start-end of total]` indicator when it scrolls. Tab opens the
+    /// selected issue's detail beside it, as the board does.
+    fn render_go_tree(&self, frame: &mut Frame, area: Rect) {
+        if self.tree_flat_nodes.is_empty() {
+            let lines = vec![
+                RichLine::from_spans([RichSpan::styled("Tree View", tokens::primary_bold())]),
+                RichLine::raw(""),
+                RichLine::from_spans([RichSpan::styled(
+                    "No issues to display.",
+                    tokens::muted_text(),
+                )]),
+                RichLine::raw(""),
+                RichLine::from_spans([RichSpan::styled(
+                    "To create hierarchy, add parent-child dependencies:",
+                    tokens::muted_text(),
+                )]),
+                RichLine::from_spans([RichSpan::styled(
+                    "  br dep add <child> parent-child:<parent>",
+                    tokens::muted_text(),
+                )]),
+                RichLine::raw(""),
+                RichLine::from_spans([RichSpan::styled(
+                    "Press T to return to list view.",
+                    tokens::muted_text(),
+                )]),
+            ];
+            Paragraph::new(RichText::from_lines(lines)).render(area, frame);
+            return;
+        }
+        let show_detail = matches!(self.focus, FocusPane::Detail);
+        let detail_width = if !show_detail {
+            0
+        } else if area.width >= 100 {
+            (area.width * 40 / 100).clamp(40, 90)
+        } else {
+            area.width
+        };
+        let tree_width = area.width.saturating_sub(detail_width);
+        if tree_width > 0 {
+            let tree_area = Rect::new(area.x, area.y, tree_width, area.height);
+            Paragraph::new(RichText::from_lines(
+                self.go_tree_lines(usize::from(tree_width), usize::from(area.height)),
+            ))
+            .wrap(ftui::text::WrapMode::None)
+            .render(tree_area, frame);
+        }
+        if detail_width > 0 {
+            let panel = Rect::new(area.x + tree_width, area.y, detail_width, area.height);
+            semantic_panel_block("", true, SemanticTone::Accent).render(panel, frame);
+            let inner = block_inner_rect(panel);
+            let body = Rect::new(
+                inner.x.saturating_add(1),
+                inner.y,
+                inner.width.saturating_sub(2),
+                inner.height,
+            );
+            let issue = self
+                .tree_flat_nodes
+                .get(self.tree_cursor)
+                .and_then(|node| self.analyzer.issues.get(node.issue_index));
+            Paragraph::new(self.go_issue_detail_text(issue, body.width))
+                .wrap(ftui::text::WrapMode::WordChar)
+                .scroll((saturating_scroll_offset(self.detail_scroll_offset), 0))
+                .render(body, frame);
+            record_detail_content_area(inner);
+        }
+    }
+
+    /// The visible tree rows (windowed around the cursor) plus Go's
+    /// position indicator when the tree is taller than the view.
+    fn go_tree_lines(&self, width: usize, height: usize) -> Vec<RichLine> {
+        let total = self.tree_flat_nodes.len();
+        let rows = if total > height {
+            height.saturating_sub(1)
+        } else {
+            height
+        };
+        let cursor = self.tree_cursor.min(total.saturating_sub(1));
+        let start = if rows == 0 || cursor < rows / 2 {
+            0
+        } else {
+            (cursor + 1 - rows / 2).min(total.saturating_sub(rows))
+        };
+        let end = (start + rows).min(total);
+        let search_hits: HashSet<usize> = self.tree_search_matches().into_iter().collect();
+        let mut lines = Vec::with_capacity(rows + 1);
+        for (idx, node) in self
+            .tree_flat_nodes
+            .iter()
+            .enumerate()
+            .take(end)
+            .skip(start)
+        {
+            let Some(issue) = self.analyzer.issues.get(node.issue_index) else {
+                continue;
+            };
+            let selected = idx == cursor;
+            let mut prefix = String::new();
+            if node.depth > 0 {
+                for &ancestor_was_last in node.ancestry_last.iter().skip(1) {
+                    prefix.push_str(if ancestor_was_last { "    " } else { "│   " });
+                }
+                prefix.push_str(if node.is_last_sibling {
+                    "└── "
+                } else {
+                    "├── "
+                });
+            }
+            let fold = if !node.has_children {
+                "•"
+            } else if node.is_collapsed {
+                "▸"
+            } else {
+                "▾"
+            };
+            let mut spans = vec![
+                if selected {
+                    RichSpan::styled("┃ ", tokens::primary_bold())
+                } else {
+                    RichSpan::raw("  ")
+                },
+                RichSpan::styled(prefix, tokens::muted_text()),
+                RichSpan::styled(format!("{fold} "), tokens::row_id()),
+                RichSpan::styled(
+                    format!("{} ", go_type_icon(&issue.issue_type).trim_end()),
+                    Style::new().fg(tokens::type_fg(&issue.issue_type)),
+                ),
+                RichSpan::styled(
+                    format!("P{} ", issue.priority),
+                    if issue.priority <= 1 {
+                        tokens::primary_bold()
+                    } else {
+                        tokens::muted_text().bold()
+                    },
+                ),
+                RichSpan::styled(format!("{} ", issue.id), tokens::row_id()),
+            ];
+            let mut suffix = vec![RichSpan::styled(
+                format!(" {}", go_status_dot(&issue.status)),
+                Style::new().fg(tokens::status_fg(&issue.status)),
+            )];
+            if self
+                .analyzer
+                .metrics
+                .cycles
+                .iter()
+                .any(|cycle| cycle.contains(&issue.id))
+            {
+                suffix.push(RichSpan::styled(" ⟳", tokens::status_message(true)));
+            }
+            if search_hits.contains(&idx) {
+                suffix.push(RichSpan::styled(" ◆", tokens::triage_unblocks()));
+            }
+            let used: usize = spans
+                .iter()
+                .chain(suffix.iter())
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            spans.push(RichSpan::styled(
+                truncate_with_ellipsis(&issue.title, width.saturating_sub(used + 1).max(8), "…"),
+                if selected {
+                    Style::new().bold()
+                } else {
+                    Style::new()
+                },
+            ));
+            spans.extend(suffix);
+            lines.push(if selected {
+                go_highlight_row(spans, width.saturating_sub(1))
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        if total > rows {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                format!(" [{}-{end} of {total}]", start + 1),
+                tokens::muted_text(),
+            )]));
+        }
+        lines
+    }
+
+    /// Lay out a Go-style full-width view with an optional detail panel on
+    /// the right (shown while the detail pane has focus, as on the board).
+    /// Returns the main area; the detail panel, when shown, is rendered from
+    /// `detail` inside a rounded frame.
+    fn go_split_with_detail(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        detail: impl FnOnce() -> RichText,
+    ) -> Rect {
+        if !matches!(self.focus, FocusPane::Detail) {
+            return area;
+        }
+        let detail_width = if area.width >= 100 {
+            (area.width * 40 / 100).clamp(40, 90)
+        } else {
+            area.width
+        };
+        let main_width = area.width.saturating_sub(detail_width);
+        let panel = Rect::new(area.x + main_width, area.y, detail_width, area.height);
+        semantic_panel_block("", true, SemanticTone::Accent).render(panel, frame);
+        let inner = block_inner_rect(panel);
+        let body = Rect::new(
+            inner.x.saturating_add(1),
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height,
+        );
+        Paragraph::new(detail())
+            .wrap(ftui::text::WrapMode::WordChar)
+            .scroll((saturating_scroll_offset(self.detail_scroll_offset), 0))
+            .render(body, frame);
+        record_detail_content_area(inner);
+        Rect::new(area.x, area.y, main_width, area.height)
+    }
+
+    /// Render the label dashboard as Go bv's `LabelDashboardModel`: a
+    /// table of Label | Health (score and colored 10-cell bar) | Blocked |
+    /// Velocity 7d/30d | Stale under a primary header row, critical labels
+    /// first. Enter filters the list by the label; Tab shows its detail.
+    fn render_go_label_dashboard(&self, frame: &mut Frame, area: Rect) {
+        let area = self.go_split_with_detail(frame, area, || {
+            RichText::raw(self.label_dashboard_detail_text())
+        });
+        if area.width == 0 {
+            return;
+        }
+        let Some(result) = self
+            .label_dashboard
+            .as_ref()
+            .filter(|r| !r.labels.is_empty())
+        else {
+            Paragraph::new("No labels found")
+                .style(tokens::muted_text())
+                .render(area, frame);
+            return;
+        };
+        let width = usize::from(area.width).saturating_sub(1);
+        let label_cell = |label: &crate::analysis::label_intel::LabelHealth| {
+            let indicator = if label.health_level == "critical" {
+                " !"
+            } else if label.blocked_count > 0 {
+                " ⛔"
+            } else {
+                ""
+            };
+            format!("{}{indicator}", label.label)
+        };
+        let headers = ["Label", "Health", "Blocked", "Velocity 7d/30d", "Stale"];
+        let mut widths = [5usize, 14, 7, 15, 5];
+        for label in &result.labels {
+            widths[0] = widths[0].max(display_width(&label_cell(label)));
+            widths[2] = widths[2].max(label.blocked_count.to_string().len());
+        }
+        // The label column gives way when the table is wider than the view.
+        let total: usize = widths.iter().sum::<usize>() + widths.len() - 1 + 2;
+        if total > width {
+            widths[0] = widths[0].saturating_sub(total - width).max(4);
+        }
+        let pad = |text: &str, w: usize| {
+            let text = truncate_with_ellipsis(text, w, "…");
+            let fill = w.saturating_sub(display_width(&text));
+            format!("{text}{}", " ".repeat(fill))
+        };
+        let mut lines = vec![padded_bar(
+            &format!(
+                "  {}",
+                headers
+                    .iter()
+                    .zip(widths)
+                    .map(|(header, w)| pad(header, w))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            width,
+            tokens::list_column_header(),
+        )];
+        let rows = usize::from(area.height).saturating_sub(1);
+        let cursor = self.label_dashboard_cursor.min(result.labels.len() - 1);
+        let start = Self::go_history_scroll_start(cursor, rows);
+        for (idx, label) in result.labels.iter().enumerate().skip(start).take(rows) {
+            let selected = idx == cursor;
+            let filled = usize::try_from(label.health.clamp(0, 100)).unwrap_or(0) / 10;
+            let bar_style = match label.health_level.as_str() {
+                "healthy" => tokens::success_text(),
+                "warning" => Style::new().fg(tokens::FG_WARNING),
+                _ => tokens::status_message(true).bg(PackedRgba::TRANSPARENT),
+            };
+            let blocked = label.blocked_count.to_string();
+            let spans = vec![
+                if selected {
+                    RichSpan::styled("┃ ", tokens::primary_bold())
+                } else {
+                    RichSpan::raw("  ")
+                },
+                RichSpan::styled(
+                    format!("{} ", pad(&label_cell(label), widths[0])),
+                    if selected {
+                        Style::new().bold()
+                    } else {
+                        Style::new()
+                    },
+                ),
+                RichSpan::raw(format!("{:>3} ", label.health)),
+                RichSpan::styled("█".repeat(filled), bar_style),
+                RichSpan::styled("░".repeat(10 - filled), bar_style),
+                RichSpan::raw(" ".repeat(widths[1] - 14 + 1)),
+                RichSpan::styled(
+                    format!("{} ", pad(&blocked, widths[2])),
+                    if label.blocked_count > 0 {
+                        tokens::status_message(true).bg(PackedRgba::TRANSPARENT)
+                    } else {
+                        Style::new()
+                    },
+                ),
+                RichSpan::raw(format!(
+                    "{} ",
+                    pad(
+                        &format!(
+                            "{}/{}",
+                            label.velocity.closed_last_7_days, label.velocity.closed_last_30_days
+                        ),
+                        widths[3]
+                    )
+                )),
+                RichSpan::raw(label.freshness.stale_count.to_string()),
+            ];
+            lines.push(if selected {
+                go_highlight_row(spans, width)
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        Paragraph::new(RichText::from_lines(lines))
+            .wrap(ftui::text::WrapMode::None)
+            .render(area, frame);
+    }
+
+    /// Render label attention as Go bv's `AttentionModel`: the top ten
+    /// labels in a Rank | Label | Attention | Reason table, the reason
+    /// spelling out the formula inputs (PageRank sum, staleness, block
+    /// impact, closes in the last 30 days).
+    fn render_go_attention(&self, frame: &mut Frame, area: Rect) {
+        let area =
+            self.go_split_with_detail(frame, area, || RichText::raw(self.attention_detail_text()));
+        if area.width == 0 {
+            return;
+        }
+        let Some(result) = self
+            .attention_result
+            .as_ref()
+            .filter(|r| !r.labels.is_empty())
+        else {
+            Paragraph::new("No labels to rank")
+                .style(tokens::muted_text())
+                .render(area, frame);
+            return;
+        };
+        let width = usize::from(area.width).max(40);
+        let mut widths = [4usize, 18, 10, 0];
+        widths[3] = width.saturating_sub(4 + 18 + 10 + 3 * 3 + 2).max(20);
+        let row = |cells: [String; 4]| {
+            cells
+                .iter()
+                .zip(widths)
+                .map(|(cell, w)| {
+                    let cell = truncate_with_ellipsis(cell, w, "…");
+                    let fill = w.saturating_sub(display_width(&cell));
+                    format!("{cell}{}", " ".repeat(fill))
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let mut lines = vec![RichLine::from_spans([RichSpan::styled(
+            format!(
+                "  {}",
+                row([
+                    "Rank".into(),
+                    "Label".into(),
+                    "Attention".into(),
+                    "Reason".into()
+                ])
+            ),
+            tokens::primary_bold(),
+        )])];
+        let rows = usize::from(area.height).saturating_sub(1);
+        let shown = result.labels.len().min(ATTENTION_ROW_LIMIT);
+        let cursor = self.attention_cursor.min(shown - 1);
+        let start = Self::go_history_scroll_start(cursor, rows);
+        for (idx, score) in result
+            .labels
+            .iter()
+            .enumerate()
+            .take(shown)
+            .skip(start)
+            .take(rows)
+        {
+            let selected = idx == cursor;
+            let closed30 = (score.velocity_factor - 1.0).max(0.0);
+            let text = row([
+                (idx + 1).to_string(),
+                score.label.clone(),
+                format!("{:.2}", score.attention_score),
+                format!(
+                    "pr={:.2} stale={:.2} block={:.0} closed30={closed30:.0}",
+                    score.pagerank_sum, score.staleness_factor, score.block_impact
+                ),
+            ]);
+            if selected {
+                lines.push(go_highlight_row(
+                    vec![
+                        RichSpan::styled("┃ ", tokens::primary_bold()),
+                        RichSpan::styled(text, Style::new().bold()),
+                    ],
+                    width.saturating_sub(1),
+                ));
+            } else {
+                lines.push(RichLine::raw(format!("  {text}")));
+            }
+        }
+        Paragraph::new(RichText::from_lines(lines))
+            .wrap(ftui::text::WrapMode::None)
+            .render(area, frame);
+    }
+
+    /// Render the sprint view as Go bv's sprint dashboard: a centered,
+    /// rounded box for the selected sprint with dates and days remaining, a
+    /// progress bar and status breakdown, an ASCII burndown (ideal · vs
+    /// actual ●), the at-risk beads (the same four signals as
+    /// --robot-burndown), and the sprint's beads. j/k switch sprints.
+    fn render_go_sprint(&self, frame: &mut Frame, area: Rect) {
+        let box_width = area.width.saturating_sub(4).min(80);
+        if box_width < 20 || area.height < 5 {
+            return;
+        }
+        let panel = Rect::new(
+            area.x + (area.width - box_width) / 2,
+            area.y,
+            box_width,
+            area.height,
+        );
+        semantic_panel_block("", true, SemanticTone::Accent).render(panel, frame);
+        let inner = block_inner_rect(panel);
+        let body = Rect::new(
+            inner.x.saturating_add(2),
+            inner.y.saturating_add(1),
+            inner.width.saturating_sub(4),
+            inner.height.saturating_sub(1),
+        );
+        Paragraph::new(RichText::from_lines(
+            self.go_sprint_lines(usize::from(body.width)),
+        ))
+        .wrap(ftui::text::WrapMode::None)
+        .scroll((saturating_scroll_offset(self.detail_scroll_offset), 0))
+        .render(body, frame);
+    }
+
+    fn go_sprint_lines(&self, width: usize) -> Vec<RichLine> {
+        let label = |text: &str| RichSpan::styled(text.to_string(), tokens::row_id().bold());
+        let Some(sprint) = self.sprint_data.get(self.sprint_cursor) else {
+            return vec![
+                RichLine::from_spans([RichSpan::styled("📅 Sprints", tokens::primary_bold())]),
+                RichLine::raw(""),
+                RichLine::raw("No sprints defined (.beads/sprints.jsonl)"),
+                RichLine::raw(""),
+                RichLine::from_spans([RichSpan::styled(
+                    "Each line: {\"id\":\"sprint-1\",\"name\":\"Sprint Alpha\",",
+                    tokens::muted_text(),
+                )]),
+                RichLine::from_spans([RichSpan::styled(
+                    "  \"start_date\":\"…\",\"end_date\":\"…\",\"bead_ids\":[…]}",
+                    tokens::muted_text(),
+                )]),
+            ];
+        };
+        let now = sprint_reference_now();
+        let mut lines = vec![
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&format!("📅 Sprint: {}", sprint.name), width, "…"),
+                tokens::primary_bold(),
+            )]),
+            RichLine::raw(""),
+        ];
+
+        let (mut remaining_days, mut duration, mut passed) = (0i64, 0i64, 0i64);
+        if let Some(end) = sprint.end_date {
+            remaining_days = ((end - now).num_hours() / 24).max(0);
+            if let Some(start) = sprint.start_date {
+                duration = (end - start).num_hours() / 24;
+                passed = ((now - start).num_hours() / 24).clamp(0, duration.max(0));
+            }
+        }
+        let fmt_day = |day: Option<DateTime<Utc>>| {
+            day.map_or_else(|| "—".to_string(), |d| d.format("%b %-d").to_string())
+        };
+        lines.push(RichLine::from_spans([
+            label("Dates:    "),
+            RichSpan::raw(format!(
+                "{} → {}",
+                fmt_day(sprint.start_date),
+                fmt_day(sprint.end_date)
+            )),
+        ]));
+        let days_style = if remaining_days == 0 {
+            Style::new().fg(tokens::status_fg("blocked"))
+        } else if remaining_days <= 2 {
+            Style::new().fg(tokens::FG_WARNING)
+        } else {
+            Style::new()
+        };
+        lines.push(RichLine::from_spans([
+            label("Remaining:"),
+            RichSpan::styled(format!(" {remaining_days} days"), days_style),
+        ]));
+        lines.push(RichLine::raw(""));
+
+        let sprint_issues: Vec<&Issue> = self
+            .sprint_visible_issues()
+            .into_iter()
+            .map(|(_, issue)| issue)
+            .collect();
+        let total = sprint_issues.len();
+        let closed = sprint_issues.iter().filter(|i| i.is_closed_like()).count();
+        let open_like: Vec<&&Issue> = sprint_issues
+            .iter()
+            .filter(|i| !i.is_closed_like())
+            .collect();
+        let blocked = open_like
+            .iter()
+            .filter(|i| i.normalized_status() == "blocked")
+            .count();
+        let in_progress = open_like
+            .iter()
+            .filter(|i| i.normalized_status() == "in_progress")
+            .count();
+        let pct = if total == 0 {
+            0.0
+        } else {
+            closed as f64 / total as f64
+        };
+        let bar_width = width.saturating_sub(24).max(10);
+        let filled = ((bar_width as f64 * pct) as usize).min(bar_width);
+        lines.push(RichLine::from_spans([
+            label("Progress: "),
+            RichSpan::styled("█".repeat(filled), tokens::success_text()),
+            RichSpan::styled("░".repeat(bar_width - filled), tokens::muted_text()),
+            RichSpan::raw(format!(" {closed}/{total} ({:.0}%)", pct * 100.0)),
+        ]));
+        lines.push(RichLine::from_spans([
+            label("Status:   "),
+            RichSpan::styled(format!("✓{closed} "), tokens::success_text()),
+            RichSpan::styled(
+                format!("⏳{in_progress} "),
+                Style::new().fg(tokens::FG_WARNING),
+            ),
+            RichSpan::styled(
+                format!("⛔{blocked} "),
+                Style::new().fg(tokens::status_fg("blocked")),
+            ),
+            RichSpan::raw(format!("○{}", open_like.len() - in_progress - blocked)),
+        ]));
+        lines.push(RichLine::raw(""));
+
+        lines.push(RichLine::from_spans([label("Burndown:")]));
+        if duration > 0 && total > 0 {
+            const CHART_HEIGHT: usize = 5;
+            let chart_width = usize::try_from(duration.min(20)).unwrap_or(20);
+            let total_f = total as f64;
+            let remaining = (total - closed) as f64;
+            let band = total_f / CHART_HEIGHT as f64;
+            let passed_frac = passed as f64 / duration as f64;
+            for row in (0..CHART_HEIGHT).rev() {
+                let threshold = total_f * (row + 1) as f64 / CHART_HEIGHT as f64;
+                let mut spans = vec![RichSpan::raw("  ")];
+                for col in 0..=chart_width {
+                    let ideal = total_f * (1.0 - col as f64 / chart_width as f64);
+                    if ideal >= threshold - 0.5 && ideal < threshold + band {
+                        spans.push(RichSpan::styled("·", tokens::row_id()));
+                    } else if col <= (chart_width as f64 * passed_frac) as usize
+                        && remaining >= threshold - 0.5
+                        && remaining < threshold + band
+                    {
+                        spans.push(RichSpan::styled("●", tokens::primary_bold()));
+                    } else {
+                        spans.push(RichSpan::raw(" "));
+                    }
+                }
+                lines.push(RichLine::from_spans(spans));
+            }
+            lines.push(RichLine::raw(format!("  {}", "─".repeat(chart_width + 1))));
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "  · ideal  ● actual",
+                tokens::muted_text().italic(),
+            )]));
+        } else {
+            lines.push(RichLine::raw("  (insufficient data)"));
+        }
+        lines.push(RichLine::raw(""));
+
+        lines.push(RichLine::from_spans([label("At Risk:")]));
+        let at_risk = crate::analysis::alerts::detect_at_risk(
+            &self.analyzer.issues,
+            &sprint.bead_ids,
+            now,
+            crate::analysis::alerts::AtRiskThresholds::default(),
+        );
+        if at_risk.is_empty() {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "  ✓ No at-risk items",
+                tokens::success_text(),
+            )]));
+        }
+        for (idx, item) in at_risk.iter().enumerate() {
+            if idx >= 5 {
+                lines.push(RichLine::raw(format!("  … +{} more", at_risk.len() - 5)));
+                break;
+            }
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(
+                    &format!(
+                        "  ⚠ {} - {} ({})",
+                        item.id,
+                        truncate_with_ellipsis(&item.title, 30, "…"),
+                        item.signals.join(", ")
+                    ),
+                    width,
+                    "…",
+                ),
+                Style::new().fg(tokens::FG_WARNING),
+            )]));
+        }
+        lines.push(RichLine::raw(""));
+
+        lines.push(RichLine::from_spans([label("Beads in Sprint:")]));
+        for issue in sprint_issues.iter().take(10) {
+            let (icon, style) = if issue.is_closed_like() {
+                ("✓", tokens::success_text())
+            } else {
+                match issue.normalized_status().as_str() {
+                    "in_progress" => ("⏳", Style::new().fg(tokens::FG_WARNING)),
+                    "blocked" => ("⛔", Style::new().fg(tokens::status_fg("blocked"))),
+                    _ => ("○", Style::new()),
+                }
+            };
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(
+                    &format!(
+                        "  {icon} {} - {}",
+                        issue.id,
+                        truncate_with_ellipsis(&issue.title, 40, "…")
+                    ),
+                    width,
+                    "…",
+                ),
+                style,
+            )]));
+        }
+        if total > 10 {
+            lines.push(RichLine::raw(format!("  … +{} more", total - 10)));
+        }
+        lines.push(RichLine::raw(""));
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "S/esc: close sprint view • j/k: switch sprint",
+            tokens::muted_text().italic(),
+        )]));
+        lines
+    }
+
+    /// Go bv's per-label flow stats, highest blocking power first.
+    fn go_flow_label_stats(&self) -> Vec<GoFlowLabelStat> {
+        self.flow_matrix
+            .as_ref()
+            .map(go_flow_label_stats)
+            .unwrap_or_default()
+    }
+
+    /// The selected label's blocking relationships as (blocker, blocked)
+    /// issue-index pairs, sorted by IDs, as Go bv's flow drilldown lists
+    /// them.
+    fn go_flow_drilldown_pairs(&self) -> Vec<(usize, usize)> {
+        let Some(flow) = self.flow_matrix.as_ref() else {
+            return Vec::new();
+        };
+        let stats = self.go_flow_label_stats();
+        let Some(selected) = stats.get(self.flow_matrix_row_cursor) else {
+            return Vec::new();
+        };
+        let index: HashMap<&str, usize> = self
+            .analyzer
+            .issues
+            .iter()
+            .enumerate()
+            .map(|(idx, issue)| (issue.id.as_str(), idx))
+            .collect();
+        let mut pairs: Vec<(&str, &str)> = flow
+            .dependencies
+            .iter()
+            .filter(|dep| dep.from_label == selected.label || dep.to_label == selected.label)
+            .flat_map(|dep| dep.blocking_pairs.iter())
+            .map(|pair| (pair.blocker_id.as_str(), pair.blocked_id.as_str()))
+            .filter(|(blocker, blocked)| index.contains_key(blocker) && index.contains_key(blocked))
+            .collect();
+        pairs.sort_unstable();
+        pairs.dedup();
+        pairs
+            .into_iter()
+            .map(|(blocker, blocked)| (index[blocker], index[blocked]))
+            .collect()
+    }
+
+    /// The issue under the flow drilldown cursor (pairs flatten to
+    /// blocker, blocked, blocker, ...).
+    fn go_flow_drilldown_issue(&self) -> Option<&Issue> {
+        let cursor = self.flow_drilldown?;
+        let pairs = self.go_flow_drilldown_pairs();
+        let (source, target) = pairs.get(cursor / 2)?;
+        self.analyzer
+            .issues
+            .get(if cursor % 2 == 0 { *source } else { *target })
+    }
+
+    /// Render the flow matrix as Go bv's `FlowMatrixModel`: a DEPENDENCY
+    /// FLOW header with totals, labels ranked by blocking power with bars,
+    /// and the selected label's impact panel (blocking power, bottleneck
+    /// flag, BLOCKS → / ← BLOCKED BY columns); Enter drills into the
+    /// blocking pairs behind those numbers.
+    fn render_go_flow_matrix(&self, frame: &mut Frame, area: Rect) {
+        let width = usize::from(area.width);
+        let Some(flow) = self
+            .flow_matrix
+            .as_ref()
+            .filter(|flow| !flow.labels.is_empty())
+        else {
+            Paragraph::new("No cross-label dependencies found").render(area, frame);
+            return;
+        };
+        let rule = |w: usize| {
+            RichLine::from_spans([RichSpan::styled("─".repeat(w), tokens::muted_text())])
+        };
+        if self.flow_drilldown.is_some() {
+            Paragraph::new(RichText::from_lines(
+                self.go_flow_drilldown_lines(width, usize::from(area.height)),
+            ))
+            .wrap(ftui::text::WrapMode::None)
+            .render(area, frame);
+            return;
+        }
+
+        let stats = go_flow_label_stats(flow);
+        let mut lines = vec![
+            RichLine::from_spans([
+                RichSpan::styled("DEPENDENCY FLOW  ", tokens::primary_bold()),
+                RichSpan::styled(
+                    format!(
+                        "│ {} labels │ {} cross-label deps │ {} bottlenecks",
+                        flow.labels.len(),
+                        flow.total_cross_label_deps,
+                        flow.bottleneck_labels.len()
+                    ),
+                    Style::new().fg(tokens::FG_SUBTEXT),
+                ),
+            ]),
+            rule(width),
+        ];
+        let body_height = usize::from(area.height).saturating_sub(4);
+        let left_width = (width * 35 / 100).max(25).min(width.saturating_sub(13));
+        let right_width = width.saturating_sub(left_width + 3);
+        let left = self.go_flow_labels_panel(&stats, left_width, body_height);
+        let right = self.go_flow_detail_panel(flow, &stats, right_width);
+        for row in 0..body_height {
+            let mut spans: Vec<RichSpan<'static>> = left
+                .get(row)
+                .map(|line| line.spans().to_vec())
+                .unwrap_or_default();
+            let used: usize = spans
+                .iter()
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            spans.push(RichSpan::raw(" ".repeat(left_width.saturating_sub(used))));
+            spans.push(RichSpan::styled(" │ ", tokens::muted_text()));
+            if let Some(line) = right.get(row) {
+                spans.extend(line.spans().iter().cloned());
+            }
+            lines.push(RichLine::from_spans(spans));
+        }
+        lines.push(rule(width));
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "j/k: navigate  Enter: drill down  Tab: switch panel  Esc: close",
+            Style::new().fg(tokens::FG_SUBTEXT),
+        )]));
+        Paragraph::new(RichText::from_lines(lines))
+            .wrap(ftui::text::WrapMode::None)
+            .render(area, frame);
+    }
+
+    fn go_flow_labels_panel(
+        &self,
+        stats: &[GoFlowLabelStat],
+        width: usize,
+        height: usize,
+    ) -> Vec<RichLine> {
+        let focus = if matches!(self.focus, FocusPane::Detail) {
+            " "
+        } else {
+            "▸"
+        };
+        let mut lines = vec![
+            RichLine::from_spans([RichSpan::styled(
+                format!("{focus} LABELS (by blocking power)"),
+                tokens::row_id().bold(),
+            )]),
+            RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]),
+        ];
+        let max_out = stats
+            .iter()
+            .map(|stat| stat.outgoing)
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let bar_width = width.saturating_sub(20).max(5);
+        let rows = height.saturating_sub(2).max(1);
+        let cursor = self
+            .flow_matrix_row_cursor
+            .min(stats.len().saturating_sub(1));
+        let start = Self::go_history_scroll_start(cursor, rows);
+        for (idx, stat) in stats.iter().enumerate().skip(start).take(rows) {
+            let color = if stat.is_bottleneck {
+                tokens::status_fg("blocked")
+            } else if stat.score > 0.5 {
+                tokens::FG_WARNING
+            } else if stat.outgoing > 0 {
+                tokens::PRIO_P2
+            } else {
+                tokens::FG_SUBTEXT
+            };
+            let filled = (stat.outgoing * bar_width / max_out).min(bar_width);
+            let label = truncate_with_ellipsis(&stat.label, 12, "…");
+            let spans = vec![
+                RichSpan::styled(
+                    format!("{label}{} ", " ".repeat(12 - display_width(&label))),
+                    Style::new().fg(color),
+                ),
+                RichSpan::styled("█".repeat(filled), Style::new().fg(color)),
+                RichSpan::styled("░".repeat(bar_width - filled), tokens::muted_text()),
+                RichSpan::raw(format!(" {:>3}", stat.outgoing)),
+            ];
+            lines.push(if idx == cursor {
+                go_highlight_row(spans, width)
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        lines
+    }
+
+    fn go_flow_detail_panel(
+        &self,
+        flow: &crate::analysis::label_intel::CrossLabelFlow,
+        stats: &[GoFlowLabelStat],
+        width: usize,
+    ) -> Vec<RichLine> {
+        let Some(stat) = stats.get(
+            self.flow_matrix_row_cursor
+                .min(stats.len().saturating_sub(1)),
+        ) else {
+            return vec![RichLine::raw("Select a label")];
+        };
+        let focus = if matches!(self.focus, FocusPane::Detail) {
+            "▸"
+        } else {
+            " "
+        };
+        let mut lines = vec![
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(&format!("{focus} {}", stat.label), width, "…"),
+                tokens::primary_bold(),
+            )]),
+            RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]),
+            RichLine::raw(""),
+            RichLine::from_spans([RichSpan::styled(
+                "IMPACT SUMMARY",
+                Style::new().fg(tokens::FG_SUBTEXT),
+            )]),
+        ];
+        let (level, color) = if stat.score > 0.7 {
+            ("HIGH", tokens::status_fg("blocked"))
+        } else if stat.score > 0.3 {
+            ("Medium", tokens::FG_WARNING)
+        } else {
+            ("Low", tokens::status_fg("open"))
+        };
+        let filled = ((stat.score * 20.0) as usize).min(20);
+        lines.push(RichLine::from_spans([
+            RichSpan::raw("  Blocking Power: "),
+            RichSpan::styled("█".repeat(filled), Style::new().fg(color)),
+            RichSpan::styled("░".repeat(20 - filled), tokens::muted_text()),
+            RichSpan::raw(" "),
+            RichSpan::styled(level, Style::new().fg(color).bold()),
+        ]));
+        if stat.is_bottleneck {
+            lines.push(RichLine::from_spans([RichSpan::styled(
+                "  ⚠ BOTTLENECK",
+                Style::new().fg(tokens::status_fg("blocked")).bold(),
+            )]));
+        }
+        lines.push(RichLine::raw(""));
+
+        let half = width.saturating_sub(4) / 2;
+        let column = |spans: Vec<RichSpan<'static>>| {
+            let used: usize = spans
+                .iter()
+                .map(|span| display_width(span.content.as_ref()))
+                .sum();
+            let mut spans = spans;
+            spans.push(RichSpan::raw(" ".repeat(half.saturating_sub(used) + 2)));
+            spans
+        };
+        let mut header = column(vec![RichSpan::styled(
+            format!("BLOCKS → ({})", stat.outgoing),
+            Style::new().fg(tokens::status_fg("blocked")).bold(),
+        )]);
+        header.push(RichSpan::styled(
+            format!("← BLOCKED BY ({})", stat.incoming),
+            Style::new().fg(tokens::status_fg("in_progress")).bold(),
+        ));
+        lines.push(RichLine::from_spans(header));
+
+        let label_index: HashMap<&str, usize> = flow
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(idx, label)| (label.as_str(), idx))
+            .collect();
+        let count = |from: &str, to: &str| -> usize {
+            match (label_index.get(from), label_index.get(to)) {
+                (Some(&i), Some(&j)) => usize::try_from(flow.flow_matrix[i][j]).unwrap_or(0),
+                _ => 0,
+            }
+        };
+        let entry = |label: &str, n: usize| -> Vec<RichSpan<'static>> {
+            let (bar, rest) = go_flow_mini_bar(n, 5);
+            vec![
+                RichSpan::raw("  "),
+                bar,
+                RichSpan::raw(rest),
+                RichSpan::raw(truncate_with_ellipsis(
+                    &format!(" {label} ({n})"),
+                    half.saturating_sub(7).max(4),
+                    "…",
+                )),
+            ]
+        };
+        const MAX_ENTRIES: usize = 6;
+        for i in 0..MAX_ENTRIES {
+            let left = stat
+                .outgoing_labels
+                .get(i)
+                .map(|label| entry(label, count(&stat.label, label)))
+                .unwrap_or_default();
+            let right = stat
+                .incoming_labels
+                .get(i)
+                .map(|label| entry(label, count(label, &stat.label)))
+                .unwrap_or_default();
+            if left.is_empty() && right.is_empty() {
+                break;
+            }
+            let mut spans = column(left);
+            spans.extend(right);
+            lines.push(RichLine::from_spans(spans));
+        }
+        if stat.outgoing_labels.len() > MAX_ENTRIES || stat.incoming_labels.len() > MAX_ENTRIES {
+            let more = |n: usize| {
+                if n > MAX_ENTRIES {
+                    format!("  +{} more", n - MAX_ENTRIES)
+                } else {
+                    String::new()
+                }
+            };
+            let mut spans = column(vec![RichSpan::styled(
+                more(stat.outgoing_labels.len()),
+                tokens::muted_text().italic(),
+            )]);
+            spans.push(RichSpan::styled(
+                more(stat.incoming_labels.len()),
+                tokens::muted_text().italic(),
+            ));
+            lines.push(RichLine::from_spans(spans));
+        }
+        lines.push(RichLine::raw(""));
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "Press Enter to see issues",
+            Style::new().fg(tokens::FG_SUBTEXT).italic(),
+        )]));
+        lines
+    }
+
+    /// Go bv's flow drilldown: the selected label's blocking pairs as
+    /// blocker / `blocks` blocked rows with status dots.
+    fn go_flow_drilldown_lines(&self, width: usize, height: usize) -> Vec<RichLine> {
+        let label = self
+            .go_flow_label_stats()
+            .get(self.flow_matrix_row_cursor)
+            .map(|stat| stat.label.clone())
+            .unwrap_or_default();
+        let pairs = self.go_flow_drilldown_pairs();
+        let rule =
+            || RichLine::from_spans([RichSpan::styled("─".repeat(width), tokens::muted_text())]);
+        let mut lines = vec![
+            RichLine::from_spans([RichSpan::styled(
+                truncate_with_ellipsis(
+                    &format!(
+                        "Dependencies involving: {label} ({} relationships)",
+                        pairs.len()
+                    ),
+                    width,
+                    "…",
+                ),
+                tokens::primary_bold(),
+            )]),
+            rule(),
+            RichLine::raw(""),
+        ];
+        if pairs.is_empty() {
+            lines.push(RichLine::raw("No blocking relationships found"));
+            return lines;
+        }
+        let endpoints: Vec<(usize, bool)> = pairs
+            .iter()
+            .flat_map(|&(blocker, blocked)| [(blocker, false), (blocked, true)])
+            .collect();
+        let rows = (height.saturating_sub(8) / 2 * 2).max(2);
+        let cursor = self.flow_drilldown.unwrap_or(0).min(endpoints.len() - 1);
+        let start = Self::go_history_scroll_start(cursor, rows) / 2 * 2;
+        for (idx, &(issue_index, is_blocked)) in endpoints.iter().enumerate().skip(start).take(rows)
+        {
+            let Some(issue) = self.analyzer.issues.get(issue_index) else {
+                continue;
+            };
+            let prefix = if is_blocked { "  blocks " } else { "" };
+            let spans = vec![
+                RichSpan::styled("● ", Style::new().fg(tokens::status_fg(&issue.status))),
+                RichSpan::raw(truncate_with_ellipsis(
+                    &format!("{prefix}{} {}", issue.id, issue.title),
+                    width.saturating_sub(2),
+                    "…",
+                )),
+            ];
+            lines.push(if idx == cursor {
+                go_highlight_row(spans, width)
+            } else {
+                RichLine::from_spans(spans)
+            });
+        }
+        lines.push(RichLine::raw(""));
+        lines.push(rule());
+        lines.push(RichLine::from_spans([RichSpan::styled(
+            "j/k: endpoint  Enter: details  Esc: back",
+            Style::new().fg(tokens::FG_SUBTEXT),
+        )]));
+        lines
+    }
+
+    /// Enter (or a 1-9 rank key) on a label view: filter the issue list by
+    /// that label and return to it, as Go bv does.
+    fn filter_list_by_label_from_view(&mut self, label: &str) {
+        self.modal_label_filter = None;
+        self.set_label_filter(label);
+        self.mode = ViewMode::Main;
+        self.focus = FocusPane::List;
+        self.detail_scroll_offset = 0;
+    }
+
+    fn selected_dashboard_label(&self) -> Option<String> {
+        self.label_dashboard
+            .as_ref()
+            .and_then(|result| result.labels.get(self.label_dashboard_cursor))
+            .map(|label| label.label.clone())
+    }
+
+    fn attention_label_at(&self, rank_index: usize) -> Option<String> {
+        self.attention_result
+            .as_ref()
+            .and_then(|result| result.labels.get(rank_index))
+            .filter(|_| rank_index < ATTENTION_ROW_LIMIT)
+            .map(|score| score.label.clone())
+    }
+
     /// Render the history view as Go bv does: a four-line header (title and
     /// mode, stats badges, filter status, rule) over rounded panes — beads |
     /// commits | details, with a timeline pane in wide bead mode, and
@@ -11357,8 +12681,8 @@ impl BvrApp {
     }
 
     /// Markdown source for the Go bv-style detail pane of the selection.
-    fn main_go_detail_markdown(&self) -> (String, String) {
-        let Some(issue) = self.selected_issue() else {
+    fn main_go_detail_markdown(&self, issue: Option<&Issue>) -> (String, String) {
+        let Some(issue) = issue else {
             return ("No issues selected".to_string(), String::new());
         };
         let mut md = String::new();
@@ -11488,13 +12812,19 @@ impl BvrApp {
     /// The external reference is a real OSC-8 hyperlink line between the
     /// metadata block and the body, followed by the pane's action keys.
     fn main_go_detail_text(&self, width: u16) -> RichText {
+        self.go_issue_detail_text(self.selected_issue(), width)
+    }
+
+    /// Go bv's issue detail (markdown metadata, triage and graph sections,
+    /// body, dependencies, comments) for any issue, e.g. a tree node.
+    fn go_issue_detail_text(&self, issue: Option<&Issue>, width: u16) -> RichText {
         let renderer =
             ftui_extras::markdown::MarkdownRenderer::new(tokens::detail_markdown_theme())
                 .rule_width(width.saturating_sub(2).max(10))
                 .table_max_width(width.saturating_sub(2).max(10));
-        let (head, body) = self.main_go_detail_markdown();
+        let (head, body) = self.main_go_detail_markdown(issue);
         let mut text = renderer.render(&head);
-        if let Some(issue) = self.selected_issue() {
+        if let Some(issue) = issue {
             if let Some(url) = issue
                 .external_ref
                 .as_deref()
@@ -11600,6 +12930,43 @@ impl BvrApp {
             }
         } else if matches!(self.mode, ViewMode::Insights) {
             format!(" {} • L:labels • h:detail ", self.insights_panel.label())
+        } else if matches!(self.mode, ViewMode::LabelDashboard) {
+            self.label_dashboard
+                .as_ref()
+                .map_or_else(String::new, |result| {
+                    format!(
+                        " {} labels • {} critical • {} warning ",
+                        result.total_labels, result.critical_count, result.warning_count
+                    )
+                })
+        } else if matches!(self.mode, ViewMode::Attention) {
+            self.attention_result
+                .as_ref()
+                .map_or_else(String::new, |result| {
+                    format!(
+                        " top {} of {} labels by attention ",
+                        result.labels.len().min(ATTENTION_ROW_LIMIT),
+                        result.total_labels
+                    )
+                })
+        } else if matches!(self.mode, ViewMode::Tree) {
+            if self.tree_search_active || !self.tree_search_query.is_empty() {
+                let matches = self.tree_search_matches().len();
+                let position = if matches == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " [{}/{matches}]",
+                        self.tree_search_match_cursor.min(matches - 1) + 1
+                    )
+                };
+                format!(
+                    " /{}{position} • n/N:match • enter:done • esc:cancel ",
+                    self.tree_search_query
+                )
+            } else {
+                " zo/zc:fold • zR/zM:all • /:search ".to_string()
+            }
         } else if matches!(self.mode, ViewMode::History) {
             let view = if matches!(self.history_view_mode, HistoryViewMode::Git) {
                 "b:beads"
@@ -11700,7 +13067,40 @@ impl BvrApp {
 
         let sep = " │ ";
         let mut hints: Vec<(&str, &str)> = Vec::new();
-        if matches!(self.mode, ViewMode::History) {
+        if matches!(self.mode, ViewMode::Sprint) {
+            hints.extend([("j/k", " sprint"), ("^j/k", " scroll"), ("S", " close")]);
+        } else if matches!(self.mode, ViewMode::FlowMatrix) {
+            if self.flow_drilldown.is_some() {
+                hints.extend([("j/k", " endpoint"), ("⏎", " details"), ("esc", " back")]);
+            } else {
+                hints.extend([
+                    ("j/k", " nav"),
+                    ("tab", " panel"),
+                    ("⏎", " drill"),
+                    ("esc", " back"),
+                ]);
+            }
+        } else if matches!(self.mode, ViewMode::LabelDashboard | ViewMode::Attention) {
+            if matches!(self.focus, FocusPane::Detail) {
+                hints.push(("^j/k", " scroll"));
+            }
+            hints.push(("j/k", " nav"));
+            if matches!(self.mode, ViewMode::Attention) {
+                hints.push(("1-9", " filter"));
+            }
+            hints.extend([("⏎", " filter"), ("tab", " detail"), ("esc", " close")]);
+        } else if matches!(self.mode, ViewMode::Tree) {
+            if matches!(self.focus, FocusPane::Detail) {
+                hints.push(("^j/k", " scroll"));
+            }
+            hints.extend([
+                ("j/k", " nav"),
+                ("h/l", " fold"),
+                ("⏎", " toggle"),
+                ("tab", " detail"),
+                ("T", " list"),
+            ]);
+        } else if matches!(self.mode, ViewMode::History) {
             if self.history_file_tree_focus {
                 hints.extend([("j/k", " tree"), ("⏎", " filter"), ("esc", " close tree")]);
             } else {
@@ -13753,7 +15153,10 @@ impl BvrApp {
     }
 
     fn move_attention_cursor(&mut self, delta: i32) {
-        let count = self.attention_result.as_ref().map_or(0, |r| r.labels.len());
+        let count = self
+            .attention_result
+            .as_ref()
+            .map_or(0, |r| r.labels.len().min(ATTENTION_ROW_LIMIT));
         if count == 0 {
             return;
         }
@@ -13891,7 +15294,7 @@ impl BvrApp {
 
         // Deduplicate and sort children lists.
         for children in children_of.values_mut() {
-            children.sort_by(|&a, &b| issues[a].id.cmp(&issues[b].id));
+            children.sort_by(|&a, &b| go_tree_order(&issues[a], &issues[b]));
             children.dedup();
         }
 
@@ -13923,7 +15326,7 @@ impl BvrApp {
                 }
             }
             for children in blocking_children_of.values_mut() {
-                children.sort_by(|&a, &b| issues[a].id.cmp(&issues[b].id));
+                children.sort_by(|&a, &b| go_tree_order(&issues[a], &issues[b]));
                 children.dedup();
             }
 
@@ -13934,7 +15337,7 @@ impl BvrApp {
             children_of = blocking_children_of;
         }
 
-        roots.sort_by(|&a, &b| issues[a].id.cmp(&issues[b].id));
+        roots.sort_by(|&a, &b| go_tree_order(&issues[a], &issues[b]));
 
         // When a list filter is active, compute which nodes are "visible":
         // an issue that matches the filter, plus any ancestor whose subtree
@@ -14525,8 +15928,22 @@ impl BvrApp {
     fn compute_label_dashboard(&mut self) {
         use crate::analysis::label_intel::compute_all_label_health;
         let metrics = self.analyzer.graph.compute_metrics();
-        let result =
+        let mut result =
             compute_all_label_health(&self.analyzer.issues, &self.analyzer.graph, &metrics);
+        // Go bv's dashboard order: critical, then warning, then healthy;
+        // within a level the most blocked, then the least healthy, then name.
+        let level_rank = |level: &str| match level {
+            "critical" => 0,
+            "warning" => 1,
+            _ => 2,
+        };
+        result.labels.sort_by(|a, b| {
+            level_rank(&a.health_level)
+                .cmp(&level_rank(&b.health_level))
+                .then_with(|| b.blocked_count.cmp(&a.blocked_count))
+                .then_with(|| a.health.cmp(&b.health))
+                .then_with(|| a.label.cmp(&b.label))
+        });
         self.label_dashboard = Some(result);
     }
 
@@ -14708,6 +16125,7 @@ impl BvrApp {
             self.mode = ViewMode::FlowMatrix;
             self.flow_matrix_row_cursor = 0;
             self.flow_matrix_col_cursor = 0;
+            self.flow_drilldown = None;
             self.compute_flow_matrix();
         }
     }
@@ -15219,8 +16637,9 @@ impl BvrApp {
         } else {
             self.load_sprint_data();
             self.mode = ViewMode::Sprint;
-            self.sprint_cursor = 0;
+            self.sprint_cursor = go_active_sprint_index(&self.sprint_data, sprint_reference_now());
             self.sprint_issue_cursor = 0;
+            self.detail_scroll_offset = 0;
         }
     }
 
@@ -18729,6 +20148,7 @@ fn new_app_with_background(
         flow_matrix: None,
         flow_matrix_row_cursor: 0,
         flow_matrix_col_cursor: 0,
+        flow_drilldown: None,
         time_travel_ref_input: String::new(),
         time_travel_input_active: false,
         time_travel_diff: None,
@@ -18797,6 +20217,24 @@ fn interactive_frame_budget() -> ftui::render::budget::FrameBudgetConfig {
     ftui::render::budget::FrameBudgetConfig::strict(std::time::Duration::from_secs(1))
 }
 
+impl BvrApp {
+    /// Computed views initialise their data lazily when toggled via
+    /// keybinding, but `--view` and `--debug-render` bypass those toggle
+    /// functions. Trigger the same initialisation so the view is populated
+    /// on the very first frame.
+    fn initialize_view_data(&mut self) {
+        match self.mode {
+            ViewMode::Tree => self.build_tree_flat_nodes(),
+            ViewMode::LabelDashboard => self.compute_label_dashboard(),
+            ViewMode::FlowMatrix => self.compute_flow_matrix(),
+            ViewMode::Sprint => self.load_sprint_data(),
+            ViewMode::Actionable => self.compute_actionable_plan(),
+            ViewMode::Attention => self.compute_attention(),
+            _ => {}
+        }
+    }
+}
+
 pub fn run_tui_with_background(
     issues: Vec<Issue>,
     background_config: Option<BackgroundModeConfig>,
@@ -18808,19 +20246,7 @@ pub fn run_tui_with_background(
     if let Some(filter) = initial_filter {
         model.list_filter = filter;
     }
-    // Computed views initialise their data lazily when toggled via
-    // keybinding, but `--view` bypasses those toggle functions.
-    // Trigger the same initialisation here so the view is populated
-    // on the very first frame.
-    match mode {
-        ViewMode::Tree => model.build_tree_flat_nodes(),
-        ViewMode::LabelDashboard => model.compute_label_dashboard(),
-        ViewMode::FlowMatrix => model.compute_flow_matrix(),
-        ViewMode::Sprint => model.load_sprint_data(),
-        ViewMode::Actionable => model.compute_actionable_plan(),
-        ViewMode::Attention => model.compute_attention(),
-        _ => {}
-    }
+    model.initialize_view_data();
     model.select_first_visible();
     App::new(model)
         .screen_mode(ScreenMode::AltScreen)
@@ -18847,6 +20273,7 @@ pub fn render_debug_view(
     if matches!(mode, ViewMode::History) && matches!(kind, DebugRenderKind::Layout) {
         app.history_view_mode = HistoryViewMode::Bead;
     }
+    app.initialize_view_data();
     // Show history as the interactive viewer does once git correlation has
     // run. Tests keep the repository's live git log out of their renders.
     #[cfg(not(test))]
@@ -18925,17 +20352,10 @@ fn parse_debug_render_target(view_name: &str) -> Result<(ViewMode, DebugRenderKi
         (view_name, DebugRenderKind::View)
     };
 
-    let mode = match base_name {
-        "insights" => ViewMode::Insights,
-        "board" => ViewMode::Board,
-        "history" => ViewMode::History,
-        "main" => ViewMode::Main,
-        "graph" => ViewMode::Graph,
-        other => {
-            return Err(BvrError::InvalidArgument(format!(
-                "Unknown debug-render view '{other}'. Supported: insights, board, history, main, graph"
-            )));
-        }
+    let Some(mode) = ViewMode::from_cli(base_name) else {
+        return Err(BvrError::InvalidArgument(format!(
+            "Unknown debug-render view '{base_name}'. Supported: main, board, insights, graph, history, actionable, attention, tree, labels, flow, timediff, sprint"
+        )));
     };
 
     Ok((mode, kind))
@@ -19579,6 +20999,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -19923,7 +21344,7 @@ mod tests {
             .expect_err("unknown view should fail");
         let message = error.to_string();
         assert!(message.contains("Unknown debug-render view 'bogus'"));
-        assert!(message.contains("insights, board, history, main, graph"));
+        assert!(message.contains("main, board, insights, graph, history"));
     }
 
     #[test]
@@ -21710,6 +23131,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -21820,6 +23242,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -21924,6 +23347,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22046,6 +23470,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22152,6 +23577,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22259,6 +23685,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22367,6 +23794,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22470,6 +23898,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22588,6 +24017,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22730,6 +24160,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -22977,6 +24408,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -23087,6 +24519,7 @@ mod tests {
             flow_matrix: None,
             flow_matrix_row_cursor: 0,
             flow_matrix_col_cursor: 0,
+            flow_drilldown: None,
             time_travel_ref_input: String::new(),
             time_travel_input_active: false,
             time_travel_diff: None,
@@ -25827,7 +27260,7 @@ mod tests {
     #[test]
     fn mouse_left_click_on_header_mode_tab_switches_mode() {
         // Go bv views have no tab header; the Rust-only modes do.
-        let mut app = new_app(ViewMode::Tree, 0);
+        let mut app = new_app(ViewMode::TimeTravelDiff, 0);
         let (x, y) =
             header_tab_click_point(&app, 120, 24, ViewMode::Graph).expect("graph header tab point");
 
@@ -26214,6 +27647,138 @@ mod tests {
         // [ toggles back
         app.handle_key(KeyCode::Char('['), Modifiers::NONE);
         assert!(matches!(app.mode, ViewMode::Main));
+    }
+
+    fn cross_label_flow_issues() -> Vec<Issue> {
+        let issue = |id: &str, labels: &[&str], deps: &[&str]| Issue {
+            id: id.to_string(),
+            title: format!("{id} work"),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            labels: labels.iter().map(ToString::to_string).collect(),
+            dependencies: deps
+                .iter()
+                .map(|dep| Dependency {
+                    issue_id: id.to_string(),
+                    depends_on_id: (*dep).to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                })
+                .collect(),
+            ..Issue::default()
+        };
+        vec![
+            issue("api-1", &["api"], &[]),
+            issue("core-1", &["core"], &[]),
+            issue("ui-1", &["ui"], &["api-1", "core-1"]),
+            issue("ui-2", &["ui"], &["api-1"]),
+            issue("db-1", &["db"], &["api-1"]),
+        ]
+    }
+
+    #[test]
+    fn flow_stats_rank_labels_by_blocking_power() {
+        let mut app = new_app_with_issues(ViewMode::FlowMatrix, 0, cross_label_flow_issues());
+        app.compute_flow_matrix();
+        let stats = app.go_flow_label_stats();
+        let order: Vec<(&str, usize, usize)> = stats
+            .iter()
+            .map(|stat| (stat.label.as_str(), stat.outgoing, stat.incoming))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("api", 3, 0), ("core", 1, 0), ("db", 0, 1), ("ui", 0, 3)]
+        );
+        assert_eq!(stats[0].outgoing_labels, vec!["db", "ui"]);
+        assert!((stats[1].score - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn flow_drilldown_walks_blocking_pairs_and_opens_issue() {
+        let mut app = new_app_with_issues(ViewMode::FlowMatrix, 0, cross_label_flow_issues());
+        app.compute_flow_matrix();
+        let text = render_app(&app, 120, 24);
+        assert!(text.contains("DEPENDENCY FLOW"), "{text}");
+        assert!(text.contains("BLOCKS → (3)"), "{text}");
+
+        app.handle_key(KeyCode::Enter, Modifiers::NONE);
+        assert_eq!(app.flow_drilldown, Some(0));
+        let text = render_app(&app, 120, 24);
+        assert!(
+            text.contains("Dependencies involving: api (3 relationships)"),
+            "{text}"
+        );
+        assert!(text.contains("blocks db-1 db-1 work"), "{text}");
+
+        // Endpoint 1 is the blocked side of the first pair (api-1 → db-1).
+        app.handle_key(KeyCode::Char('j'), Modifiers::NONE);
+        assert_eq!(app.flow_drilldown, Some(1));
+        assert_eq!(
+            app.go_flow_drilldown_issue().map(|i| i.id.as_str()),
+            Some("db-1")
+        );
+
+        app.handle_key(KeyCode::Escape, Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::FlowMatrix);
+        assert_eq!(app.flow_drilldown, None);
+
+        app.handle_key(KeyCode::Enter, Modifiers::NONE);
+        app.handle_key(KeyCode::Char('j'), Modifiers::NONE);
+        app.handle_key(KeyCode::Enter, Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::Main);
+        assert_eq!(app.focus, FocusPane::Detail);
+        assert_eq!(app.selected_issue().map(|i| i.id.as_str()), Some("db-1"));
+    }
+
+    #[test]
+    fn label_dashboard_enter_filters_list_by_selected_label() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('['), Modifiers::NONE);
+        let label = app
+            .selected_dashboard_label()
+            .expect("sample issues carry labels");
+        app.handle_key(KeyCode::Enter, Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::Main);
+        assert_eq!(app.focus, FocusPane::List);
+        assert_eq!(app.modal_label_filter.as_deref(), Some(label.as_str()));
+    }
+
+    #[test]
+    fn label_dashboard_orders_critical_then_blocked_then_health() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.handle_key(KeyCode::Char('['), Modifiers::NONE);
+        let labels = &app.label_dashboard.as_ref().expect("dashboard").labels;
+        let rank = |level: &str| match level {
+            "critical" => 0,
+            "warning" => 1,
+            _ => 2,
+        };
+        for pair in labels.windows(2) {
+            let key = |l: &crate::analysis::label_intel::LabelHealth| {
+                (
+                    rank(&l.health_level),
+                    std::cmp::Reverse(l.blocked_count),
+                    l.health,
+                )
+            };
+            assert!(
+                key(&pair[0]) <= key(&pair[1]),
+                "dashboard order broken: {pair:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn attention_rank_digit_filters_list_and_view_caps_at_ten() {
+        let mut app = new_app(ViewMode::Attention, 0);
+        app.compute_attention();
+        let second = app
+            .attention_label_at(1)
+            .expect("at least two ranked labels");
+        app.handle_key(KeyCode::Char('2'), Modifiers::NONE);
+        assert_eq!(app.mode, ViewMode::Main);
+        assert_eq!(app.modal_label_filter.as_deref(), Some(second.as_str()));
+        assert!(app.attention_label_at(super::ATTENTION_ROW_LIMIT).is_none());
     }
 
     #[test]
@@ -30007,7 +31572,7 @@ mod tests {
         assert_eq!(app.mode, ViewMode::Tree);
         let text = journey_capture(&app, w, h, "tree_entry", &mut caps);
         assert!(
-            text.contains("Dependency tree") || text.contains("no dependency tree"),
+            text.contains("P1 A Feature work") || text.contains("Tree View"),
             "tree should show structure: {text}"
         );
 

@@ -2,33 +2,33 @@
 source: src/tui.rs
 expression: text
 ---
-bvr 1 Main b Board i Insights ] Flow | mode=Flow | focus=list | issues=3/3 | filter=all |
-┌Flow Matrix [focus]─────────────────────┐┌Flow Detail─────────────────────────────────────────────┐
-│                                        ││                                                        │
-│ Cross-label flow (3 labels, 0 deps) |  ││ Label: backend                                         │
-│                                        ││                                                        │
-│            vbackend   frontend  urgent ││ Issues with this label: 2                              │
-│ -------------------------------------- ││   A - Feature work                                     │
-│ > backend  .        -        -         ││   B - Bug fix                                          │
-│   frontend -        .        -         ││                                                        │
-│   urgent   -        -        .         ││                                                        │
-│                                        ││                                                        │
-│ j/k rows | h/l cols | Tab focus | ] or ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-│                                        ││                                                        │
-└────────────────────────────────────────┘└────────────────────────────────────────────────────────┘
-Flow: 3 labels, 0 cross-deps │ j/k rows │ h/l cols │ Tab focus │ ]/Esc back
+DEPENDENCY FLOW  │ 3 labels │ 0 cross-label deps │ 0 bottlenecks
+────────────────────────────────────────────────────────────────────────────────────────────────────
+▸ LABELS (by blocking power)        │   backend
+─────────────────────────────────── │ ──────────────────────────────────────────────────────────────
+backend      ░░░░░░░░░░░░░░░   0    │
+frontend     ░░░░░░░░░░░░░░░   0    │ IMPACT SUMMARY
+urgent       ░░░░░░░░░░░░░░░   0    │   Blocking Power: ░░░░░░░░░░░░░░░░░░░░ Low
+                                    │
+                                    │ BLOCKS → (0)                   ← BLOCKED BY (0)
+                                    │
+                                    │ Press Enter to see issues
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+                                    │
+────────────────────────────────────────────────────────────────────────────────────────────────────
+j/k: navigate  Enter: drill down  Tab: switch panel  Esc: close
+ 📋 ALL  L:labels • h:detail  ○3 ◉3 ◈0 ●0        3 issues  j/k nav │ tab panel │ ⏎ drill │ esc back

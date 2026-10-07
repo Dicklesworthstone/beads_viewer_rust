@@ -124,21 +124,21 @@ expression: artifact
  📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1
 
 --- Step 8: narrow_tree ---
-bvr 1 Main b Board i In T Tree  | 3/3 |
-┌Dependency T┐┌Issue Detail────────────┐
-│            ││                        │
-│ Dependency ││ ID: A                  │
-│ ────────── ││ Title: Root            │
-│ ▸ [-] o P0 ││ Status: open           │
-│   │   └──  ││ Type: task             │
-│       x P0 ││ Depth: 0               │
-│            ││ Labels: core, parity   │
-│            ││                        │
-│            ││ Dependents (1):        │
-│            ││   B - Dependent        │
-│            ││                        │
-└────────────┘└────────────────────────┘
-Tree: 3 nodes │ j/k navigate
+┃ ▾ 📋 P0 A Root 🟢
+  └── • 📋 P0 B Dependent 🟢
+  • 📋 P0 C Closed ⚫
+
+
+
+
+
+
+
+
+
+
+
+ 📋 ALL  ⚠ 2 alerts (!)   ○2 ◉1 ◈0 ●1
 
 --- Step 9: narrow_main_return ---
 ┌──────────────────────────────────────┐
