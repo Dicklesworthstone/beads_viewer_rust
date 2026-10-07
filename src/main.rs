@@ -3262,6 +3262,14 @@ fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
         return run_upgrade(*dry_run);
     }
 
+    if cli.rollback {
+        return EarlyCommandOutcome {
+            message: "bvr has no rollback backup: it installs through cargo, which replaces the binary in place.\n  Reinstall a specific release: cargo install beads_viewer_rust --version <x.y.z> --locked\n  Latest release: bvr upgrade".to_string(),
+            exit_code: ExitCode::from(2),
+            to_stderr: true,
+        };
+    }
+
     if cli.check_update {
         let current = env!("CARGO_PKG_VERSION");
         let message = match fetch_latest_version() {

@@ -405,7 +405,7 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--cpu-profile` | Go pprof equivalent; `--profile-startup` covers startup timing, external tools (perf, samply) available for CPU profiling. |
 
 Previously listed as excluded but now implemented:
-- `--update`, `--check-update`, `--rollback`, `--yes` — stub responses with remediation guidance.
+- `--update`, `--update-dry-run`, `--check-update`, `--rollback`, `--yes` — `--update`/`--update-dry-run` run `bvr upgrade` (cargo install of the latest release; `--dry-run` only reports), `--check-update` is the non-mutating check, `--rollback` explains how to pin a version (cargo keeps no backup), `--yes` is accepted (upgrade never prompts).
 - `--profile-json`, `--profile-startup` — phase timing with JSON output option.
 - `--debug-render`, `--debug-height`, `--debug-width` — non-interactive TUI rendering for CI/diagnostics.
 - `--background-mode`, `--no-background-mode` — CLI/env/config precedence plus TUI background reload loop.

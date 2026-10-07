@@ -79,6 +79,16 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub check_update: bool,
 
+    /// Legacy bv's rollback to a backed-up binary. bvr installs through
+    /// cargo, which keeps no backup; this explains how to pin a version.
+    #[arg(long, hide = true, action = ArgAction::SetTrue)]
+    pub rollback: bool,
+
+    /// Legacy bv's prompt confirmation for --update/--rollback; accepted and
+    /// ignored (upgrade never prompts).
+    #[arg(long, short = 'y', hide = true, action = ArgAction::SetTrue)]
+    pub yes: bool,
+
     #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
     pub format: OutputFormat,
 
@@ -641,7 +651,7 @@ impl Cli {
 
     #[must_use]
     pub fn is_operational_command(&self) -> bool {
-        self.check_update || self.command.is_some()
+        self.check_update || self.rollback || self.command.is_some()
     }
 
     #[must_use]
@@ -981,6 +991,23 @@ pub fn rewrite_agent_intent_args(args: &[String]) -> Vec<String> {
         return Vec::new();
     }
 
+    // Legacy bv's self-update flags map onto `bvr upgrade`: `--update`
+    // installs, `--update-dry-run` (or `--update --dry-run`) only reports.
+    // `--yes` answered bv's confirmation prompt; upgrade never prompts.
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--update" | "--update-dry-run"))
+    {
+        let mut out = vec!["upgrade".to_string()];
+        if args
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--update-dry-run" | "--dry-run"))
+        {
+            out.push("--dry-run".to_string());
+        }
+        return out;
+    }
+
     // The command word is the first positional that is not a flag's value,
     // so `bvr --workspace w.yaml next` works as well as `bvr next`.
     let mut index = 0;
@@ -1312,6 +1339,9 @@ mod tests {
     fn agent_intent_leaves_unknown_and_canonical_args_alone() {
         assert_eq!(rw(&["upgrade", "--dry-run"]), ["upgrade", "--dry-run"]);
         assert_eq!(rw(&["self-update"]), ["upgrade"]);
+        assert_eq!(rw(&["--update", "--yes"]), ["upgrade"]);
+        assert_eq!(rw(&["--update-dry-run"]), ["upgrade", "--dry-run"]);
+        assert_eq!(rw(&["--update", "--dry-run"]), ["upgrade", "--dry-run"]);
         assert_eq!(
             rw(&["--workspace", "w.yaml", "next", "--json"]),
             ["--workspace", "w.yaml", "--robot-next", "--format", "json"]
