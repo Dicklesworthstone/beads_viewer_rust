@@ -269,25 +269,26 @@
           <!-- Desktop Navigation tabs (hidden on mobile) -->
           <nav class="hidden md:flex space-x-1">
             <a href="#/"
-               @click.prevent="window.location.hash = '#/'"
+               @click="cancelPendingSearch()"
                :class="view === 'dashboard' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200 shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'"
                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer hover:scale-[1.02] active:scale-95">
               Dashboard
             </a>
             <a href="#/issues"
+               :href="issuesHref"
                @click.prevent="openIssues()"
                :class="view === 'issues' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200 shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'"
                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer hover:scale-[1.02] active:scale-95">
               Issues
             </a>
             <a href="#/insights"
-               @click.prevent="window.location.hash = '#/insights'"
+               @click="cancelPendingSearch()"
                :class="view === 'insights' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200 shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'"
                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer hover:scale-[1.02] active:scale-95">
               Insights
             </a>
             <a href="#/graph"
-               @click.prevent="window.location.hash = '#/graph'"
+               @click="cancelPendingSearch()"
                :class="view === 'graph' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200 shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'"
                class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer hover:scale-[1.02] active:scale-95">
               Graph
@@ -301,7 +302,7 @@
               <div class="relative">
                 <input type="text"
                        x-model="searchQuery"
-                       @input.debounce.300ms="search()"
+                       @input="queueSearch()"
                        placeholder="Search issues..."
                        class="w-40 lg:w-64 pl-10 pr-8 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm focus:ring-2 focus:ring-beads-500 focus:border-transparent transition-shadow">
                 <svg class="absolute left-3 top-2.5 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -401,7 +402,7 @@
         <div class="relative">
           <input type="text"
                  x-model="searchQuery"
-                 @input.debounce.300ms="search()"
+                 @input="queueSearch()"
                  placeholder="Search issues..."
                  class="w-full pl-10 pr-10 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm focus:ring-2 focus:ring-beads-500 focus:border-transparent">
           <svg class="absolute left-3 top-2.5 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -444,25 +445,26 @@
       <nav x-show="mobileMenuOpen" x-transition class="md:hidden border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
         <div class="px-4 py-3 space-y-1">
           <a href="#/"
-             @click.prevent="window.location.hash = '#/'; mobileMenuOpen = false"
+             @click="cancelPendingSearch(); mobileMenuOpen = false"
              :class="view === 'dashboard' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'"
              class="block px-4 py-3 rounded-lg text-base font-medium transition-colors">
             Dashboard
           </a>
           <a href="#/issues"
+             :href="issuesHref"
              @click.prevent="openIssues(); mobileMenuOpen = false"
              :class="view === 'issues' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'"
              class="block px-4 py-3 rounded-lg text-base font-medium transition-colors">
             Issues
           </a>
           <a href="#/insights"
-             @click.prevent="window.location.hash = '#/insights'; mobileMenuOpen = false"
+             @click="cancelPendingSearch(); mobileMenuOpen = false"
              :class="view === 'insights' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'"
              class="block px-4 py-3 rounded-lg text-base font-medium transition-colors">
             Insights
           </a>
           <a href="#/graph"
-             @click.prevent="window.location.hash = '#/graph'; mobileMenuOpen = false"
+             @click="cancelPendingSearch(); mobileMenuOpen = false"
              :class="view === 'graph' ? 'bg-beads-100 text-beads-700 dark:bg-beads-900 dark:text-beads-200' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'"
              class="block px-4 py-3 rounded-lg text-base font-medium transition-colors">
             Graph
@@ -483,7 +485,7 @@
       <div class="flex justify-around items-center h-16 px-2">
         <!-- Dashboard -->
         <a href="#/"
-           @click.prevent="window.location.hash = '#/'"
+           @click="cancelPendingSearch()"
            class="nav-item-mobile haptic-light relative"
            :class="view === 'dashboard' ? 'active' : ''">
           <!-- Active indicator bar -->
@@ -496,6 +498,7 @@
         </a>
         <!-- Issues -->
         <a href="#/issues"
+           :href="issuesHref"
            @click.prevent="openIssues()"
            class="nav-item-mobile haptic-light relative"
            :class="view === 'issues' ? 'active' : ''">
@@ -508,7 +511,7 @@
         </a>
         <!-- Insights -->
         <a href="#/insights"
-           @click.prevent="window.location.hash = '#/insights'"
+           @click="cancelPendingSearch()"
            class="nav-item-mobile haptic-light relative"
            :class="view === 'insights' ? 'active' : ''">
           <div class="absolute top-0 left-1/2 -translate-x-1/2 h-[3px] w-6 rounded-b-full transition-all duration-200"
@@ -520,7 +523,7 @@
         </a>
         <!-- Graph -->
         <a href="#/graph"
-           @click.prevent="window.location.hash = '#/graph'"
+           @click="cancelPendingSearch()"
            class="nav-item-mobile haptic-light relative"
            :class="view === 'graph' ? 'active' : ''">
           <div class="absolute top-0 left-1/2 -translate-x-1/2 h-[3px] w-6 rounded-b-full transition-all duration-200"
@@ -600,7 +603,7 @@
         <div class="sm:hidden -mx-4 px-4 mb-6">
           <div class="flex gap-3 overflow-x-auto scroll-snap-x scrollbar-hide pb-2">
             <!-- Open -->
-            <div @click="filters.status = ['open']; view = 'issues'; applyFilters()"
+            <div @click="filters.status = ['open']; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light">
               <div class="w-9 h-9 bg-blue-100 dark:bg-blue-900/50 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -611,7 +614,7 @@
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">Open</p>
             </div>
             <!-- In Progress -->
-            <div @click="filters.status = ['in_progress']; view = 'issues'; applyFilters()"
+            <div @click="filters.status = ['in_progress']; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light">
               <div class="w-9 h-9 bg-amber-100 dark:bg-amber-900/50 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -622,7 +625,7 @@
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">In Progress</p>
             </div>
             <!-- Blocked -->
-            <div @click="filters.hasBlockers = true; filters.status = ['open', 'in_progress']; view = 'issues'; applyFilters()"
+            <div @click="filters.hasBlockers = true; filters.status = ['open', 'in_progress']; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light">
               <div class="w-9 h-9 bg-red-100 dark:bg-red-900/50 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -633,7 +636,7 @@
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">Blocked</p>
             </div>
             <!-- Actionable -->
-            <div @click="filters.hasBlockers = false; filters.status = ['open']; view = 'issues'; applyFilters()"
+            <div @click="filters.hasBlockers = false; filters.status = ['open']; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light border-emerald-200 dark:border-emerald-800">
               <div class="w-9 h-9 bg-emerald-100 dark:bg-emerald-900/50 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -644,7 +647,7 @@
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">Actionable</p>
             </div>
             <!-- Closed -->
-            <div @click="filters.status = ['closed']; view = 'issues'; applyFilters()"
+            <div @click="filters.status = ['closed']; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light">
               <div class="w-9 h-9 bg-gray-100 dark:bg-gray-700 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -665,7 +668,7 @@
 
         <!-- DESKTOP Stats: 5-column grid with stagger animation -->
         <div class="hidden sm:grid grid-cols-3 lg:grid-cols-5 gap-4 mb-8 stagger-children">
-          <div @click="filters.status = ['open']; view = 'issues'; applyFilters()"
+          <div @click="filters.status = ['open']; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>
@@ -680,7 +683,7 @@
             </div>
           </div>
 
-          <div @click="filters.status = ['in_progress']; view = 'issues'; applyFilters()"
+          <div @click="filters.status = ['in_progress']; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>
@@ -695,7 +698,7 @@
             </div>
           </div>
 
-          <div @click="filters.hasBlockers = true; filters.status = ['open', 'in_progress']; view = 'issues'; applyFilters()"
+          <div @click="filters.hasBlockers = true; filters.status = ['open', 'in_progress']; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>
@@ -710,7 +713,7 @@
             </div>
           </div>
 
-          <div @click="filters.hasBlockers = false; filters.status = ['open']; view = 'issues'; applyFilters()"
+          <div @click="filters.hasBlockers = false; filters.status = ['open']; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>
@@ -725,7 +728,7 @@
             </div>
           </div>
 
-          <div @click="filters.status = ['closed']; view = 'issues'; applyFilters()"
+          <div @click="filters.status = ['closed']; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>

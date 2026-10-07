@@ -1754,6 +1754,21 @@ function getIssueDependencies(id) {
 // ============================================================================
 
 /**
+ * Fresh defaults for an issue-list state, including filters absent from a URL.
+ */
+function defaultIssueFilters() {
+  return {
+    status: [],
+    type: [],
+    priority: [],
+    labels: [],
+    assignee: '',
+    hasBlockers: null,
+    isBlocking: null,
+  };
+}
+
+/**
  * Serialize filters to URL search params
  */
 function filtersToURL(filters, sort, searchQuery) {
@@ -1816,11 +1831,10 @@ function filtersToURL(filters, sort, searchQuery) {
 function filtersFromURL() {
   const hash = window.location.hash;
   const queryIndex = hash.indexOf('?');
-  if (queryIndex === -1) return { filters: {}, sort: 'priority', searchQuery: '' };
+  const filters = defaultIssueFilters();
+  if (queryIndex === -1) return { filters, sort: 'priority', searchQuery: '' };
 
   const params = new URLSearchParams(hash.slice(queryIndex + 1));
-
-  const filters = {};
 
   const statusParam = params.get('status');
   if (statusParam) {
@@ -2256,19 +2270,18 @@ function beadsApp() {
     },
 
     // Filters (supports multi-select arrays)
-    filters: {
-      status: [],      // Array for multi-select
-      type: [],        // Array for multi-select
-      priority: [],    // Array for multi-select
-      labels: [],      // Array for multi-select
-      assignee: '',    // Single select
-      hasBlockers: null, // true/false/null
-      isBlocking: null,  // true/false/null
-    },
+    filters: defaultIssueFilters(),
     sort: 'priority',
     searchQuery: '',
     searchMode: 'text',
     searchPreset: 'default',
+    pendingSearch: null,
+
+    // Keep navigation links current even before the input debounce has fired.
+    get issuesHref() {
+      const params = filtersToURL(this.filters, this.sort, this.searchQuery);
+      return `#/issues${params ? '?' + params : ''}`;
+    },
 
     // Dashboard data
     topPicks: [],
@@ -2625,6 +2638,8 @@ function beadsApp() {
      * Handle hash change (browser back/forward navigation)
      */
     handleHashChange() {
+      // Navigation takes precedence over an input event still being debounced.
+      this.cancelPendingSearch();
       const urlState = filtersFromURL();
       const hash = window.location.hash;
       const previousView = this.view;
@@ -2659,12 +2674,7 @@ function beadsApp() {
           this.graphDetailNode = null;
           this.showDepGraph = false;
           this.whatIfResult = null;
-          // The route is a complete snapshot, including omitted (cleared) filters.
-          this.filters = {
-            status: [], type: [], priority: [], labels: [], assignee: '',
-            hasBlockers: null, isBlocking: null,
-            ...urlState.filters,
-          };
+          this.filters = urlState.filters;
           this.sort = urlState.sort;
           this.searchQuery = urlState.searchQuery;
           this.page = 1;
@@ -2981,9 +2991,29 @@ function beadsApp() {
         this.totalIssues = countIssues(filters);
       }
 
-      // Sync URL state (only on issues view)
-      if (this.view === 'issues') {
+      // An issue detail route can also have an Issues backdrop. Never replace it.
+      if (this.view === 'issues' && parseRoute(window.location.hash).view === 'issues') {
         syncFiltersToURL('issues', this.filters, this.sort, this.searchQuery);
+      }
+    },
+
+    /**
+     * Show results, preserving the origin in history when entering Issues.
+     */
+    openIssues() {
+      this.cancelPendingSearch();
+      this.page = 1;
+      if (parseRoute(window.location.hash).view === 'issues') {
+        // Keyboard selection can open a modal without changing the list route.
+        this.view = 'issues';
+        this.selectedIssue = null;
+        this.graphDetailNode = null;
+        this.showDepGraph = false;
+        this.whatIfResult = null;
+        this.loadIssues();
+      } else {
+        // The route handler restores this state and loads the visible list.
+        navigateToIssues(this.filters, this.sort, this.searchQuery);
       }
     },
 
@@ -2991,36 +3021,24 @@ function beadsApp() {
      * Apply filter and reload (resets to page 1)
      */
     applyFilter() {
-      this.page = 1;
-      this.loadIssues();
+      this.openIssues();
     },
 
     /**
      * Alias for applyFilter (used by dashboard click handlers)
      */
     applyFilters() {
-      // Dashboard shortcuts create a history entry rather than replacing it.
-      this.page = 1;
-      this.openIssues();
+      this.applyFilter();
     },
 
     /**
      * Clear all filters
      */
     clearFilters() {
-      this.filters = {
-        status: [],
-        type: [],
-        priority: [],
-        labels: [],
-        assignee: '',
-        hasBlockers: null,
-        isBlocking: null,
-      };
+      this.filters = defaultIssueFilters();
       this.searchQuery = '';
       this.sort = 'priority';
-      this.page = 1;
-      this.loadIssues();
+      this.applyFilter();
     },
 
     /**
@@ -3062,22 +3080,32 @@ function beadsApp() {
     },
 
     /**
-     * Search issues
+     * Debounce both search inputs with a timer that navigation can cancel.
      */
-    search() {
-      this.page = 1;
-      if (this.searchQuery && (this.view !== 'issues' || this.selectedIssue)) {
-        this.openIssues();
-        return;
-      }
-      this.loadIssues();
+    queueSearch() {
+      this.cancelPendingSearch();
+      this.pendingSearch = setTimeout(() => {
+        this.pendingSearch = null;
+        this.search();
+      }, 300);
+    },
+
+    cancelPendingSearch() {
+      clearTimeout(this.pendingSearch);
+      this.pendingSearch = null;
     },
 
     /**
-     * Navigate from any view without discarding the current search and filters.
+     * Search issues without navigating for an empty query on another view.
      */
-    openIssues() {
-      navigateToIssues(this.filters, this.sort, this.searchQuery);
+    search() {
+      this.cancelPendingSearch();
+      if (this.searchQuery || parseRoute(window.location.hash).view === 'issues') {
+        this.openIssues();
+      } else {
+        this.page = 1;
+        this.loadIssues();
+      }
     },
 
     /**
