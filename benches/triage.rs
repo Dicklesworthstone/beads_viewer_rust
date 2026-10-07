@@ -331,6 +331,7 @@ fn bench_search(c: &mut Criterion) {
                     SearchMode::Text,
                     &SearchWeights::default_preset(),
                     20,
+                    None,
                 ))
             });
         });
@@ -343,6 +344,7 @@ fn bench_search(c: &mut Criterion) {
                     SearchMode::Hybrid,
                     &SearchWeights::default_preset(),
                     20,
+                    None,
                 ))
             });
         });

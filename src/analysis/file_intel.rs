@@ -94,7 +94,24 @@ pub fn detect_orphans(
         let mut probable_beads_map = BTreeMap::<String, (u32, Vec<String>)>::new();
 
         // Signal 1: Message patterns
-        check_message_patterns(&commit.message, &mut signals);
+        let custom_patterns = super::git_history::custom_id_patterns();
+        check_message_patterns(&commit.message, custom_patterns, &mut signals);
+
+        // Beads named through `--id-pattern` matches are strong candidates.
+        for id in super::git_history::ids_from_patterns(&commit.message, custom_patterns) {
+            let mut matching = histories
+                .keys()
+                .filter(|bead_id| bead_id.eq_ignore_ascii_case(&id));
+            if let (Some(bead_id), None) = (matching.next(), matching.next()) {
+                let entry = probable_beads_map
+                    .entry(bead_id.clone())
+                    .or_insert_with(|| (0, Vec::new()));
+                entry.0 += 35;
+                entry
+                    .1
+                    .push("bead ID mentioned in commit message".to_string());
+            }
+        }
 
         // Signal 2: File overlap with bead-touched files
         let mut overlapping_files = 0;
@@ -203,7 +220,11 @@ pub fn detect_orphans(
     }
 }
 
-fn check_message_patterns(message: &str, signals: &mut Vec<OrphanSignalHit>) {
+fn check_message_patterns(
+    message: &str,
+    custom_patterns: &[regex::Regex],
+    signals: &mut Vec<OrphanSignalHit>,
+) {
     let lower = message.to_ascii_lowercase();
 
     let word_patterns: &[(&[&str], &str, u32)] = &[
@@ -249,6 +270,19 @@ fn check_message_patterns(message: &str, signals: &mut Vec<OrphanSignalHit>) {
             weight: 20,
             detail: "bead-like ID pattern".to_string(),
         });
+    }
+
+    // Custom ID patterns (`--id-pattern`) count as strong ID signals,
+    // matched against the original-case message.
+    for pattern in custom_patterns {
+        if let Some(found) = pattern.find(message) {
+            total_weight += 25;
+            signals.push(OrphanSignalHit {
+                signal: "message_pattern".to_string(),
+                weight: 25,
+                detail: format!("custom ID pattern: {}", found.as_str()),
+            });
+        }
     }
 
     // Cap total message signal weight at 35

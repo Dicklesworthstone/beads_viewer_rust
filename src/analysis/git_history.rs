@@ -1,12 +1,51 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use super::diff::{FieldChange, detect_changes};
 use crate::{BvrError, Result, model::Issue};
+
+/// User-supplied bead ID patterns (`--id-pattern`), registered once at CLI
+/// startup before any correlation runs.
+static CUSTOM_ID_PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+
+/// Register `--id-pattern` regexes for every message-based ID matcher
+/// (commit correlation and orphan detection). Later calls are ignored.
+pub fn set_custom_id_patterns(patterns: Vec<regex::Regex>) {
+    let _ = CUSTOM_ID_PATTERNS.set(patterns);
+}
+
+/// The registered `--id-pattern` regexes (empty unless the flag was given).
+pub fn custom_id_patterns() -> &'static [regex::Regex] {
+    CUSTOM_ID_PATTERNS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Candidate bead IDs that `patterns` find in `message`, in pattern then
+/// match order: capture group 1 when the pattern defines one, else the whole
+/// match. Matching is against the original-case message.
+#[must_use]
+pub fn ids_from_patterns(message: &str, patterns: &[regex::Regex]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for pattern in patterns {
+        for captures in pattern.captures_iter(message) {
+            let id = captures
+                .get(1)
+                .filter(|group| !group.as_str().is_empty())
+                .or_else(|| captures.get(0))
+                .map(|group| group.as_str().to_string());
+            if let Some(id) = id.filter(|id| !id.is_empty()) {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+    ids
+}
 
 #[derive(Debug, Clone)]
 pub struct GitCommitRecord {
@@ -399,17 +438,35 @@ pub fn extract_ids_from_message(
     message: &str,
     known_ids: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
-    let message = message.to_ascii_lowercase();
-    known_ids
+    extract_ids_from_message_with_patterns(message, known_ids, custom_id_patterns())
+}
+
+/// Known bead IDs referenced by `message`: every known ID that appears as a
+/// whole token, plus IDs the custom `patterns` extract (case-insensitively
+/// resolved against the known IDs).
+#[must_use]
+pub fn extract_ids_from_message_with_patterns(
+    message: &str,
+    known_ids: &BTreeMap<String, String>,
+    patterns: &[regex::Regex],
+) -> BTreeSet<String> {
+    let lower = message.to_ascii_lowercase();
+    let mut ids: BTreeSet<String> = known_ids
         .iter()
-        .filter_map(|(lower, canonical)| {
-            if contains_issue_id_token(&message, lower) {
+        .filter_map(|(lower_id, canonical)| {
+            if contains_issue_id_token(&lower, lower_id) {
                 Some(canonical.clone())
             } else {
                 None
             }
         })
-        .collect()
+        .collect();
+    for id in ids_from_patterns(message, patterns) {
+        if let Some(canonical) = known_ids.get(&id.to_ascii_lowercase()) {
+            ids.insert(canonical.clone());
+        }
+    }
+    ids
 }
 
 fn contains_issue_id_token(message: &str, issue_id: &str) -> bool {
@@ -1067,6 +1124,38 @@ mod tests {
         assert!(is_beads_jsonl_path("apps\\web\\.beads\\beads.jsonl"));
         assert!(!is_beads_jsonl_path("services/api/beads/issues.jsonl"));
         assert!(!is_beads_jsonl_path("services/api/.beads/issues.json"));
+    }
+
+    #[test]
+    fn ids_from_patterns_prefers_capture_group_then_whole_match() {
+        let grouped = regex::Regex::new(r"ticket\s+(bh-[a-z0-9]{5})").unwrap();
+        let whole = regex::Regex::new(r"bh-[a-z0-9]{5}").unwrap();
+        let message = "ticket bh-8g6cj landed; follow-up bh-x1y2z";
+        assert_eq!(
+            ids_from_patterns(message, &[grouped, whole]),
+            vec!["bh-8g6cj".to_string(), "bh-x1y2z".to_string()]
+        );
+        assert!(ids_from_patterns("nothing here", &[]).is_empty());
+    }
+
+    #[test]
+    fn custom_patterns_resolve_ids_glued_to_other_text() {
+        // `bh-8g6cj` is glued to `fix:` text, so the whole-token matcher
+        // misses it; the custom pattern still extracts it.
+        let mut known = BTreeMap::new();
+        known.insert("bh-8g6cj".to_string(), "BH-8g6cj".to_string());
+        let message = "fix(ui):bh-8g6cj_followup";
+        assert!(extract_ids_from_message_with_patterns(message, &known, &[]).is_empty());
+        let pattern = regex::Regex::new(r"(bh-[0-9a-z]{5})_").unwrap();
+        let ids = extract_ids_from_message_with_patterns(message, &known, &[pattern]);
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec!["BH-8g6cj"]);
+    }
+
+    #[test]
+    fn custom_patterns_ignore_unknown_ids() {
+        let known = BTreeMap::new();
+        let pattern = regex::Regex::new(r"bh-[a-z0-9]{5}").unwrap();
+        assert!(extract_ids_from_message_with_patterns("bh-zzzzz", &known, &[pattern]).is_empty());
     }
 
     #[test]

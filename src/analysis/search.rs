@@ -314,6 +314,8 @@ pub struct RobotSearchOutput {
     pub preset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weights: Option<SearchWeights>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_score: Option<f64>,
     pub results: Vec<SearchResult>,
     pub usage_hints: Vec<String>,
 }
@@ -326,6 +328,7 @@ pub fn execute_search(
     mode: SearchMode,
     weights: &SearchWeights,
     limit: usize,
+    min_text_score: Option<f64>,
 ) -> Vec<SearchResult> {
     let query = query.trim();
     if query.is_empty() {
@@ -344,6 +347,12 @@ pub fn execute_search(
         .iter()
         .filter_map(|issue| {
             let text_score = compute_text_score(query, issue);
+            // `--search-min-score` is an inclusive threshold on the raw text
+            // similarity, applied before lexical boosts and hybrid ranking
+            // (exact-ID matches obey it too), as in legacy bv.
+            if min_text_score.is_some_and(|min| text_score < min) {
+                return None;
+            }
 
             // Short query lexical boost
             let lexical_boost = if is_short_query(query) {
@@ -490,6 +499,7 @@ mod tests {
             SearchMode::Text,
             &weights,
             10,
+            None,
         );
 
         assert!(!results.is_empty());
@@ -507,6 +517,7 @@ mod tests {
             SearchMode::Text,
             &weights,
             10,
+            None,
         );
 
         assert!(results.is_empty());
@@ -516,7 +527,15 @@ mod tests {
     fn text_search_whitespace_query_returns_no_results() {
         let (issues, metrics) = make_issues_and_metrics();
         let weights = SearchWeights::default_preset();
-        let results = execute_search("   \t  ", &issues, &metrics, SearchMode::Text, &weights, 10);
+        let results = execute_search(
+            "   \t  ",
+            &issues,
+            &metrics,
+            SearchMode::Text,
+            &weights,
+            10,
+            None,
+        );
 
         assert!(results.is_empty());
     }
@@ -525,16 +544,75 @@ mod tests {
     fn text_search_limit() {
         let (issues, metrics) = make_issues_and_metrics();
         let weights = SearchWeights::default_preset();
-        let results = execute_search("fix", &issues, &metrics, SearchMode::Text, &weights, 1);
+        let results = execute_search(
+            "fix",
+            &issues,
+            &metrics,
+            SearchMode::Text,
+            &weights,
+            1,
+            None,
+        );
 
         assert!(results.len() <= 1);
+    }
+
+    #[test]
+    fn min_text_score_filters_before_ranking() {
+        let (issues, metrics) = make_issues_and_metrics();
+        let weights = SearchWeights::default_preset();
+        let all = execute_search(
+            "auth",
+            &issues,
+            &metrics,
+            SearchMode::Hybrid,
+            &weights,
+            10,
+            None,
+        );
+        assert!(!all.is_empty());
+        let threshold = all
+            .iter()
+            .filter_map(|result| result.text_score)
+            .fold(f64::MIN, f64::max);
+        // Raising the threshold above every raw text score empties the set,
+        // even though lexical boosts and hybrid signals would have ranked them.
+        let none = execute_search(
+            "auth",
+            &issues,
+            &metrics,
+            SearchMode::Hybrid,
+            &weights,
+            10,
+            Some(threshold + 0.01),
+        );
+        assert!(none.is_empty());
+        // The floor of the range keeps everything.
+        let floor = execute_search(
+            "auth",
+            &issues,
+            &metrics,
+            SearchMode::Hybrid,
+            &weights,
+            10,
+            Some(-1.0),
+        );
+        assert_eq!(floor.len(), all.len());
     }
 
     #[test]
     fn exact_id_match_promoted() {
         let (issues, metrics) = make_issues_and_metrics();
         let weights = SearchWeights::default_preset();
-        let results = execute_search("DB-3", &issues, &metrics, SearchMode::Text, &weights, 10);
+        let results = execute_search(
+            "DB-3",
+            &issues,
+            &metrics,
+            SearchMode::Text,
+            &weights,
+            10,
+            None,
+        );
 
         assert!(!results.is_empty());
         assert_eq!(results[0].issue_id, "DB-3");
@@ -544,7 +622,15 @@ mod tests {
     fn hybrid_mode_includes_components() {
         let (issues, metrics) = make_issues_and_metrics();
         let weights = SearchWeights::default_preset();
-        let results = execute_search("auth", &issues, &metrics, SearchMode::Hybrid, &weights, 10);
+        let results = execute_search(
+            "auth",
+            &issues,
+            &metrics,
+            SearchMode::Hybrid,
+            &weights,
+            10,
+            None,
+        );
 
         assert!(!results.is_empty());
         assert!(results[0].text_score.is_some());
@@ -555,7 +641,15 @@ mod tests {
     fn hybrid_search_whitespace_query_returns_no_results() {
         let (issues, metrics) = make_issues_and_metrics();
         let weights = SearchWeights::default_preset();
-        let results = execute_search("   \n", &issues, &metrics, SearchMode::Hybrid, &weights, 10);
+        let results = execute_search(
+            "   \n",
+            &issues,
+            &metrics,
+            SearchMode::Hybrid,
+            &weights,
+            10,
+            None,
+        );
 
         assert!(results.is_empty());
     }
@@ -571,6 +665,7 @@ mod tests {
             SearchMode::Hybrid,
             &weights,
             10,
+            None,
         );
 
         assert!(results.is_empty());
@@ -630,8 +725,24 @@ mod tests {
     fn deterministic_output() {
         let (issues, metrics) = make_issues_and_metrics();
         let weights = SearchWeights::default_preset();
-        let r1 = execute_search("fix", &issues, &metrics, SearchMode::Text, &weights, 10);
-        let r2 = execute_search("fix", &issues, &metrics, SearchMode::Text, &weights, 10);
+        let r1 = execute_search(
+            "fix",
+            &issues,
+            &metrics,
+            SearchMode::Text,
+            &weights,
+            10,
+            None,
+        );
+        let r2 = execute_search(
+            "fix",
+            &issues,
+            &metrics,
+            SearchMode::Text,
+            &weights,
+            10,
+            None,
+        );
 
         assert_eq!(r1.len(), r2.len());
         for (a, b) in r1.iter().zip(r2.iter()) {

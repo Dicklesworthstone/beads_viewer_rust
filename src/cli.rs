@@ -133,6 +133,18 @@ pub struct Cli {
     #[arg(long)]
     pub robot_not_ready_labels: Option<String>,
 
+    /// Budget in ms for legacy bv's git-history prologue of robot triage
+    /// (0 = unbounded; env BV_ROBOT_HISTORY_TIMEOUT_MS). bvr's triage reads
+    /// no git history, so the budget is accepted and never consumed.
+    #[arg(long, allow_hyphen_values = true)]
+    pub robot_history_timeout_ms: Option<i64>,
+
+    /// Custom bead ID regex for commit-message matching, e.g.
+    /// 'bh-[a-z0-9]{5}' (repeatable; capture group 1 is the ID, else the
+    /// whole match).
+    #[arg(long = "id-pattern", action = ArgAction::Append)]
+    pub id_pattern: Vec<String>,
+
     #[arg(long, action = ArgAction::SetTrue)]
     pub robot_plan: bool,
 
@@ -396,6 +408,11 @@ pub struct Cli {
 
     #[arg(long)]
     pub search_weights: Option<String>,
+
+    /// Minimum raw text similarity (-1..1) a search candidate needs before
+    /// hybrid ranking; exact ID matches obey it too.
+    #[arg(long, allow_hyphen_values = true)]
+    pub search_min_score: Option<String>,
 
     /// List available triage recipes.
     #[arg(long, action = ArgAction::SetTrue)]

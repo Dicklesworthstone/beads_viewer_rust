@@ -574,6 +574,83 @@ fn e2e_robot_search() {
 }
 
 #[test]
+fn e2e_robot_search_min_score_filters_and_echoes_threshold() {
+    let all = run_robot(
+        &[
+            "--robot-search",
+            "--search",
+            "github database",
+            "--search-limit",
+            "50",
+        ],
+        COMPLEX_FIXTURE,
+    );
+    assert!(
+        all.get("min_score").is_none(),
+        "min_score only appears when set: {all}"
+    );
+    let all_count = all["results"].as_array().expect("results array").len();
+    assert!(
+        all_count > 0,
+        "fixture should partially match the query: {all}"
+    );
+
+    let strict = run_robot(
+        &[
+            "--robot-search",
+            "--search",
+            "github database",
+            "--search-limit",
+            "50",
+            "--search-min-score",
+            "0.9",
+        ],
+        COMPLEX_FIXTURE,
+    );
+    assert_eq!(strict["min_score"], 0.9);
+    let strict_count = strict["results"].as_array().expect("results array").len();
+    assert!(
+        strict_count < all_count,
+        "a high similarity floor must drop partial matches ({strict_count} vs {all_count})"
+    );
+}
+
+#[test]
+fn e2e_robot_search_min_score_rejects_out_of_range_values() {
+    for bad in ["1.5", "-2", "nan", "abc"] {
+        let output = bvr()
+            .args([
+                "--robot-search",
+                "--search",
+                "parity",
+                "--search-min-score",
+                bad,
+            ])
+            .arg("--beads-file")
+            .arg(COMPLEX_FIXTURE)
+            .output()
+            .expect("run bvr");
+        assert_eq!(output.status.code(), Some(2), "{bad} should be rejected");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("invalid --search-min-score"),
+            "stderr should explain the rejection for {bad}"
+        );
+    }
+}
+
+#[test]
+fn e2e_invalid_id_pattern_exits_with_usage_error() {
+    let output = bvr()
+        .args(["--robot-history", "--id-pattern", "bh-("])
+        .arg("--beads-file")
+        .arg(FIXTURE)
+        .output()
+        .expect("run bvr");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid --id-pattern"));
+}
+
+#[test]
 fn e2e_robot_search_hybrid_without_lexical_match_returns_no_results() {
     let json = run_robot(
         &[

@@ -351,9 +351,9 @@ Legend: `complete` / `partial` / `missing` / `excluded` (intentionally out-of-sc
 | `--force-full-analysis` | `--force-full-analysis` | complete | Bypasses incremental analysis caches. |
 | `--theme` | `--theme` | complete | TUI palette: `light`, `dark`, or `auto` (`COLORFGBG` detection); overrides `BV_THEME`. |
 | `--db` | `--db` | complete | Database file (`.db`/`.sqlite`), JSONL file, or `.beads` directory. |
-| `--id-pattern` | — | missing | Commit correlation already matches every known ID verbatim; custom regexes not ported. |
-| `--search-min-score` | — | missing | Not ported. |
-| `--robot-history-timeout-ms` | — | missing | Not ported. |
+| `--id-pattern` | `--id-pattern` | complete | Repeatable custom bead-ID regex (group 1 is the ID, else the whole match); extends commit correlation and orphan detection (+25 message signal, probable-bead credit). Invalid regex exits 2. |
+| `--search-min-score` | `--search-min-score` | complete | Inclusive floor (-1..1) on raw text similarity before lexical boosts and hybrid ranking; echoed as `min_score`; out-of-range exits 2. |
+| `--robot-history-timeout-ms` | `--robot-history-timeout-ms` | complete | Accepted with triage/next only (exit 2 otherwise). bvr's triage reads no git history, so the prologue budget is never consumed. |
 | `--generate-docs` | — | missing | Not ported. |
 
 ### Data Source Authority
@@ -571,5 +571,5 @@ Prerequisites: Wave 3 complete.
 All core robot commands, export surfaces, pages workflows, workspace semantics, and quality gates are passing with the current proof surface. The Rust port now has full legacy parity across robot, CLI, export, and interactive TUI behavior.
 
 ## Open Gaps to 100%
-1. Legacy `bv` kept evolving after the original parity pass. Flags it added since that are still unported: `--export-template`, `--id-pattern`, `--search-min-score`, `--robot-history-timeout-ms`, and `--generate-docs`. (Agent-intent invocation aliases — `bvr triage --json`, `bvr robot-next`, `bvr search <q>` — are ported.)
+1. Legacy `bv` kept evolving after the original parity pass. Flags it added since that are still unported: `--export-template` and `--generate-docs`. (`--id-pattern`, `--search-min-score`, and `--robot-history-timeout-ms` are ported.) (Agent-intent invocation aliases — `bvr triage --json`, `bvr robot-next`, `bvr search <q>` — are ported.)
 2. Future additions should keep the current proof surface green rather than reopen parity debt.

@@ -163,6 +163,7 @@ dependencies = [
  "png",
  "predicates",
  "pretty_assertions",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

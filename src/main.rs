@@ -133,6 +133,16 @@ fn validate_orphaned_modifier_flags(cli: &Cli) -> Option<String> {
         || cli.robot_next
         || cli.robot_triage_by_track
         || cli.robot_triage_by_label;
+    // --robot-history-timeout-ms bounds legacy bv's git-history prologue of
+    // robot triage. bvr's triage has no such prologue (it never shells out
+    // to git), so the budget is accepted for agent compatibility and never
+    // consumed — but, as in legacy bv, only alongside a triage command.
+    if !triage_scoped && arg_flag_was_explicit_in_args(&raw_args, "--robot-history-timeout-ms") {
+        return Some(
+            "error: --robot-history-timeout-ms requires --robot-triage, --robot-triage-by-track, --robot-triage-by-label, or --robot-next"
+                .to_string(),
+        );
+    }
     if !cli.robot_graph
         && cli.export_graph.is_none()
         && graph_flags.iter().any(|flag| {
@@ -150,6 +160,7 @@ fn validate_orphaned_modifier_flags(cli: &Cli) -> Option<String> {
         "--search-mode",
         "--search-preset",
         "--search-weights",
+        "--search-min-score",
     ];
     if !cli.robot_search
         && search_flags
@@ -501,6 +512,23 @@ fn main() -> ExitCode {
     {
         eprintln!("error: {error}");
         return ExitCode::from(2);
+    }
+
+    // Register custom bead ID patterns (--id-pattern) before any
+    // correlation work runs, so commit matching and orphan detection
+    // recognize non-default ID formats.
+    if !cli.id_pattern.is_empty() {
+        let mut compiled = Vec::with_capacity(cli.id_pattern.len());
+        for pattern in &cli.id_pattern {
+            match regex::Regex::new(pattern) {
+                Ok(regex) => compiled.push(regex),
+                Err(error) => {
+                    eprintln!("Invalid --id-pattern {pattern:?}: {error}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        bvr::analysis::git_history::set_custom_id_patterns(compiled);
     }
 
     if cli.background_mode && cli.no_background_mode {
@@ -2186,6 +2214,15 @@ fn main() -> ExitCode {
             bvr::analysis::search::get_preset(preset_name)
         };
 
+        let min_score = match cli.search_min_score.as_deref().map(parse_search_min_score) {
+            None => None,
+            Some(Ok(score)) => Some(score),
+            Some(Err(message)) => {
+                eprintln!("Error: {message}");
+                return ExitCode::from(2);
+            }
+        };
+
         let results = bvr::analysis::search::execute_search(
             query,
             &issues,
@@ -2193,6 +2230,7 @@ fn main() -> ExitCode {
             mode,
             &weights,
             cli.search_limit,
+            min_score,
         );
 
         let preset_field = if mode == bvr::analysis::search::SearchMode::Hybrid {
@@ -2213,6 +2251,7 @@ fn main() -> ExitCode {
             mode: mode.as_str().to_string(),
             preset: preset_field,
             weights: weights_field,
+            min_score,
             results,
             usage_hints: vec![
                 "jq '.results[] | {id: .issue_id, score: .score, title: .title}' - extract ranked results"
@@ -6932,6 +6971,18 @@ fn descendant_subgraph(issues: &[bvr::model::Issue], root: &str) -> Vec<bvr::mod
 /// Resolve the opt-in not-ready label class: `--robot-not-ready-labels`
 /// (comma-separated) wins, else `BV_ROBOT_NOT_READY_LABELS`. Empty entries are
 /// dropped; an empty result disables the gate.
+/// Parse `--search-min-score`: a finite number from -1 to 1 (legacy bv's
+/// cosine-similarity range).
+fn parse_search_min_score(raw: &str) -> Result<f64, String> {
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|score| score.is_finite() && (-1.0..=1.0).contains(score))
+        .ok_or_else(|| {
+            format!("invalid --search-min-score {raw:?} (expected a finite number from -1 to 1)")
+        })
+}
+
 fn resolve_not_ready_labels(cli: &Cli) -> Vec<String> {
     let raw = cli
         .robot_not_ready_labels
