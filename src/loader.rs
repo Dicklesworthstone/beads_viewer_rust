@@ -494,6 +494,7 @@ pub fn namespace_workspace_issues(
         issue.id = qualify_id(&local_issue_id, prefix);
         issue.source_repo = repo_name.to_string();
         issue.workspace_prefix = Some(prefix.trim().to_string());
+        issue.workspace_local_id = Some(local_issue_id.clone());
 
         for dependency in &mut issue.dependencies {
             let dep_issue_id = dependency.issue_id.trim();
@@ -2682,6 +2683,35 @@ mod tests {
         }];
         namespace_workspace_issues(&mut issues, "api-", "my-api", &[]);
         assert_eq!(issues[0].source_repo, "my-api");
+    }
+
+    #[test]
+    fn tracker_commands_keep_native_ids_that_already_carry_the_prefix() {
+        let issue = |id: &str| Issue {
+            id: id.to_string(),
+            title: "T".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Default::default()
+        };
+        let mut issues = vec![issue("api-12"), issue("bd-7")];
+        namespace_workspace_issues(&mut issues, "api-", "api", &[]);
+        assert_eq!(issues[0].id, "api-12");
+        assert_eq!(
+            issues[0].claim_command(),
+            "br update api-12 --status=in_progress"
+        );
+        assert_eq!(issues[1].id, "api-bd-7");
+        assert_eq!(
+            issues[1].claim_command(),
+            "br update bd-7 --status=in_progress"
+        );
+
+        // A dashless prefix must not turn the ID into `-12`, which br would
+        // parse as a flag.
+        let mut dashless = vec![issue("api-12")];
+        namespace_workspace_issues(&mut dashless, "api", "api", &[]);
+        assert_eq!(dashless[0].show_command(), "br show api-12");
     }
 
     #[test]

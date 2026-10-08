@@ -70,6 +70,10 @@ pub struct Issue {
     /// commands for workspace issues run there, against the local ID.
     #[serde(skip)]
     pub workspace_repo_path: Option<std::path::PathBuf>,
+    /// Internal: the ID exactly as the issue's own tracker stored it, before
+    /// workspace namespacing. Never emitted.
+    #[serde(skip)]
+    pub workspace_local_id: Option<String>,
     /// Internal content hash for dedup — computed, not serialized to JSON output.
     #[serde(default, skip_serializing)]
     pub content_hash: Option<String>,
@@ -233,6 +237,16 @@ impl Issue {
     /// IDs (`api-bd-12`), but `br` in that repository only knows `bd-12`.
     #[must_use]
     pub fn local_id(&self) -> &str {
+        // A native ID that already carried the workspace prefix (`api-12` in
+        // repo `api`) is kept as-is by namespacing; stripping the prefix
+        // again would name an issue br does not know.
+        if let Some(local) = self
+            .workspace_local_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+        {
+            return local;
+        }
         self.workspace_prefix
             .as_deref()
             .map(str::trim)
