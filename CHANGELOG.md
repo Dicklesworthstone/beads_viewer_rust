@@ -105,8 +105,7 @@ Each view was compared side by side with the Go binary in a real terminal.
 
 - **Ready work is status-gated** (#25): only `open` and `in_progress` beads
   that are not deferred count as actionable. Beads in `blocked`, `deferred`,
-  `draft`, `pinned`, `hooked`, `review` or a custom status leave
-  `actionable_count`, recommendations, `--robot-plan` tracks and the TUI
+  `pinned`, `hooked` or `review` leave `actionable_count`, recommendations, `--robot-plan` tracks and the TUI
   Actionable view. **Drift baselines saved by v0.3.0 can report a false
   `actionable_change`; re-run `--save-baseline` after upgrading.**
   ([f631a30](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/f631a30))
@@ -120,17 +119,19 @@ Each view was compared side by side with the Go binary in a real terminal.
 - `bvr --json` on its own runs `--robot-triage`.
 - Keys: `!` opens the alerts panel (it was the attention view, now on `]`,
   which was the flow matrix, now on `f`); `h`/`l` in Insights move between
-  panels; `1`-`9` in the attention view filter by label (`1` no longer
-  returns to Main); the tutorial is interactive and closes with Esc or `q`.
+  panels (they used to switch focus between list and detail); `1`-`9` in the
+  attention view filter the list by that label (`1` used to just return to
+  Main); the tutorial is interactive and closes with Esc or `q`.
 
 ### Static pages viewer
 
 - Dashboard search opens the issue list with the query, and pending searches
   are cancelled when you navigate away.
-  ([bcc552a](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/bcc552a))
+  ([bcc552a](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/bcc552a),
+  [8df379b](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/8df379b))
 - Unblock, what-if and top-K numbers are corrected (v0.3.0 used the wrong
-  edge direction and WASM field names), and recorded graph history plays back
-  again. ([8e74f75](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/8e74f75),
+  edge direction and WASM field names), and recorded graph history playback
+  works (it never did in earlier releases). ([8e74f75](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/8e74f75),
   [94cca84](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/94cca84))
 
 ### Fixed
@@ -139,19 +140,25 @@ Each view was compared side by side with the Go binary in a real terminal.
   title, reason or ID containing a newline (or another control character)
   ended a `#` comment in the generated script and turned the rest into a
   command the script ran. Every interpolated value is now made single-line.
-  Present since v0.3.0.
-  ([3853fff](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/3853fff80c59b49d97f9e765d116b58a94629b3b))
-- `--robot-next` could answer "No actionable items available" when the ten
-  best-scored beads were all assigned, epics or not-ready while claimable
-  work ranked lower. Top picks and quick wins are drawn before the
-  recommendation list is cut.
+  This affects every earlier release; up to v0.3.0 the runnable `br show`
+  line also used the ID unquoted, so `;` or `$(...)` in an ID ran as well
+  (IDs are shell-quoted since 383ce0d). In fish scripts, a command whose ID
+  needed quoting is left as a comment, because the POSIX quoting does not
+  hold in fish.
+  ([3853fff](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/3853fff80c59b49d97f9e765d116b58a94629b3b),
+  [3d9f066](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/3d9f066f0b63abf7ad50d2731f58a7c6e962f7be))
+- `--robot-next` (new claimable gate in this release) could answer "No
+  actionable items available" when the ten best-scored beads were all
+  assigned, epics or not-ready while claimable work ranked lower. Top picks
+  and quick wins are drawn before the recommendation list is cut.
   ([7a75221](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/7a75221d9bc1d5d31ede4d7e995de2961a3a7d50))
 - In workspace mode, a repository whose own IDs already carry the workspace
   prefix (`api-12` in repo `api`) got claim/show commands for `12` (or `-12`
   with a dashless prefix). They use the tracker's own ID again, as v0.3.0 did.
   ([9526224](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/95262241412d0337a7da68bbe865499f113cfa65))
-- `--graph-root` triage offered a child as claimable when its blocker was
-  outside the subtree. Blocked state now comes from the full graph.
+- `--graph-root` triage (new in this release) offered a child as claimable
+  when its blocker was outside the subtree. Blocked state now comes from the
+  full graph.
   ([674d8c6](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/674d8c6c2c28643680d291264c16b22d06dcd2ad))
 
 ### Known limitations
@@ -161,8 +168,8 @@ Each view was compared side by side with the Go binary in a real terminal.
   it afterwards: re-run `bd export` after writing with `bd`.
 - The static pages viewer computes exact betweenness on load when no exported
   value is available (above 10,000 issues), which can take seconds.
-- `rust-version` says 1.85, but the locked `cargo_metadata` 0.23 needs Rust
-  1.86 (also true of v0.3.0).
+- `rust-version` says 1.85, but the locked vergen 9.1 and sysinfo 0.37 need
+  Rust 1.88 (also true of v0.3.0).
 
 ---
 
