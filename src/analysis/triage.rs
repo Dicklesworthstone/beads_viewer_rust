@@ -658,6 +658,10 @@ pub struct TriageOptions {
     /// work-ready (`--robot-not-ready-labels` / `BV_ROBOT_NOT_READY_LABELS`).
     /// Such beads stay in `recommendations` but are never a claimable pick.
     pub not_ready_labels: Vec<String>,
+    /// IDs to treat as blocked although this graph shows no open blocker:
+    /// `--graph-root` triage runs on a subtree, whose graph does not contain
+    /// blockers outside it.
+    pub extra_blocked: HashSet<String>,
 }
 
 /// Whether an issue is directly claimable work as a robot top pick.
@@ -692,7 +696,11 @@ pub fn compute_triage(
         options.max_recommendations
     };
 
-    let actionable: HashSet<String> = graph.actionable_ids().into_iter().collect();
+    let actionable: HashSet<String> = graph
+        .actionable_ids()
+        .into_iter()
+        .filter(|id| !options.extra_blocked.contains(id))
+        .collect();
     let total_open = issues.iter().filter(|issue| issue.is_open_like()).count();
 
     let ctx = ScoringContext::from_metrics(metrics, total_open);

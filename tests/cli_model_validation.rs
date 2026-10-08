@@ -920,6 +920,37 @@ fn graph_modifier_without_graph_command_exits_with_error() {
 }
 
 #[test]
+fn graph_root_next_keeps_blockers_outside_the_subtree() {
+    // C is a child of epic E but is blocked by B, which is outside E's tree.
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let beads_path = tmp.path().join("issues.jsonl");
+    fs::write(
+        &beads_path,
+        concat!(
+            r#"{"id":"E","title":"Epic","status":"open","priority":1,"issue_type":"epic"}"#,
+            "\n",
+            r#"{"id":"B","title":"Outside blocker","status":"open","priority":2,"issue_type":"task"}"#,
+            "\n",
+            r#"{"id":"C","title":"Child","status":"open","priority":0,"issue_type":"task","dependencies":[{"depends_on_id":"E","type":"parent-child"},{"depends_on_id":"B","type":"blocks"}]}"#,
+            "\n",
+        ),
+    )
+    .expect("write beads file");
+
+    let output = bvr()
+        .args(["--robot-next", "--graph-root", "E", "--beads-file"])
+        .arg(&beads_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let next: Value = serde_json::from_slice(&output).expect("valid JSON output");
+    assert_ne!(next["id"], "C", "blocked C offered as next work: {next}");
+    assert!(next["id"].is_null(), "unexpected pick: {next}");
+}
+
+#[test]
 fn search_modifier_without_robot_search_exits_with_error() {
     let root = repo_root();
     let beads_path = root.join("tests/testdata/minimal.jsonl");

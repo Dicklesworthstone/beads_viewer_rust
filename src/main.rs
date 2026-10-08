@@ -853,6 +853,7 @@ fn main() -> ExitCode {
     // (transitively) depends on it — an epic's whole work tree — matching the
     // legacy RootIssueID triage option. --robot-graph applies its own
     // depth-limited root scoping, so it is left alone here.
+    let mut graph_root_blocked: HashSet<String> = HashSet::new();
     if let Some(root) = cli
         .graph_root
         .as_deref()
@@ -867,6 +868,18 @@ fn main() -> ExitCode {
             eprintln!("error: --graph-root {root:?} does not match any issue");
             return ExitCode::from(2);
         }
+        // The subtree graph drops blockers outside the subtree, so take each
+        // member's blocked state from the full graph.
+        let unblocked: HashSet<String> = analyzer
+            .graph
+            .dependency_unblocked_ids()
+            .into_iter()
+            .collect();
+        graph_root_blocked = scoped
+            .iter()
+            .filter(|issue| issue.is_open_like() && !unblocked.contains(&issue.id))
+            .map(|issue| issue.id.clone())
+            .collect();
         analyzer = Analyzer::new_with_config(scoped, &analysis_config);
     }
 
@@ -922,6 +935,7 @@ fn main() -> ExitCode {
                 ..TriageScoringOptions::default()
             },
             not_ready_labels: resolve_not_ready_labels(&cli),
+            extra_blocked: graph_root_blocked.clone(),
         });
 
         if cli.robot_next {
@@ -2281,6 +2295,7 @@ fn main() -> ExitCode {
                 ..TriageScoringOptions::default()
             },
             not_ready_labels: resolve_not_ready_labels(&cli),
+            extra_blocked: HashSet::new(),
         });
 
         let mut recommendations = triage.result.recommendations;
