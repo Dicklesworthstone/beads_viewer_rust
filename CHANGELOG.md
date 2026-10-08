@@ -12,7 +12,7 @@ Binary name: **`bvr`**
 
 ---
 
-## [Unreleased]
+## [v0.4.0] -- 2026-10-08
 
 Catch-up with the current legacy `bv` (beads_viewer, October 2026). This covers
 its data-source authority, robot contract, and TUI look and feel.
@@ -100,6 +100,69 @@ Each view was compared side by side with the Go binary in a real terminal.
 - `--export-template`: legacy Go `text/template` Markdown reports.
 - `--update`, `--update-dry-run`, `--yes`, and `--rollback` map onto
   `bvr upgrade`. ([9286c01](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/9286c01))
+
+### Changed behavior to check when upgrading
+
+- **Ready work is status-gated** (#25): only `open` and `in_progress` beads
+  that are not deferred count as actionable. Beads in `blocked`, `deferred`,
+  `draft`, `pinned`, `hooked`, `review` or a custom status leave
+  `actionable_count`, recommendations, `--robot-plan` tracks and the TUI
+  Actionable view. **Drift baselines saved by v0.3.0 can report a false
+  `actionable_change`; re-run `--save-baseline` after upgrading.**
+  ([f631a30](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/f631a30))
+- `project_health.counts.open` and `.blocked` count exact statuses as well;
+  new `not_closed` and `dependency_blocked` counts carry the old aggregates.
+- `quick_wins` and the per-track / per-label `top_pick` use the same claimable
+  gate as `--robot-next`.
+- History time travel (`--as-of`, `--diff-since`) skips malformed or
+  custom-status lines in old snapshots instead of failing (#24).
+  ([4123c59](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/4123c59))
+- `bvr --json` on its own runs `--robot-triage`.
+- Keys: `!` opens the alerts panel (it was the attention view, now on `]`,
+  which was the flow matrix, now on `f`); `h`/`l` in Insights move between
+  panels; `1`-`9` in the attention view filter by label (`1` no longer
+  returns to Main); the tutorial is interactive and closes with Esc or `q`.
+
+### Static pages viewer
+
+- Dashboard search opens the issue list with the query, and pending searches
+  are cancelled when you navigate away.
+  ([bcc552a](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/bcc552a))
+- Unblock, what-if and top-K numbers are corrected (v0.3.0 used the wrong
+  edge direction and WASM field names), and recorded graph history plays back
+  again. ([8e74f75](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/8e74f75),
+  [94cca84](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/94cca84))
+
+### Fixed
+
+- **Security: `--emit-script` keeps tracker values on their line.** An issue
+  title, reason or ID containing a newline (or another control character)
+  ended a `#` comment in the generated script and turned the rest into a
+  command the script ran. Every interpolated value is now made single-line.
+  Present since v0.3.0.
+  ([3853fff](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/3853fff80c59b49d97f9e765d116b58a94629b3b))
+- `--robot-next` could answer "No actionable items available" when the ten
+  best-scored beads were all assigned, epics or not-ready while claimable
+  work ranked lower. Top picks and quick wins are drawn before the
+  recommendation list is cut.
+  ([7a75221](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/7a75221d9bc1d5d31ede4d7e995de2961a3a7d50))
+- In workspace mode, a repository whose own IDs already carry the workspace
+  prefix (`api-12` in repo `api`) got claim/show commands for `12` (or `-12`
+  with a dashless prefix). They use the tracker's own ID again, as v0.3.0 did.
+  ([9526224](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/95262241412d0337a7da68bbe865499f113cfa65))
+- `--graph-root` triage offered a child as claimable when its blocker was
+  outside the subtree. Blocked state now comes from the full graph.
+  ([674d8c6](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/674d8c6c2c28643680d291264c16b22d06dcd2ad))
+
+### Known limitations
+
+- In Dolt-native `bd` workspaces, bvr runs `bd export` only when
+  `.beads/issues.jsonl` is missing, without a timeout, and does not refresh
+  it afterwards: re-run `bd export` after writing with `bd`.
+- The static pages viewer computes exact betweenness on load when no exported
+  value is available (above 10,000 issues), which can take seconds.
+- `rust-version` says 1.85, but the locked `cargo_metadata` 0.23 needs Rust
+  1.86 (also true of v0.3.0).
 
 ---
 

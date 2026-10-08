@@ -1,6 +1,6 @@
 [package]
 name = "beads_viewer_rust"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Spec-first Rust port of beads_viewer (bv) — graph-aware triage for beads issue trackers (CLI binary: bvr)"
