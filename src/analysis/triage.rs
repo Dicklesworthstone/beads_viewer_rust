@@ -810,7 +810,8 @@ pub fn compute_triage(
             .total_cmp(&left.score)
             .then_with(|| left.id.cmp(&right.id))
     });
-    recommendations.truncate(max_recommendations);
+    // Truncated only after top_picks and quick_wins are drawn below: claimable
+    // work ranked past the cutoff must still reach --robot-next.
 
     // Parents with open children are excluded from claimable picks (issue #17):
     // a parent/epic with still-open child work is a planning container, not
@@ -876,6 +877,8 @@ pub fn compute_triage(
         .take(10)
         .cloned()
         .collect();
+
+    recommendations.truncate(max_recommendations);
 
     let blockers_to_clear = compute_blockers_to_clear(issues, metrics, &actionable, &lookups);
 
@@ -1242,6 +1245,61 @@ mod tests {
         metrics: &'a GraphMetrics,
     ) -> super::TriageLookupCache<'a> {
         super::TriageLookupCache::new(issues, graph, metrics)
+    }
+
+    #[test]
+    fn top_picks_reach_claimable_work_ranked_past_the_cutoff() {
+        // Ten higher-ranked beads are all assigned (not claimable); the only
+        // claimable bead ranks eleventh. --robot-next must still offer it.
+        let mut issues: Vec<Issue> = (0..10)
+            .map(|n| Issue {
+                id: format!("A{n:02}"),
+                title: format!("Assigned {n}"),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                priority: 0,
+                assignee: "someone".to_string(),
+                ..Issue::default()
+            })
+            .collect();
+        issues.push(Issue {
+            id: "Z".to_string(),
+            title: "Unassigned".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            priority: 4,
+            ..Issue::default()
+        });
+
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let triage = compute_triage(
+            &issues,
+            &graph,
+            &metrics,
+            &TriageOptions {
+                max_recommendations: 10,
+                ..TriageOptions::default()
+            },
+        );
+
+        assert_eq!(triage.result.recommendations.len(), 10);
+        assert!(
+            triage
+                .result
+                .recommendations
+                .iter()
+                .all(|rec| rec.id != "Z"),
+            "fixture must rank Z past the cutoff"
+        );
+        let picks: Vec<&str> = triage
+            .result
+            .quick_ref
+            .top_picks
+            .iter()
+            .map(|pick| pick.id.as_str())
+            .collect();
+        assert_eq!(picks, ["Z"]);
     }
 
     #[test]
