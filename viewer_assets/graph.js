@@ -320,6 +320,7 @@ class GraphStore {
 }
 
 const store = new GraphStore();
+let graphGeneration = 0;
 
 /**
  * Helper to force ForceGraph to redraw without disturbing the simulation.
@@ -657,14 +658,12 @@ async function initWasm() {
     try {
         if (typeof window.bvGraphWasm !== 'undefined') {
             await window.bvGraphWasm.default();
-            store.wasmReady = true;
             console.log('[bv-graph] WASM initialized, version:', window.bvGraphWasm.version());
             return true;
         }
     } catch (e) {
         console.warn('[bv-graph] WASM init failed:', e);
     }
-    store.wasmReady = false;
     return false;
 }
 
@@ -793,19 +792,26 @@ function computeMetrics() {
 // ============================================================================
 
 export async function initGraph(containerId, options = {}) {
-    store.container = document.getElementById(containerId);
-    if (!store.container) {
+    cleanup();
+    const generation = ++graphGeneration;
+    const container = document.getElementById(containerId);
+    if (!container) {
         throw new Error(`Container '${containerId}' not found`);
     }
+
+    // Navigation or a newer initialization may win while WASM is loading.
+    // Obsolete calls must not clear the new container or publish a renderer.
+    const wasmReady = await initWasm();
+    if (generation !== graphGeneration) return null;
+
+    store.container = container;
+    store.wasmReady = wasmReady;
 
     // Merge config
     Object.assign(store.config, options);
 
     // Clear container
     store.container.innerHTML = '';
-
-    // Initialize WASM
-    await initWasm();
 
     // Create force-graph instance
     const graph = ForceGraph()(store.container);
@@ -934,6 +940,9 @@ export async function loadPrecomputedLayout() {
  * @param {object} [layout] - Optional pre-computed layout
  */
 export function loadData(issues, dependencies, layout = precomputedLayout) {
+    stopTimeTravel();
+    timeTravelState.history = null;
+    dispatchEvent('timeTravelReady', { eventCount: 0 });
     resetWhatIf();
     store.reset();
     store.issues = issues;
@@ -1134,6 +1143,10 @@ function getNodeSize(node) {
 }
 
 function getNodeColor(node) {
+    if (timeTravelState.active && timeTravelState.highlightedIssueIds.has(node.id)) {
+        return THEME.accent.yellow;
+    }
+
     // What-if simulation states take priority
     if (node._whatIfState === 'closing') return THEME.accent.green;
     if (node._whatIfState === 'unblocked') return THEME.accent.cyan;
@@ -1168,6 +1181,10 @@ function getNodeColor(node) {
 }
 
 function getNodeOpacity(node) {
+    if (timeTravelState.active) {
+        return timeTravelState.highlightedIssueIds.has(node.id) ? 1 : 0.25;
+    }
+
     // Dim non-highlighted nodes when we have highlights
     if (store.highlightedNodes.size > 0 && !store.highlightedNodes.has(node.id)) {
         return 0.3;
@@ -1206,8 +1223,13 @@ function drawNode(node, ctx, globalScale) {
         ctx.fill();
     }
 
+    // History highlights are a separate overlay; current issue state is intact.
+    if (timeTravelState.active && timeTravelState.highlightedIssueIds.has(node.id)) {
+        ctx.shadowColor = THEME.accent.yellow;
+        ctx.shadowBlur = 25;
+    }
     // Enhanced glow for what-if states
-    if (node._whatIfState === 'closing') {
+    else if (node._whatIfState === 'closing') {
         ctx.shadowColor = THEME.accent.green;
         ctx.shadowBlur = 25;
     } else if (node._whatIfState === 'unblocked') {
@@ -2443,6 +2465,7 @@ export function zoomToFit(padding = 50) {
 }
 
 export function resetView() {
+    stopTimeTravel();
     clearSelection();
     clearFilters();
     store.graph.centerAt(0, 0, 500);
@@ -2700,12 +2723,16 @@ function setupKeyboardShortcuts() {
     }
 
     keyboardShortcutHandler = (e) => {
-        // Ignore if typing in input
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        // Native timeline controls own their keyboard behavior (including Space
+        // and range arrows), as do other editable controls.
+        if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(e.target.tagName) ||
+            e.target.isContentEditable) return;
 
         switch (e.key) {
             case 'Escape':
-                if (whatIfState.active) {
+                if (timeTravelState.active) {
+                    stopTimeTravel();
+                } else if (whatIfState.active) {
                     resetWhatIf();
                 } else if (criticalPathState.active) {
                     resetCriticalPath();
@@ -3276,6 +3303,10 @@ export function setConfig(key, value) {
 export function cleanup() {
     clearScheduledTimeouts();
     document.removeEventListener('mousemove', positionTooltip);
+    graphGeneration++;
+    stopTimeTravel();
+    timeTravelState.history = null;
+    dispatchEvent('timeTravelReady', { eventCount: 0 });
     resetWhatIf();
     // Stop ForceGraph's own render/simulation loop before releasing the WASM
     // graphs or allowing a subsequent route entry to create another instance.
@@ -3302,23 +3333,10 @@ export function cleanup() {
     store.wasmReady = false;
     if (store.animationFrame) {
         cancelAnimationFrame(store.animationFrame);
+        store.animationFrame = null;
     }
     hideLabelLegend();
-    if (timeTravelState.playing) {
-        timeTravelState.playing = false;
-    }
-    if (timeTravelState.animationFrame) {
-        cancelAnimationFrame(timeTravelState.animationFrame);
-        timeTravelState.animationFrame = null;
-    }
-    if (timeTravelState.controlsEl) {
-        timeTravelState.controlsEl.remove();
-        timeTravelState.controlsEl = null;
-    }
-    if (timeTravelState.styleEl) {
-        timeTravelState.styleEl.remove();
-        timeTravelState.styleEl = null;
-    }
+    store.container = null;
 }
 
 // Note: Cycle navigator functions are already exported at their definitions
@@ -3349,52 +3367,38 @@ export {
 export { THEME, VIEW_MODES, TYPE_ICONS, LABEL_COLORS, LAYOUT_PRESETS };
 
 // ============================================================================
-// TIME-TRAVEL ANIMATION (bv-z38b)
+// RECORDED ISSUE HISTORY (bv-z38b)
 // ============================================================================
 
 /**
- * Time-travel state for graph history animation
+ * Recorded events highlight issues in the current export. The history contains
+ * no historical graph snapshots, so playback never alters nodes or links.
  */
 const timeTravelState = {
     active: false,
     playing: false,
     currentIdx: 0,
-    history: null,        // { commits: [{sha, date, beads_added[], beads_closed[], ...}] }
+    history: null,        // { events: [{ issueId, eventType, timestamp, message, commitSha }] }
     speed: 1,
     animationFrame: null,
     lastFrameTime: 0,
-    originalNodes: [],    // Snapshot of nodes before time-travel
-    originalLinks: [],    // Snapshot of links before time-travel
-    nodeStates: new Map(), // node.id -> { visible, opacity, animation }
+    highlightedIssueIds: new Set(),
     controlsEl: null,
     styleEl: null,
 };
 
 /**
- * Initialize time-travel with history data
- * @param {Object} history - History data from --robot-history
+ * Load dated issue events from the exported map, robot envelope, or a commit
+ * timeline. Reinitialization also clears playback from a previous data set.
+ * @param {Object} history - Recorded issue history
  */
 export function initTimeTravel(history) {
-    if (!history || !history.commits || history.commits.length === 0) {
-        console.warn('[TimeTravel] No history data provided');
-        return false;
-    }
-
-    // Sort commits by date
-    history.commits.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    timeTravelState.history = history;
-    timeTravelState.currentIdx = 0;
-    timeTravelState.active = false;
-    timeTravelState.playing = false;
-
-    // Create timeline controls
-    createTimelineControls();
-
-    console.log(`[TimeTravel] Initialized with ${history.commits.length} commits`);
-    dispatchEvent('timeTravelReady', { commits: history.commits.length });
-
-    return true;
+    stopTimeTravel();
+    const timeline = transformHistoryToTimeline(history);
+    const eventCount = timeline?.events.length || 0;
+    timeTravelState.history = eventCount > 0 ? timeline : null;
+    dispatchEvent('timeTravelReady', { eventCount });
+    return eventCount > 0;
 }
 
 /**
@@ -3414,29 +3418,44 @@ function createTimelineControls() {
     const controls = document.createElement('div');
     controls.id = 'time-travel-controls';
     controls.className = 'time-travel-controls';
+    controls.setAttribute('role', 'region');
+    controls.setAttribute('aria-label', 'Recorded issue history');
     controls.innerHTML = `
         <div class="timeline-header">
-            <span class="timeline-icon">⏱️</span>
-            <span class="timeline-title">Time Travel</span>
-            <button class="timeline-close" title="Close">✕</button>
+            <span class="timeline-title">Issue history</span>
+            <button type="button" class="timeline-close" aria-label="Close history" title="Close history">✕</button>
         </div>
         <div class="timeline-content">
             <div class="timeline-buttons">
-                <button class="timeline-btn" id="tt-start" title="Go to start">⏮</button>
-                <button class="timeline-btn" id="tt-back" title="Previous commit">⏪</button>
-                <button class="timeline-btn timeline-btn-primary" id="tt-play" title="Play/Pause">▶️</button>
-                <button class="timeline-btn" id="tt-forward" title="Next commit">⏩</button>
-                <button class="timeline-btn" id="tt-end" title="Go to end">⏭</button>
+                <button type="button" class="timeline-btn" id="tt-start" aria-label="First event" title="First event">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M3 5h2v14H3zm18 0v14L7 12z"/></svg>
+                </button>
+                <button type="button" class="timeline-btn" id="tt-back" aria-label="Previous event" title="Previous event">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12 5v14L2 12zm10 0v14l-10-7z"/></svg>
+                </button>
+                <button type="button" class="timeline-btn timeline-btn-primary" id="tt-play" aria-label="Play history" title="Play history">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M7 4v16l13-8z"/></svg>
+                </button>
+                <button type="button" class="timeline-btn" id="tt-forward" aria-label="Next event" title="Next event">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M2 5v14l10-7zm10 0v14l10-7z"/></svg>
+                </button>
+                <button type="button" class="timeline-btn" id="tt-end" aria-label="Last event" title="Last event">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M19 5h2v14h-2zM3 5v14l14-7z"/></svg>
+                </button>
             </div>
             <div class="timeline-scrubber">
-                <input type="range" id="tt-slider" min="0" max="100" value="0">
+                <label for="tt-slider">History event</label>
+                <input type="range" id="tt-slider" min="0" max="0" step="1" value="0">
             </div>
-            <div class="timeline-info">
-                <span id="tt-date">--</span>
-                <span id="tt-position">0 / 0</span>
+            <div class="timeline-event" aria-live="polite" aria-atomic="true">
+                <div class="timeline-info"><strong id="tt-issue"></strong><span id="tt-kind"></span></div>
+                <time id="tt-date"></time>
+                <p id="tt-message"></p>
+                <code id="tt-commit" hidden></code>
+                <div id="tt-position"></div>
             </div>
             <div class="timeline-speed">
-                <label>Speed:</label>
+                <label for="tt-speed">Playback speed</label>
                 <select id="tt-speed">
                     <option value="0.5">0.5x</option>
                     <option value="1" selected>1x</option>
@@ -3445,6 +3464,7 @@ function createTimelineControls() {
                     <option value="10">10x</option>
                 </select>
             </div>
+            <p class="timeline-note">Recorded issue events; details and links show the current export.</p>
         </div>
     `;
 
@@ -3461,12 +3481,13 @@ function createTimelineControls() {
             border-radius: 8px;
             padding: 8px 12px;
             z-index: 1000;
-            min-width: 300px;
+            width: min(480px, calc(100% - 24px));
+            max-height: min(75%, 360px);
+            overflow-y: auto;
+            box-sizing: border-box;
             box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            display: none;
-        }
-        .time-travel-controls.active {
-            display: block;
+            color: ${THEME.fg};
+            font-size: 12px;
         }
         .timeline-header {
             display: flex;
@@ -3487,6 +3508,8 @@ function createTimelineControls() {
             color: ${THEME.fgMuted};
             cursor: pointer;
             font-size: 16px;
+            min-width: 36px;
+            min-height: 36px;
         }
         .timeline-close:hover {
             color: ${THEME.accent.red};
@@ -3505,10 +3528,15 @@ function createTimelineControls() {
             border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
+            min-width: 44px;
+            min-height: 36px;
         }
-        .timeline-btn:hover {
+        .timeline-btn:hover:not(:disabled) {
             background: ${THEME.accent.purple};
         }
+        .timeline-btn:disabled { opacity: 0.4; cursor: default; }
+        .timeline-btn svg { display: block; margin: auto; }
+        .time-travel-controls :focus-visible { outline: 2px solid ${THEME.accent.yellow}; outline-offset: 2px; }
         .timeline-btn-primary {
             background: ${THEME.accent.purple};
         }
@@ -3519,11 +3547,16 @@ function createTimelineControls() {
             width: 100%;
             accent-color: ${THEME.accent.purple};
         }
+        .timeline-event { margin-bottom: 8px; overflow-wrap: anywhere; }
+        .timeline-event p { margin: 6px 0; white-space: pre-wrap; }
+        .timeline-event time, .timeline-event code { display: block; }
+        .timeline-event code[hidden] { display: none; }
+        #tt-position { margin-top: 6px; }
+        .timeline-note { margin: 8px 0 0; opacity: 0.8; }
         .timeline-info {
             display: flex;
             justify-content: space-between;
             font-size: 12px;
-            color: ${THEME.fgMuted};
             margin-bottom: 8px;
         }
         .timeline-speed {
@@ -3533,7 +3566,7 @@ function createTimelineControls() {
             font-size: 12px;
         }
         .timeline-speed label {
-            color: ${THEME.fgMuted};
+            color: ${THEME.fg};
         }
         .timeline-speed select {
             background: ${THEME.bgTertiary};
@@ -3541,16 +3574,6 @@ function createTimelineControls() {
             color: ${THEME.fg};
             padding: 2px 4px;
             border-radius: 4px;
-        }
-
-        /* Node animations */
-        @keyframes nodeAppear {
-            from { transform: scale(0); opacity: 0; }
-            to { transform: scale(1); opacity: 1; }
-        }
-        @keyframes nodeDisappear {
-            from { transform: scale(1); opacity: 1; }
-            to { transform: scale(0); opacity: 0; }
         }
     `;
     document.head.appendChild(style);
@@ -3575,218 +3598,143 @@ function setupTimeTravelListeners() {
     if (!controls) return;
 
     controls.querySelector('.timeline-close').addEventListener('click', stopTimeTravel);
-    controls.querySelector('#tt-start').addEventListener('click', () => goToCommit(0));
-    controls.querySelector('#tt-back').addEventListener('click', () => stepCommit(-1));
+    controls.querySelector('#tt-start').addEventListener('click', () => seekEvent(0));
+    controls.querySelector('#tt-back').addEventListener('click', () => seekEvent(timeTravelState.currentIdx - 1));
     controls.querySelector('#tt-play').addEventListener('click', togglePlay);
-    controls.querySelector('#tt-forward').addEventListener('click', () => stepCommit(1));
+    controls.querySelector('#tt-forward').addEventListener('click', () => seekEvent(timeTravelState.currentIdx + 1));
     controls.querySelector('#tt-end').addEventListener('click', () => {
-        if (timeTravelState.history) {
-            goToCommit(timeTravelState.history.commits.length - 1);
-        }
+        seekEvent(timeTravelState.history.events.length - 1);
     });
 
     controls.querySelector('#tt-slider').addEventListener('input', (e) => {
-        if (timeTravelState.history) {
-            const idx = Math.round((e.target.value / 100) * (timeTravelState.history.commits.length - 1));
-            goToCommit(idx);
-        }
+        seekEvent(Number(e.target.value));
     });
 
     controls.querySelector('#tt-speed').addEventListener('change', (e) => {
-        timeTravelState.speed = parseFloat(e.target.value);
+        const speed = Number(e.target.value);
+        if ([0.5, 1, 2, 5, 10].includes(speed)) timeTravelState.speed = speed;
     });
 }
 
 /**
- * Start time-travel mode
+ * Open recorded history without changing the current graph or its filters.
  */
 export function startTimeTravel() {
-    if (!timeTravelState.history) {
-        console.warn('[TimeTravel] No history loaded');
-        return;
-    }
-
-    // Save original state
-    const graphData = store.graph?.graphData() || { nodes: [], links: [] };
-    timeTravelState.originalNodes = [...graphData.nodes];
-    timeTravelState.originalLinks = [...graphData.links];
-    timeTravelState.nodeStates.clear();
-
-    // Initialize all nodes as hidden
-    graphData.nodes.forEach(node => {
-        timeTravelState.nodeStates.set(node.id, {
-            visible: false,
-            opacity: 0,
-            animation: null
-        });
-    });
-
+    if (timeTravelState.active) return true;
+    if (!timeTravelState.history?.events.length || !store.graph || !store.container) return false;
     timeTravelState.active = true;
     timeTravelState.currentIdx = 0;
-
-    // Show controls
-    if (timeTravelState.controlsEl) {
-        timeTravelState.controlsEl.classList.add('active');
-    }
-
-    // Go to start
-    goToCommit(0);
-
-    dispatchEvent('timeTravelStart', {});
+    createTimelineControls();
+    goToEvent(0);
+    dispatchEvent('timeTravelStart', { eventCount: timeTravelState.history.events.length });
+    return true;
 }
 
 /**
- * Stop time-travel mode and restore original state
+ * Remove the history overlay. Loaded events remain available for reopening.
  */
 export function stopTimeTravel() {
-    if (!timeTravelState.active) return;
-
-    // Stop playing
-    if (timeTravelState.playing) {
-        togglePlay();
-    }
-
-    // Restore original nodes
-    if (store.graph && timeTravelState.originalNodes.length > 0) {
-        store.graph.graphData({
-            nodes: timeTravelState.originalNodes,
-            links: timeTravelState.originalLinks
-        });
-    }
-
+    const wasActive = timeTravelState.active;
+    pauseTimeTravel();
     timeTravelState.active = false;
-    timeTravelState.nodeStates.clear();
-
-    // Hide controls
+    timeTravelState.currentIdx = 0;
+    timeTravelState.lastFrameTime = 0;
+    timeTravelState.speed = 1;
+    timeTravelState.highlightedIssueIds.clear();
     if (timeTravelState.controlsEl) {
-        timeTravelState.controlsEl.classList.remove('active');
+        timeTravelState.controlsEl.remove();
+        timeTravelState.controlsEl = null;
     }
-
-    dispatchEvent('timeTravelStop', {});
+    if (timeTravelState.styleEl) {
+        timeTravelState.styleEl.remove();
+        timeTravelState.styleEl = null;
+    }
+    if (wasActive) {
+        refreshGraph();
+        dispatchEvent('timeTravelStop', {});
+    }
 }
 
 /**
- * Go to a specific commit index
- * @param {number} idx - Commit index
+ * Select one recorded event. Highlight state is independent of normal graph
+ * selection, what-if results, cycle highlights, statuses, and topology.
  */
-function goToCommit(idx) {
-    if (!timeTravelState.history || !timeTravelState.active) return;
-
-    const commits = timeTravelState.history.commits;
-    idx = Math.max(0, Math.min(idx, commits.length - 1));
+function goToEvent(idx) {
+    if (!timeTravelState.history || !timeTravelState.active || !Number.isFinite(idx)) return;
+    const events = timeTravelState.history.events;
+    idx = Math.max(0, Math.min(Math.trunc(idx), events.length - 1));
     timeTravelState.currentIdx = idx;
-
-    // Calculate which nodes should be visible at this point
-    const visibleNodes = new Set();
-    const visibleLinks = new Set();
-
-    // Walk through history up to current index
-    for (let i = 0; i <= idx; i++) {
-        const commit = commits[i];
-
-        // Add nodes from this commit
-        if (commit.beads_added) {
-            commit.beads_added.forEach(id => visibleNodes.add(id));
-        }
-
-        // Remove closed nodes
-        if (commit.beads_closed) {
-            commit.beads_closed.forEach(id => visibleNodes.delete(id));
-        }
-    }
-
-    // Update node visibility with animation
-    const currentCommit = commits[idx];
-    timeTravelState.nodeStates.forEach((state, nodeId) => {
-        const shouldBeVisible = visibleNodes.has(nodeId);
-        const wasJustAdded = currentCommit.beads_added?.includes(nodeId);
-        const wasJustClosed = currentCommit.beads_closed?.includes(nodeId);
-
-        state.visible = shouldBeVisible;
-        state.opacity = shouldBeVisible ? 1 : 0;
-        state.animation = wasJustAdded ? 'appear' : (wasJustClosed ? 'disappear' : null);
-    });
-
-    // Build visible links (both endpoints must be visible)
-    const visibleLinksArr = timeTravelState.originalLinks.filter(link => {
-        const sourceId = typeof link.source === 'object' ? link.source.id : link.source;
-        const targetId = typeof link.target === 'object' ? link.target.id : link.target;
-        return visibleNodes.has(sourceId) && visibleNodes.has(targetId);
-    });
-
-    // Update graph
-    const visibleNodesArr = timeTravelState.originalNodes.filter(n => visibleNodes.has(n.id));
-    if (store.graph) {
-        store.graph.graphData({
-            nodes: visibleNodesArr,
-            links: visibleLinksArr
-        });
-    }
-
-    // Update UI
+    timeTravelState.highlightedIssueIds.clear();
+    timeTravelState.highlightedIssueIds.add(events[idx].issueId);
     updateTimeTravelUI();
-
-    dispatchEvent('timeTravelCommit', {
+    refreshGraph();
+    dispatchEvent('timeTravelEvent', {
         idx,
-        commit: currentCommit,
-        visibleNodes: visibleNodes.size
+        event: { ...events[idx] },
+        totalEvents: events.length
     });
 }
 
 /**
- * Step forward or backward by one commit
- * @param {number} delta - Direction (+1 or -1)
+ * Manual navigation pauses before selecting the requested event.
  */
-function stepCommit(delta) {
-    if (!timeTravelState.history) return;
-    goToCommit(timeTravelState.currentIdx + delta);
+function seekEvent(idx) {
+    pauseTimeTravel();
+    goToEvent(idx);
+}
+
+function pauseTimeTravel() {
+    const wasPlaying = timeTravelState.playing;
+    timeTravelState.playing = false;
+    if (timeTravelState.animationFrame !== null) {
+        cancelAnimationFrame(timeTravelState.animationFrame);
+        timeTravelState.animationFrame = null;
+    }
+    updateTimeTravelUI();
+    if (wasPlaying) dispatchEvent('timeTravelPlayState', { playing: false });
 }
 
 /**
  * Toggle play/pause
  */
 function togglePlay() {
-    if (!timeTravelState.history || !timeTravelState.active) return;
-
-    timeTravelState.playing = !timeTravelState.playing;
-
-    // Update play button
-    const playBtn = timeTravelState.controlsEl?.querySelector('#tt-play');
-    if (playBtn) {
-        playBtn.textContent = timeTravelState.playing ? '⏸️' : '▶️';
-    }
-
+    if (!timeTravelState.history || !timeTravelState.active || timeTravelState.history.events.length < 2) return;
     if (timeTravelState.playing) {
-        timeTravelState.lastFrameTime = Date.now();
-        playAnimation();
+        pauseTimeTravel();
+        return;
     }
-
-    dispatchEvent('timeTravelPlayState', { playing: timeTravelState.playing });
+    if (timeTravelState.currentIdx === timeTravelState.history.events.length - 1) {
+        goToEvent(0);
+    }
+    timeTravelState.playing = true;
+    timeTravelState.lastFrameTime = performance.now();
+    timeTravelState.animationFrame = requestAnimationFrame(playAnimation);
+    updateTimeTravelUI();
+    dispatchEvent('timeTravelPlayState', { playing: true });
 }
 
 /**
  * Animation loop for playback
  */
-function playAnimation() {
-    if (!timeTravelState.playing) return;
-
-    const now = Date.now();
+function playAnimation(now) {
+    timeTravelState.animationFrame = null;
+    if (!timeTravelState.playing || !timeTravelState.active) return;
     const delta = now - timeTravelState.lastFrameTime;
     const interval = 1000 / timeTravelState.speed; // ms per frame
 
     if (delta >= interval) {
         timeTravelState.lastFrameTime = now;
 
-        if (timeTravelState.currentIdx < timeTravelState.history.commits.length - 1) {
-            stepCommit(1);
-        } else {
-            // Reached end, stop playing
-            togglePlay();
+        goToEvent(timeTravelState.currentIdx + 1);
+        if (timeTravelState.currentIdx === timeTravelState.history.events.length - 1) {
+            pauseTimeTravel();
             return;
         }
     }
 
-    timeTravelState.animationFrame = requestAnimationFrame(playAnimation);
+    if (timeTravelState.playing) {
+        timeTravelState.animationFrame = requestAnimationFrame(playAnimation);
+    }
 }
 
 /**
@@ -3795,32 +3743,40 @@ function playAnimation() {
 function updateTimeTravelUI() {
     if (!timeTravelState.controlsEl || !timeTravelState.history) return;
 
-    const commits = timeTravelState.history.commits;
+    const events = timeTravelState.history.events;
     const idx = timeTravelState.currentIdx;
-    const commit = commits[idx];
-
-    // Update slider
-    const slider = timeTravelState.controlsEl.querySelector('#tt-slider');
-    if (slider) {
-        slider.value = (idx / (commits.length - 1)) * 100;
-    }
-
-    // Update date
-    const dateEl = timeTravelState.controlsEl.querySelector('#tt-date');
-    if (dateEl && commit) {
-        const date = new Date(commit.date);
-        dateEl.textContent = date.toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-        });
-    }
-
-    // Update position
-    const posEl = timeTravelState.controlsEl.querySelector('#tt-position');
-    if (posEl) {
-        posEl.textContent = `${idx + 1} / ${commits.length}`;
-    }
+    const event = events[idx];
+    if (!event) return;
+    const controls = timeTravelState.controlsEl;
+    const kind = event.eventType.replaceAll('_', ' ').replaceAll('-', ' ');
+    const slider = controls.querySelector('#tt-slider');
+    slider.max = String(events.length - 1);
+    slider.value = String(idx);
+    slider.disabled = events.length < 2;
+    slider.setAttribute('aria-valuetext', `${idx + 1} of ${events.length}: ${event.issueId}, ${kind}, ${event.timestamp}`);
+    controls.querySelector('#tt-issue').textContent = event.issueId;
+    controls.querySelector('#tt-kind').textContent = kind;
+    const dateEl = controls.querySelector('#tt-date');
+    dateEl.dateTime = event.timestamp;
+    dateEl.textContent = event.timestamp;
+    controls.querySelector('#tt-message').textContent = event.message;
+    const commitEl = controls.querySelector('#tt-commit');
+    commitEl.textContent = event.commitSha ? `Commit ${event.commitSha}` : '';
+    commitEl.hidden = !event.commitSha;
+    controls.querySelector('#tt-position').textContent = `${idx + 1} / ${events.length} events`;
+    controls.querySelector('#tt-speed').value = String(timeTravelState.speed);
+    controls.querySelector('#tt-start').disabled = idx === 0;
+    controls.querySelector('#tt-back').disabled = idx === 0;
+    controls.querySelector('#tt-forward').disabled = idx === events.length - 1;
+    controls.querySelector('#tt-end').disabled = idx === events.length - 1;
+    const playBtn = controls.querySelector('#tt-play');
+    playBtn.disabled = events.length < 2;
+    playBtn.querySelector('path').setAttribute('d', timeTravelState.playing
+        ? 'M6 4h4v16H6zm8 0h4v16h-4z'
+        : 'M7 4v16l13-8z');
+    const playLabel = timeTravelState.playing ? 'Pause history' : 'Play history';
+    playBtn.setAttribute('aria-label', playLabel);
+    playBtn.title = playLabel;
 }
 
 /**
@@ -3834,77 +3790,109 @@ export function isTimeTravelActive() {
  * Get time-travel state for external access
  */
 export function getTimeTravelState() {
+    const currentEvent = timeTravelState.active ? timeTravelState.history?.events[timeTravelState.currentIdx] : null;
     return {
         active: timeTravelState.active,
         playing: timeTravelState.playing,
         currentIdx: timeTravelState.currentIdx,
-        totalCommits: timeTravelState.history?.commits?.length || 0,
-        speed: timeTravelState.speed
+        totalEvents: timeTravelState.history?.events.length || 0,
+        speed: timeTravelState.speed,
+        currentEvent: currentEvent ? { ...currentEvent } : null,
+        highlightedIssueIds: [...timeTravelState.highlightedIssueIds]
     };
 }
 
 /**
- * Transform robot-history format to timeline format for time-travel
- * @param {Object} robotHistory - Output from bv --robot-history
- * @returns {Object} Timeline format { commits: [...] }
+ * Only accept recorded RFC3339 instants. Date.parse alone also accepts bare
+ * years, numbers, and impossible calendar dates that silently roll forward.
  */
-export function transformHistoryToTimeline(robotHistory) {
-    if (!robotHistory || !robotHistory.histories) {
-        console.warn('[TimeTravel] Invalid robot-history format');
-        return null;
-    }
+function parseRecordedTimestamp(value) {
+    if (typeof value !== 'string') return null;
+    const timestamp = value.trim();
+    const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i.exec(timestamp);
+    if (!parts) return null;
+    const [year, month, day, hour, minute, second] = parts.slice(1, 7).map(Number);
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const monthDays = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (month < 1 || month > 12 || day < 1 || day > monthDays[month - 1] ||
+        hour > 23 || minute > 59 || second > 59) return null;
+    const time = Date.parse(timestamp);
+    if (!Number.isFinite(time)) return null;
+    return { timestamp, time, fraction: (parts[7] || '').padEnd(9, '0') };
+}
 
-    // Collect all events across all beads
-    const allEvents = [];
+/**
+ * Normalize the actual data/history.json map, --robot-history envelope, or a
+ * commit timeline. Each dated issue event remains its own step, including
+ * updates/claims/reopens and repeated or empty commit SHAs. Untimestamped
+ * dependencies cannot establish historical topology and are omitted.
+ * @returns {Object|null} { events: [...] }, limited to issues in this export
+ */
+export function transformHistoryToTimeline(history) {
+    if (!history || typeof history !== 'object' || Array.isArray(history)) return null;
+    const entries = [];
+    const appendEvent = (issueId, eventType, timestamp, message, commitSha) => {
+        if (typeof issueId !== 'string' || !store.nodeMap.has(issueId)) return;
+        const date = parseRecordedTimestamp(timestamp);
+        if (!date) return;
+        entries.push({
+            time: date.time,
+            fraction: date.fraction,
+            order: entries.length,
+            event: {
+                issueId,
+                eventType: typeof eventType === 'string' && eventType.trim() ? eventType.trim() : 'recorded',
+                timestamp: date.timestamp,
+                message: typeof message === 'string' ? message : '',
+                commitSha: typeof commitSha === 'string' ? commitSha.trim() : ''
+            }
+        });
+    };
 
-    Object.values(robotHistory.histories).forEach(beadHistory => {
-        if (!beadHistory.events) return;
-
-        beadHistory.events.forEach(event => {
-            allEvents.push({
-                beadId: event.bead_id,
-                eventType: event.event_type,
-                timestamp: event.timestamp,
-                commitSha: event.commit_sha,
-                commitMessage: event.commit_message || ''
+    if (Array.isArray(history.events)) {
+        history.events.forEach(event => {
+            if (!event || typeof event !== 'object') return;
+            appendEvent(event.issueId, event.eventType, event.timestamp, event.message, event.commitSha);
+        });
+    } else if (Array.isArray(history.commits)) {
+        // The standalone demo/graph API already accepts this explicit format.
+        // Expand recorded changes; never fabricate a commit for raw events.
+        const changeTypes = {
+            beads_added: 'created',
+            beads_closed: 'closed',
+            beads_modified: 'modified',
+            beads_updated: 'updated',
+            beads_claimed: 'claimed',
+            beads_reopened: 'reopened'
+        };
+        history.commits.forEach(commit => {
+            if (!commit || typeof commit !== 'object') return;
+            Object.entries(changeTypes).forEach(([key, eventType]) => {
+                if (!Array.isArray(commit[key])) return;
+                commit[key].forEach(issueId => {
+                    appendEvent(issueId, eventType, commit.date, commit.message, commit.sha);
+                });
             });
         });
-    });
-
-    // Sort events by timestamp
-    allEvents.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-    // Group events by commit SHA
-    const commitMap = new Map();
-    allEvents.forEach(event => {
-        const sha = event.commitSha;
-        if (!commitMap.has(sha)) {
-            commitMap.set(sha, {
-                sha: sha,
-                date: event.timestamp,
-                message: event.commitMessage,
-                beads_added: [],
-                beads_closed: [],
-                beads_modified: []
+    } else {
+        const histories = history.histories ?? history;
+        if (!histories || typeof histories !== 'object' || Array.isArray(histories)) return null;
+        Object.entries(histories).forEach(([key, beadHistory]) => {
+            if (!beadHistory || !Array.isArray(beadHistory.events)) return;
+            beadHistory.events.forEach(event => {
+                if (!event || typeof event !== 'object') return;
+                const issueId = [event.bead_id, beadHistory.bead_id, key]
+                    .find(value => typeof value === 'string' && value.length > 0);
+                appendEvent(issueId, event.event_type, event.timestamp, event.commit_message, event.commit_sha);
             });
-        }
+        });
+    }
 
-        const commit = commitMap.get(sha);
-        if (event.eventType === 'created') {
-            commit.beads_added.push(event.beadId);
-        } else if (event.eventType === 'closed') {
-            commit.beads_closed.push(event.beadId);
-        } else if (event.eventType === 'modified') {
-            commit.beads_modified.push(event.beadId);
-        }
-    });
-
-    // Convert to array sorted by date
-    const commits = [...commitMap.values()].sort((a, b) =>
-        new Date(a.date) - new Date(b.date)
-    );
-
-    return { commits };
+    // Preserve source order for simultaneous events, including distinct
+    // changes with the same SHA; RFC3339 fractions can exceed JS milliseconds.
+    entries.sort((a, b) => a.time - b.time ||
+        (a.fraction < b.fraction ? -1 : a.fraction > b.fraction ? 1 : a.order - b.order));
+    return { events: entries.map(entry => entry.event) };
 }
 
 /**

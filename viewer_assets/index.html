@@ -3133,6 +3133,20 @@
             <span class="text-sm font-medium sm:hidden">Back</span>
           </button>
 
+          <button @click="toggleGraphHistory()"
+                  :disabled="!graphHistoryReady"
+                  :aria-pressed="graphHistoryActive"
+                  :aria-busy="graphHistoryLoading"
+                  aria-controls="time-travel-controls"
+                  :title="graphHistoryLoading ? 'Loading recorded issue history' : graphHistoryReady ? 'Review recorded issue events (T)' : 'No dated issue history in this export'"
+                  :class="graphHistoryActive ? 'ring-2 ring-beads-500 bg-beads-50 dark:bg-beads-900' : 'bg-white dark:bg-gray-800'"
+                  class="flex items-center gap-2 px-3 py-2.5 md:px-4 md:py-2 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors min-h-[44px] disabled:opacity-50 disabled:cursor-default">
+            <svg class="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <span class="text-sm font-medium">History</span>
+          </button>
+
           <!-- Stats overlay - more compact on mobile -->
           <div class="bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-2 md:p-3">
             <div class="text-[10px] md:text-xs text-gray-500 dark:text-gray-400 mb-1">Showing</div>
@@ -3216,7 +3230,7 @@
       </div>
 
       <!-- Bottom legend - hidden on mobile when detail pane is open -->
-      <div class="absolute bottom-4 left-4 pointer-events-auto transition-opacity duration-200"
+      <div x-show="!graphHistoryActive" class="absolute bottom-4 left-4 pointer-events-auto transition-opacity duration-200"
            :class="graphDetailNode ? 'hidden md:block' : ''">
         <div class="bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 p-2 md:p-3">
           <div class="text-xs text-gray-500 dark:text-gray-400 mb-1.5 md:mb-2">Legend</div>
@@ -3233,6 +3247,7 @@
               <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-[10px]">←→</kbd> Priority nav</span>
               <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-[10px]">↑↓</kbd> K-core nav</span>
               <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-[10px]">H</kbd> Heatmap</span>
+              <span x-show="graphHistoryReady"><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-[10px]">T</kbd> History</span>
               <span><kbd class="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-[10px]">Esc</kbd> Deselect</span>
             </div>
           </div>

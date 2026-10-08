@@ -59,6 +59,42 @@ const graphDependencies = [
   ['graph-external', 'missing-blocker', 'blocks'],
   ['missing-dependent', 'graph-root', 'blocks'],
 ];
+// Match data/history.json emitted by export_pages.rs: a flat map keyed by ID,
+// with individually timestamped events and empty commit SHAs. Same-day entries
+// must remain separate; the current database includes a closed prerequisite.
+const historyEvent = (id, kind, timestamp, message = '', sha = '') => ({
+  bead_id: id, event_type: kind, timestamp, commit_sha: sha,
+  commit_message: message, author: '', author_email: '',
+});
+const recordedEvents = [
+  historyEvent('graph-root', 'created', '2026-10-06T09:00:00Z', 'Root recorded'),
+  historyEvent('graph-closed', 'created', '2026-10-06T09:00:00Z', 'Same instant, separate issue'),
+  historyEvent('graph-left', 'created', '2026-10-06T09:00:30Z', 'Left recorded'),
+  historyEvent('graph-root', 'updated', '2026-10-06T09:01:00Z', '<b>Literal recorded update</b>'),
+  historyEvent('graph-closed', 'closed', '2026-10-06T09:02:00Z', 'Completed prerequisite'),
+];
+function exportedHistory(events) {
+  const histories = {};
+  for (const event of events) {
+    const issue = graphIssues.find(item => item[0] === event.bead_id);
+    const history = histories[event.bead_id] ||= {
+      bead_id: event.bead_id, title: issue?.[1] || event.bead_id,
+      status: issue?.[3] || 'open', events: [], milestones: {},
+      commits: null, cycle_time: null, last_author: '',
+    };
+    history.events.push(event);
+  }
+  return histories;
+}
+const recordedHistory = exportedHistory([
+  ...recordedEvents,
+  historyEvent('graph-root', 'updated', '', 'No invented date'),
+  historyEvent('graph-left', 'updated', 'not-a-date', 'Invalid date'),
+  historyEvent('graph-left', 'updated', '2026', 'A year is not an event timestamp'),
+  historyEvent('graph-left', 'updated', 1791277200000, 'Timestamp strings are required'),
+  historyEvent('graph-left', 'updated', '2026-02-30T09:00:00Z', 'Invalid calendar day'),
+  historyEvent('not-in-export', 'created', '2026-10-06T09:03:00Z', 'Unknown issue'),
+]);
 const allIds = issues.map(issue => issue[0]);
 const matchingIds = ['bv-open', 'bv-blocked', 'bv-progress', 'bv-closed', 'bv-description'];
 const openIds = ['bv-open', 'bv-blocked', 'bv-description'];
@@ -126,6 +162,11 @@ before(async () => {
       response.end('{}');
       return;
     }
+    if (graphFixture && pathname === '/data/history.json') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(recordedHistory));
+      return;
+    }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
     const filename = path.resolve(assets, relative);
     if (!filename.startsWith(assets + path.sep)) {
@@ -158,7 +199,7 @@ async function searchInput(page, mobile) {
   return page.locator(inputSelector);
 }
 
-async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath = '') {
+async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath = '', setupPage) {
   // Keep browser process state and memory independent between scenarios.
   const browser = await chromium.launch({
     headless: true,
@@ -217,6 +258,7 @@ async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath 
       console.error('[viewer test] unhandled rejection:', reason);
     });
   });
+  if (setupPage) await setupPage(page);
   await page.goto(origin + '/' + fixturePath + hash);
   await page.locator('[x-show="loading"]').waitFor({ state: 'hidden', timeout: 30000 });
   await searchInput(page, mobile);
@@ -346,6 +388,75 @@ async function forceGraphImpact(page, issueId) {
         .filter(item => item._whatIfState === 'unblocked').map(item => item.id).sort(),
     };
   }, issueId);
+}
+
+async function currentGraphSnapshot(page) {
+  return page.evaluate(async () => {
+    const graph = (await import('./graph.js')).getGraph().graphData();
+    const endpoint = node => typeof node === 'object' ? node.id : node;
+    return {
+      nodes: graph.nodes.map(node => ({ id: node.id, status: node.status, title: node.title }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      links: graph.links.map(link => [endpoint(link.source), endpoint(link.target), link.type || ''])
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    };
+  });
+}
+
+async function historyEventVisible(page, event, index, total, snapshot) {
+  const controls = page.locator('#time-travel-controls');
+  await controls.waitFor({ state: 'visible' });
+  assert.equal(await controls.locator('#tt-position').textContent(), `${index + 1} / ${total} events`);
+  assert.equal(await controls.locator('#tt-issue').textContent(), event.bead_id);
+  assert.equal((await controls.locator('#tt-kind').textContent()).toLowerCase(), event.event_type);
+  assert.equal(await controls.locator('#tt-date').getAttribute('datetime'), event.timestamp);
+  assert.ok((await controls.locator('#tt-date').textContent()).includes(event.timestamp.slice(11, 19)),
+    'recorded seconds remain visible for same-day events');
+  assert.equal(await controls.locator('#tt-message').textContent(), event.commit_message);
+  assert.equal(await controls.locator('#tt-message b').count(), 0, 'event details are literal text');
+  assert.equal(await controls.getByRole('slider', { name: 'History event', exact: true }).inputValue(), String(index));
+
+  const observed = await page.evaluate(async () => {
+    const module = await import('./graph.js');
+    const state = module.getTimeTravelState();
+    const graph = module.getGraph();
+    const draw = graph.nodeCanvasObject();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    let fills = [];
+    const fill = ctx.fill;
+    // Observe the actual renderer on a real Canvas2D context. Calling the
+    // original fill preserves rendering; no selection/graph algorithm is mocked.
+    ctx.fill = function (...args) {
+      fills.push({ color: this.fillStyle, alpha: this.globalAlpha });
+      return fill.apply(this, args);
+    };
+    const rendered = graph.graphData().nodes.map(node => {
+      fills = [];
+      draw(node, ctx, 1);
+      const body = fills.filter(item => typeof item.color === 'string').at(-1);
+      return { id: node.id, alpha: body?.alpha };
+    });
+    const brightest = Math.max(...rendered.map(node => node.alpha));
+    return {
+      active: state.active, currentIdx: state.currentIdx, totalEvents: state.totalEvents,
+      issue: state.currentEvent?.issueId, highlighted: state.highlightedIssueIds,
+      renderedHighlight: rendered.filter(node => node.alpha === brightest).map(node => node.id),
+    };
+  });
+  assert.deepEqual(observed, {
+    active: true, currentIdx: index, totalEvents: total,
+    issue: event.bead_id, highlighted: [event.bead_id], renderedHighlight: [event.bead_id],
+  }, 'the selected recorded event highlights its actual canvas node');
+  assert.deepEqual(await currentGraphSnapshot(page), snapshot,
+    'recorded events never invent or remove historical nodes, statuses, or links');
+}
+
+async function selectHistoryEvent(page, index) {
+  await page.getByRole('slider', { name: 'History event', exact: true }).evaluate((slider, value) => {
+    slider.value = String(value);
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+  }, index);
 }
 
 for (const mobile of [false, true]) {
@@ -624,4 +735,251 @@ test('desktop: graph diamond honors all blockers, resolved statuses and exported
     animated: expectedCascade,
   });
   await page.getByText('Closing graph-root would unblock 2 issues directly, 4 total in cascade', { exact: true }).waitFor({ state: 'visible' });
+});
+
+for (const mobile of [false, true]) {
+  const device = mobile ? 'mobile' : 'desktop';
+
+  test(`${device}: recorded graph history shows each event without rewriting the current graph`, async t => {
+    const page = await openViewer(t, mobile, '#/graph', false, 'graph-fixture/');
+    await openForceGraph(page);
+    const snapshot = await currentGraphSnapshot(page);
+    assert.equal(snapshot.nodes.find(node => node.id === 'graph-closed').status, 'closed');
+    const history = page.getByRole('button', { name: 'History', exact: true });
+    await history.click();
+    assert.equal(await history.getAttribute('aria-pressed'), 'true');
+    await page.getByText('Recorded issue events; details and links show the current export.', { exact: true })
+      .waitFor({ state: 'visible' });
+    const controls = page.locator('#time-travel-controls');
+    const slider = controls.getByRole('slider', { name: 'History event', exact: true });
+    assert.equal(await slider.getAttribute('min'), '0');
+    assert.equal(await slider.getAttribute('max'), String(recordedEvents.length - 1));
+    assert.equal(await slider.getAttribute('step'), '1');
+    for (let index = 0; index < recordedEvents.length; index += 1) {
+      await historyEventVisible(page, recordedEvents[index], index, recordedEvents.length, snapshot);
+      if (index + 1 < recordedEvents.length) {
+        await controls.getByRole('button', { name: 'Next event', exact: true }).click();
+      }
+    }
+    assert.equal(await controls.getByRole('button', { name: 'Next event', exact: true }).isDisabled(), true);
+    await controls.getByRole('button', { name: 'First event', exact: true }).click();
+    await historyEventVisible(page, recordedEvents[0], 0, recordedEvents.length, snapshot);
+    assert.equal(await controls.getByRole('button', { name: 'Previous event', exact: true }).isDisabled(), true);
+    await controls.getByRole('button', { name: 'Last event', exact: true }).click();
+    await controls.getByRole('button', { name: 'Previous event', exact: true }).click();
+    await historyEventVisible(page, recordedEvents[3], 3, recordedEvents.length, snapshot);
+    await controls.getByRole('button', { name: 'Close history', exact: true }).click();
+    await controls.waitFor({ state: 'hidden' });
+    assert.equal(await history.getAttribute('aria-pressed'), 'false');
+    assert.deepEqual(await currentGraphSnapshot(page), snapshot);
+    assert.deepEqual(await page.evaluate(async () => (await import('./graph.js')).getTimeTravelState().highlightedIssueIds), []);
+  });
+
+  test(`${device}: recorded history playback pauses, restarts and stops on graph exit`, async t => {
+    const page = await openViewer(t, mobile, '#/graph', true, 'graph-fixture/');
+    await openForceGraph(page);
+    await page.getByRole('button', { name: 'History', exact: true }).click();
+    await page.clock.pauseAt(new Date('2026-10-07T13:00:00Z'));
+    await page.evaluate(() => {
+      window.recordedHistorySteps = [];
+      document.addEventListener('bv-graph:timeTravelEvent', event => {
+        window.recordedHistorySteps.push(event.detail.idx);
+      });
+    });
+    const controls = page.locator('#time-travel-controls');
+    await controls.getByRole('button', { name: 'Play history', exact: true }).click();
+    await page.clock.runFor(1100);
+    assert.deepEqual(await page.evaluate(() => window.recordedHistorySteps), [1]);
+    await controls.getByRole('button', { name: 'Pause history', exact: true }).click();
+    await page.clock.runFor(2200);
+    assert.deepEqual(await page.evaluate(() => window.recordedHistorySteps), [1], 'pause cancels scheduled playback');
+    // Restart and pause within one frame, then resume: a canceled RAF must not
+    // survive and create a second playback loop when Play is pressed again.
+    await controls.getByRole('button', { name: 'Play history', exact: true }).click();
+    await controls.getByRole('button', { name: 'Pause history', exact: true }).click();
+    await controls.getByRole('button', { name: 'Play history', exact: true }).click();
+    await page.clock.runFor(1100);
+    assert.deepEqual(await page.evaluate(() => window.recordedHistorySteps), [1, 2]);
+    await controls.getByRole('button', { name: 'Close history', exact: true }).click();
+    await page.clock.runFor(2200);
+    assert.deepEqual(await page.evaluate(() => window.recordedHistorySteps), [1, 2], 'closing history cancels playback');
+    await controls.waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: 'History', exact: true }).click();
+    assert.equal(await controls.locator('#tt-position').textContent(), `1 / ${recordedEvents.length} events`);
+    await controls.getByRole('button', { name: 'Play history', exact: true }).click();
+    const beforeExit = await page.evaluate(() => [...window.recordedHistorySteps]);
+    if (mobile) {
+      await navigateWithClock(page, () => page.locator('[x-show="view === \'graph\'"]')
+        .getByRole('button', { name: 'Back', exact: true }).click());
+      await page.locator('[x-show="view === \'dashboard\'"]').waitFor({ state: 'visible' });
+    } else {
+      await home(page, false, true);
+    }
+    await page.clock.runFor(2200);
+    assert.deepEqual(await page.evaluate(() => window.recordedHistorySteps), beforeExit,
+      'leaving the graph stops playback and removes controls');
+    assert.equal(await page.locator('#time-travel-controls').count(), 0);
+    assert.deepEqual(await page.evaluate(async () => {
+      const module = await import('./graph.js');
+      const state = module.getTimeTravelState();
+      return { graph: module.getGraph(), active: state.active, playing: state.playing, events: state.totalEvents };
+    }), { graph: null, active: false, playing: false, events: 0 });
+  });
+}
+
+test('desktop: cleanup cancels a graph initialization across the real WASM promise', async t => {
+  const page = await openViewer(t, false);
+  const state = await page.evaluate(async () => {
+    const module = await import('./graph.js');
+    let readyEvents = 0;
+    const ready = () => { readyEvents += 1; };
+    document.addEventListener('bv-graph:ready', ready);
+    // Even cached WASM initialization yields at await. Cleanup in that exact
+    // window must invalidate initGraph before it creates a canvas or listeners.
+    const pending = module.initGraph('graph-container');
+    module.cleanup();
+    await pending;
+    const observed = {
+      graph: Boolean(module.getGraph()), wasm: module.isWasmReady(),
+      canvas: document.querySelectorAll('#graph-container canvas').length, readyEvents,
+    };
+    document.removeEventListener('bv-graph:ready', ready);
+    module.cleanup();
+    return observed;
+  });
+  assert.deepEqual(state, { graph: false, wasm: false, canvas: 0, readyEvents: 0 },
+    'an obsolete init cannot resurrect graph state after cleanup');
+});
+
+test('desktop: history handles single events, wrapped histories, long timelines and absent dates', async t => {
+  const single = historyEvent('graph-closed', 'closed', '2026-10-06T09:00:00Z', 'Only dated event');
+  let payload = exportedHistory([single]);
+  let status = 200;
+  const page = await openViewer(t, false, '#/graph', false, 'graph-fixture/', async page => {
+    await page.route('**/data/history.json?*', request => request.fulfill({
+      status, contentType: 'application/json', body: JSON.stringify(payload),
+    }));
+  });
+  await openForceGraph(page);
+  const history = page.getByRole('button', { name: 'History', exact: true });
+  await history.click();
+  const snapshot = await currentGraphSnapshot(page);
+  await historyEventVisible(page, single, 0, 1, snapshot);
+  const slider = page.getByRole('slider', { name: 'History event', exact: true });
+  assert.equal(await slider.getAttribute('max'), '0');
+  assert.equal(await slider.inputValue(), '0', 'one event never produces NaN or a fractional index');
+  for (const name of ['First event', 'Previous event', 'Next event', 'Last event', 'Play history']) {
+    assert.equal(await page.getByRole('button', { name, exact: true }).isDisabled(), true, `${name} has no further event`);
+  }
+
+  const events = Array.from({ length: 103 }, (_, index) => historyEvent(
+    index % 2 ? 'graph-root' : 'graph-closed', index === 0 ? 'reopened' : 'updated',
+    new Date(Date.UTC(2026, 9, 6, 10, 0, index)).toISOString(), `Recorded event ${index}`, 'shared-commit',
+  ));
+  await home(page, false);
+  payload = { histories: structuredClone(exportedHistory(events)) };
+  delete payload.histories['graph-root'].events[0].bead_id;
+  delete payload.histories['graph-closed'].bead_id;
+  delete payload.histories['graph-closed'].events[0].bead_id;
+  await openForceGraph(page);
+  await history.click();
+  const longSnapshot = await currentGraphSnapshot(page);
+  assert.equal(await slider.getAttribute('max'), '102');
+  assert.equal(await slider.getAttribute('step'), '1');
+  await historyEventVisible(page, events[0], 0, events.length, longSnapshot);
+  await selectHistoryEvent(page, 1);
+  await historyEventVisible(page, events[1], 1, events.length, longSnapshot);
+  await selectHistoryEvent(page, 101);
+  await historyEventVisible(page, events[101], 101, events.length, longSnapshot);
+  await slider.press('ArrowRight');
+  await historyEventVisible(page, events[102], 102, events.length, longSnapshot);
+  await slider.press('ArrowLeft');
+  await historyEventVisible(page, events[101], 101, events.length, longSnapshot);
+  assert.equal(longSnapshot.nodes.find(node => node.id === 'graph-closed').status, 'closed',
+    'a recorded reopening does not invent a different current status');
+
+  // The graph module's explicit commit-timeline input remains usable too.
+  // Distinct changes in one commit are separate recorded issue events.
+  const commitEvents = [
+    historyEvent('graph-root', 'modified', '2026-10-06T12:00:00Z', 'Shared commit', 'known-sha'),
+    historyEvent('graph-left', 'claimed', '2026-10-06T12:00:00Z', 'Shared commit', 'known-sha'),
+    historyEvent('graph-closed', 'reopened', '2026-10-06T12:00:00Z', 'Shared commit', 'known-sha'),
+  ];
+  await home(page, false);
+  payload = { commits: [{
+    sha: 'known-sha', date: '2026-10-06T12:00:00Z', message: 'Shared commit',
+    beads_modified: ['graph-root'], beads_claimed: ['graph-left'], beads_reopened: ['graph-closed'],
+  }] };
+  await openForceGraph(page);
+  await history.click();
+  for (let index = 0; index < commitEvents.length; index += 1) {
+    await selectHistoryEvent(page, index);
+    await historyEventVisible(page, commitEvents[index], index, commitEvents.length, longSnapshot);
+  }
+
+  for (const missing of [false, true]) {
+    await home(page, false);
+    status = missing ? 404 : 200;
+    payload = exportedHistory([
+      historyEvent('graph-root', 'created', '', 'Undated'),
+      historyEvent('graph-left', 'updated', 'not-a-date', 'Invalid'),
+      historyEvent('unknown-issue', 'created', '2026-10-06T09:00:00Z', 'Absent from export'),
+    ]);
+    await openForceGraph(page);
+    await page.waitForFunction(() => !Alpine.$data(document.querySelector('[x-data="beadsApp()"]')).graphHistoryLoading);
+    await history.waitFor({ state: 'visible' });
+    assert.equal(await history.isDisabled(), true, missing ? '404 history is unavailable' : 'undated events do not invent a timeline');
+    assert.equal(await history.getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.locator('#time-travel-controls').count(), 0);
+    assert.equal(await page.evaluate(async () => (await import('./graph.js')).getTimeTravelState().totalEvents), 0,
+      'previous history cannot leak into an export with no dated events');
+    assert.deepEqual(await currentGraphSnapshot(page), snapshot);
+  }
+});
+
+test('desktop: obsolete history response cannot overwrite a graph reopened before it arrives', async t => {
+  let releaseObsolete;
+  const obsoleteGate = new Promise(resolve => { releaseObsolete = resolve; });
+  let observedRequest;
+  const firstRequested = new Promise(resolve => { observedRequest = resolve; });
+  let obsoleteFinished;
+  const firstFinished = new Promise(resolve => { obsoleteFinished = resolve; });
+  const newerEvents = [
+    historyEvent('graph-right', 'created', '2026-10-06T11:00:00Z', 'New graph visit'),
+    historyEvent('graph-tail', 'updated', '2026-10-06T11:01:00Z', 'Newer tail event'),
+  ];
+  let requests = 0;
+  const page = await openViewer(t, false, '#/graph', false, 'graph-fixture/', async page => {
+    await page.route('**/data/history.json?*', async request => {
+      requests += 1;
+      if (requests === 1) {
+        observedRequest();
+        await obsoleteGate;
+        await request.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(recordedHistory) });
+        const response = await request.request().response();
+        if (response) await response.finished();
+        obsoleteFinished();
+      } else {
+        await request.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(exportedHistory(newerEvents)) });
+      }
+    });
+  });
+  t.after(() => releaseObsolete());
+  await firstRequested;
+  await page.locator('#graph-container canvas').first().waitFor({ state: 'visible' });
+  await home(page, false);
+  await openForceGraph(page);
+  const history = page.getByRole('button', { name: 'History', exact: true });
+  await history.click();
+  const snapshot = await currentGraphSnapshot(page);
+  await historyEventVisible(page, newerEvents[0], 0, newerEvents.length, snapshot);
+  assert.equal(requests, 2, 're-entry starts its own history request immediately');
+  releaseObsolete();
+  await firstFinished;
+  // Let native fetch/JSON continuations and the ensuing paint complete; no
+  // arbitrary sleep or mocked application state decides this response race.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await historyEventVisible(page, newerEvents[0], 0, newerEvents.length, snapshot);
+  assert.equal(await page.locator('#time-travel-controls').count(), 1);
+  assert.equal(route(page).path, '#/graph');
 });

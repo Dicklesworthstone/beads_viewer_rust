@@ -2338,6 +2338,11 @@ function beadsApp() {
     forceGraphLoading: false,
     forceGraphError: null,
     forceGraphModule: null,
+    forceGraphGeneration: 0,
+    graphHistoryAbort: null,
+    graphHistoryReady: false,
+    graphHistoryActive: false,
+    graphHistoryLoading: false,
     graphDetailNode: null, // Currently selected node for detail pane
 
     // Graph loading stages: 'init' | 'loading-data' | 'computing-metrics' | 'simulating' | null
@@ -2734,8 +2739,18 @@ function beadsApp() {
      * This is invoked when navigating to #/graph.
      */
     async initForceGraphView() {
-      if (this.forceGraphLoading) return;
+      if (this.view !== 'graph' || this.forceGraphLoading) return;
 
+      const generation = ++this.forceGraphGeneration;
+      const isCurrent = () => this.view === 'graph'
+        && parseRoute(window.location.hash).view === 'graph'
+        && generation === this.forceGraphGeneration;
+      this.graphHistoryAbort?.abort();
+      this.graphHistoryAbort = null;
+      this.graphHistoryReady = false;
+      this.graphHistoryActive = false;
+      this.graphHistoryLoading = false;
+      this.forceGraphModule?.stopTimeTravel();
       this.forceGraphLoading = true;
       this.forceGraphError = null;
 
@@ -2758,6 +2773,7 @@ function beadsApp() {
 
         // Small delay to ensure container is visible after x-show transition
         await new Promise(resolve => setTimeout(resolve, 50));
+        if (!isCurrent()) return;
 
         // Stage 1: Loading data from database
         this.graphLoadingStage = 'loading-data';
@@ -2786,12 +2802,16 @@ function beadsApp() {
 
         // Best-effort: ensure the graph WASM module is available for graph.js.
         if (typeof window.bvGraphWasm === 'undefined') {
-          this.graphReady = await initGraphEngine();
+          const ready = await initGraphEngine();
+          if (!isCurrent()) return;
+          this.graphReady = ready;
           DIAGNOSTICS.graphWasm = this.graphReady;
         }
 
         if (!this.forceGraphModule) {
-          this.forceGraphModule = await import('./graph.js');
+          const module = await import('./graph.js');
+          if (!isCurrent()) return;
+          this.forceGraphModule = module;
         }
 
         // Always use dynamic force simulation - it produces much better layouts
@@ -2803,7 +2823,8 @@ function beadsApp() {
         this.graphLoadingStage = 'init';
 
         if (!this.forceGraphReady) {
-          await this.forceGraphModule.initGraph('graph-container');
+          const graph = await this.forceGraphModule.initGraph('graph-container');
+          if (!isCurrent() || !graph) return;
           this.forceGraphReady = true;
         }
 
@@ -2813,41 +2834,57 @@ function beadsApp() {
           // Register viewer-side graph bridge listeners once.
           // Events are dispatched on document, so listen there.
           document.addEventListener('bv-graph:nodeClick', (e) => {
+            if (this.view !== 'graph') return;
             const node = e.detail?.node;
             if (node) {
               this.graphDetailNode = node;
               console.log('[Viewer] Node selected for detail:', node.id);
               // Resize graph after detail pane opens (wait for transition)
-              setTimeout(() => this.resizeForceGraph(), 350);
+              this.scheduleGraphUpdate(() => this.resizeForceGraph(), 350);
             }
           });
           document.addEventListener('bv-graph:backgroundClick', () => {
+            if (this.view !== 'graph') return;
             this.graphDetailNode = null;
             // Resize graph after detail pane closes
-            setTimeout(() => this.resizeForceGraph(), 250);
+            this.scheduleGraphUpdate(() => this.resizeForceGraph(), 250);
           });
 
           // Sync heatmap state when toggled via keyboard shortcut
           document.addEventListener('bv-graph:heatmapToggle', (e) => {
+            if (this.view !== 'graph') return;
             this.graphHeatmapActive = e.detail?.active ?? false;
           });
 
           // Sync metric state when changed
           document.addEventListener('bv-graph:metricChange', (e) => {
+            if (this.view !== 'graph') return;
             this.graphSizeMetric = e.detail?.metric ?? 'pagerank';
           });
 
           // Track simulation progress for loading indicator
           document.addEventListener('bv-graph:simulationProgress', (e) => {
+            if (this.view !== 'graph') return;
             this.graphSimulationProgress = e.detail?.progress ?? 0;
             this.graphSimulationDone = e.detail?.done ?? false;
             if (e.detail?.done) {
               // Clear progress and stage after a short delay
-              setTimeout(() => {
+              this.scheduleGraphUpdate(() => {
                 this.graphSimulationProgress = null;
                 this.graphLoadingStage = null;
               }, 500);
             }
+          });
+
+          document.addEventListener('bv-graph:timeTravelReady', (e) => {
+            if (this.view !== 'graph') return;
+            this.graphHistoryReady = (e.detail?.eventCount || 0) > 0;
+          });
+          document.addEventListener('bv-graph:timeTravelStart', () => {
+            if (this.view === 'graph') this.graphHistoryActive = true;
+          });
+          document.addEventListener('bv-graph:timeTravelStop', () => {
+            this.graphHistoryActive = false;
           });
         }
 
@@ -2859,21 +2896,7 @@ function beadsApp() {
         console.log(`[ForceGraph] Loading ${issues.length} issues, ${dependencies.length} dependencies`);
         this.forceGraphModule.loadData(issues, dependencies, precomputedLayout);
 
-        // Try to load history data for time-travel feature (bv-z38b)
-        // Use cache-busting to avoid stale data from CDN
-        try {
-          const historyResp = await fetch(`./data/history.json?_t=${Date.now()}`);
-          if (historyResp.ok) {
-            const historyData = await historyResp.json();
-            if (this.forceGraphModule.initTimeTravel) {
-              this.forceGraphModule.initTimeTravel(historyData);
-              console.log('[Viewer] Time-travel history loaded');
-            }
-          }
-        } catch (histErr) {
-          // history.json is optional, silently ignore if not found
-          console.log('[Viewer] No history.json found (optional for time-travel)');
-        }
+        this.forceGraphModule.initTimeTravel(null);
 
         // Match canvas size to container for crisp rendering.
         // (reuse container from earlier in this scope)
@@ -2882,7 +2905,12 @@ function beadsApp() {
           graph.width(container.clientWidth);
           graph.height(container.clientHeight);
         }
+
+        // Optional history must not delay use of the graph itself.
+        this.loadGraphHistory(generation);
       } catch (err) {
+        if (!isCurrent()) return;
+        this.forceGraphModule?.cleanup();
         console.error('[ForceGraph] init failed:', err);
         this.forceGraphError = err?.message || String(err);
         this.forceGraphReady = false;
@@ -2893,8 +2921,57 @@ function beadsApp() {
           container.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center py-8">Graph failed to load.</p>';
         }
       } finally {
-        this.forceGraphLoading = false;
+        if (isCurrent()) this.forceGraphLoading = false;
       }
+    },
+
+    async loadGraphHistory(generation) {
+      const isCurrent = () => this.view === 'graph'
+        && parseRoute(window.location.hash).view === 'graph'
+        && generation === this.forceGraphGeneration;
+      if (!isCurrent()) return;
+
+      const controller = new AbortController();
+      this.graphHistoryAbort = controller;
+      this.graphHistoryLoading = true;
+      try {
+        const response = await fetch(`./data/history.json?_t=${Date.now()}`, {
+          signal: controller.signal,
+        });
+        if (!isCurrent()) return;
+        const history = response.ok ? await response.json() : null;
+        if (!isCurrent()) return;
+        this.graphHistoryReady = this.forceGraphModule.initTimeTravel(history);
+      } catch (error) {
+        if (!isCurrent() || controller.signal.aborted) return;
+        this.graphHistoryReady = false;
+        this.forceGraphModule.initTimeTravel(null);
+        console.warn('[Viewer] Recorded history could not be loaded:', error.message);
+      } finally {
+        if (isCurrent() && this.graphHistoryAbort === controller) {
+          this.graphHistoryAbort = null;
+          this.graphHistoryLoading = false;
+        }
+      }
+    },
+
+    toggleGraphHistory() {
+      if (this.view !== 'graph' || !this.graphHistoryReady) return;
+      if (this.forceGraphModule.isTimeTravelActive()) {
+        this.forceGraphModule.stopTimeTravel();
+      } else {
+        this.forceGraphModule.startTimeTravel();
+      }
+      this.graphHistoryActive = this.forceGraphModule.isTimeTravelActive();
+    },
+
+    scheduleGraphUpdate(callback, delay) {
+      const generation = this.forceGraphGeneration;
+      setTimeout(() => {
+        if (this.view === 'graph' && generation === this.forceGraphGeneration) {
+          callback();
+        }
+      }, delay);
     },
 
     teardownForceGraph() {
@@ -2902,6 +2979,13 @@ function beadsApp() {
         this.forceGraphModule.cleanup();
       }
       this.forceGraphReady = false;
+      this.forceGraphGeneration++;
+      this.graphHistoryAbort?.abort();
+      this.graphHistoryAbort = null;
+      this.graphHistoryReady = false;
+      this.graphHistoryActive = false;
+      this.graphHistoryLoading = false;
+      this.forceGraphLoading = false;
       this.graphDetailNode = null;
       this.graphLoadingStage = null;
       this.graphSimulationProgress = null;
