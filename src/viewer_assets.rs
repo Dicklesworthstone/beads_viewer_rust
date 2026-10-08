@@ -339,12 +339,15 @@ mod tests {
         for prefix in ["src=\"", "href=\""] {
             let mut search_from = 0;
             while let Some(start) = html[search_from..].find(prefix) {
-                let abs_start = search_from + start + prefix.len();
+                let attr_start = search_from + start;
+                let abs_start = attr_start + prefix.len();
                 if let Some(end) = html[abs_start..].find('"') {
                     let path = &html[abs_start..abs_start + end];
                     search_from = abs_start + end + 1;
-                    // Skip fragment, data:, blob:, empty, or JS expression refs
+                    // Skip fragment, data:, blob:, empty, or JS expression refs,
+                    // including bound attributes (`:href="issuesHref"`).
                     if path.is_empty()
+                        || (attr_start > 0 && html.as_bytes()[attr_start - 1] == b':')
                         || path.starts_with('#')
                         || path.starts_with("data:")
                         || path.starts_with("blob:")

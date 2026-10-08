@@ -254,7 +254,10 @@ fn debug_render_cli_rejects_unknown_view() {
 
     command.assert().failure().stderr(
         predicate::str::contains("Unknown debug-render view 'bogus'").and(
-            predicate::str::contains("insights, board, history, main, graph"),
+            predicate::str::contains(
+                "Supported: main, board, insights, graph, history, actionable, attention, tree, \
+                 labels, flow, timediff, sprint",
+            ),
         ),
     );
 }
