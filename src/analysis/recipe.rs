@@ -430,7 +430,15 @@ pub fn emit_script(
                 script_safe(&rec.reasons.join("; "))
             ));
         }
-        lines.push(script_safe(&rec.show_command));
+        let show = script_safe(&rec.show_command);
+        // Commands are quoted for POSIX shells (`'\''` for a quote). Inside a
+        // fish single-quoted string a backslash escapes, so that quoting does
+        // not end the string there: keep such a command as a comment in fish.
+        if matches!(format, ScriptFormat::Fish) && show.contains('\\') {
+            lines.push(format!("# Not runnable in fish (quoted ID): {show}"));
+        } else {
+            lines.push(show);
+        }
         lines.push(format!("# To claim: {}", script_safe(&rec.claim_command)));
         lines.push(String::new());
     }
@@ -818,6 +826,35 @@ mod tests {
             script.lines().filter(|l| l.starts_with("br show ")).count(),
             1
         );
+    }
+
+    #[test]
+    fn emit_script_fish_never_runs_posix_quoted_ids() {
+        // POSIX quoting of `x';evil;#` is `'x'\'';evil;#'`; in fish the `\'`
+        // stays inside the string and `evil` would run.
+        let quoted = crate::model::shell_quote("x';evil;#");
+        let mut rec = make_rec("A", "T", 0.9);
+        rec.show_command = format!("br show {quoted}");
+        rec.claim_command = format!("br update {quoted} --status=in_progress");
+
+        let fish = emit_script(
+            std::slice::from_ref(&rec),
+            5,
+            ScriptFormat::Fish,
+            "2025-01-01T00:00:00Z",
+            "abc",
+        );
+        assert!(
+            fish.lines()
+                .all(|line| line.is_empty() || line.starts_with('#')),
+            "fish script has a runnable line: {fish}"
+        );
+        assert!(fish.contains(&format!(
+            "# Not runnable in fish (quoted ID): br show {quoted}"
+        )));
+
+        let bash = emit_script(&[rec], 5, ScriptFormat::Bash, "2025-01-01T00:00:00Z", "abc");
+        assert!(bash.lines().any(|line| line == format!("br show {quoted}")));
     }
 
     #[test]
