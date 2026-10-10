@@ -3099,7 +3099,7 @@
             <span class="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium block mb-3">Description</span>
             <div id="graph-detail-content"
                  class="prose prose-sm dark:prose-invert max-w-none bg-gray-50/50 dark:bg-gray-900/30 rounded-lg p-4 border border-gray-100 dark:border-gray-700/50"
-                 x-html="graphDetailNode?.description ? (typeof marked !== 'undefined' ? marked.parse(graphDetailNode.description) : graphDetailNode.description) : '<p class=\'text-gray-400 dark:text-gray-500 italic\'>No description available</p>'">
+                 x-html="graphDetailNode?.description ? renderMarkdown(graphDetailNode.description) : '<p class=\'text-gray-400 dark:text-gray-500 italic\'>No description available</p>'">
             </div>
           </div>
         </div>

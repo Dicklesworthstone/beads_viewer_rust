@@ -4,13 +4,20 @@
 // Run with an existing Playwright installation (no npm project is needed):
 // NODE_PATH=/path/to/node_modules node --test scripts/test_viewer_search.cjs
 // BVR_CHROMIUM_EXECUTABLE (or CHROMIUM_PATH) selects an installed Chromium.
+// The security scenarios run the real exporter. Build bvr first, or set BVR_BIN
+// to a freshly built binary (defaults to target/debug/bvr). Run just these with:
+// NODE_PATH=/path/to/node_modules BVR_BIN=/path/to/bvr \
+//   node --test --test-name-pattern='security:' scripts/test_viewer_search.cjs
+// BVR_VIEWER_ARTIFACT_DIR optionally chooses the parent of retained export fixtures.
 // BVR_VIEWER_REVISION optionally serves index.html/viewer.js/graph.js from a git revision
 // to demonstrate that these regressions fail before a fix, without changing files.
+// Exported SQLite/data files always come from BVR_BIN, including in revision mode.
 
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { readFile } = require('node:fs/promises');
+const { mkdir, mkdtemp, readFile, writeFile } = require('node:fs/promises');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
 const { chromium } = require('playwright');
@@ -103,6 +110,76 @@ const inputSelector = 'input[placeholder="Search issues..."]:visible';
 const executablePath = process.env.BVR_CHROMIUM_EXECUTABLE || process.env.CHROMIUM_PATH;
 let server;
 let origin;
+let securityExport;
+
+const securityDescriptions = [
+  {
+    id: 'security-markdown', title: 'Ordinary Markdown',
+    description: 'A **strong** word, *emphasis*, `inline code`, and [safe link](https://example.invalid/docs?one=1&two=2).\n\n- First item\n- Second item\n\n> Quoted text',
+  },
+  { id: 'security-empty', title: 'Empty description', description: '' },
+  {
+    id: 'security-events', title: 'Event handlers and unsafe links',
+    description: 'Before <img src="__security_missing_image__" onerror="window.__viewerPayloads.push(\'image\')" alt="payload image"> after <svg onload="window.__viewerPayloads.push(\'svg\')"></svg>\n\n<a href="javascript:window.__viewerPayloads.push(\'javascript\')">unsafe link</a>',
+  },
+  {
+    id: 'security-html', title: 'Raw HTML',
+    description: 'A <strong>raw HTML</strong> paragraph & café.\n\n<script>window.__viewerPayloads.push("script")</script>',
+  },
+  {
+    id: 'security-alpine', title: 'Alpine directives',
+    description: '<span data-security-action="alpine" x-data="{}" x-init="window.__viewerPayloads.push(\'alpine-init\')" @click="window.__viewerPayloads.push(\'alpine-click\')" x-on:mouseover="window.__viewerPayloads.push(\'alpine-hover\')" onclick="window.__viewerPayloads.push(\'click\')">Directives stay inert</span>',
+  },
+];
+const tooltipIssue = {
+  id: 'tooltip-<img src=x onerror="window.__viewerPayloads.push(\'tooltip-id\')">',
+  title: '<svg onload="window.__viewerPayloads.push(\'tooltip-title\')">literal title</svg>',
+  description: 'A tooltip with literal imported metadata.',
+  priority: 0,
+  labels: ['<img src=x onerror="window.__viewerPayloads.push(\'tooltip-label\')">'],
+};
+
+async function exportedSecurityFixture(t) {
+  if (!securityExport) {
+    const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
+    await mkdir(parent, { recursive: true });
+    const artifact = await mkdtemp(path.join(parent, 'bvr-viewer-security-'));
+    const fixture = path.join(artifact, 'issues.jsonl');
+    const rows = [...securityDescriptions, tooltipIssue].map(issue => ({
+      status: 'open', priority: 2, issue_type: 'task',
+      created_at: '2026-10-09T12:00:00Z', updated_at: '2026-10-09T12:00:00Z', ...issue,
+    }));
+    await writeFile(fixture, rows.map(issue => JSON.stringify(issue)).join('\n') + '\n');
+    const directory = path.join(artifact, 'pages');
+    const binary = path.resolve(process.env.BVR_BIN || path.join(root, 'target/debug/bvr'));
+    let output;
+    try {
+      output = execFileSync(binary, ['--export-pages', directory, '--beads-file', fixture], {
+        cwd: root, encoding: 'utf8', timeout: 60000,
+      });
+    } catch (error) {
+      throw new Error(`Security browser tests require a working, freshly built BVR_BIN (${binary}). ` +
+        `The real --export-pages invocation failed; no synthetic export is substituted.\n${error.message}`,
+      { cause: error });
+    }
+    await writeFile(path.join(artifact, 'export-stdout.txt'), output);
+    const exportedIssues = JSON.parse(await readFile(path.join(directory, 'data/issues.json'), 'utf8'));
+    for (const issue of rows) {
+      const exported = exportedIssues.find(item => item.id === issue.id);
+      assert.ok(exported, `real export contains ${issue.id}`);
+      assert.equal(exported.description, issue.description, 'the exporter preserves the adversarial source');
+    }
+    // include_bytes! can silently leave a stale binary with old viewer assets.
+    // Check the emitted bytes before exercising them, even in negative-control mode.
+    for (const file of ['index.html', 'viewer.js', 'graph.js']) {
+      assert.deepEqual(await readFile(path.join(directory, file)), await readFile(path.join(assets, file)),
+        `rebuild BVR_BIN: exported ${file} must match this checkout`);
+    }
+    securityExport = directory;
+  }
+  t.diagnostic(`Real --export-pages dashboard: ${securityExport}`);
+  return 'export-fixture/';
+}
 
 async function fixtureDatabase(fixtureIssues = issues, fixtureDependencies = dependencies) {
   const initSqlJs = require(path.join(assets, 'vendor/sql-wasm.js'));
@@ -146,18 +223,20 @@ before(async () => {
   server = http.createServer(async (request, response) => {
     const requestedPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
     const graphFixture = requestedPath.startsWith('/graph-fixture/');
-    const pathname = graphFixture ? requestedPath.slice('/graph-fixture'.length) : requestedPath;
+    const exportedFixture = requestedPath.startsWith('/export-fixture/');
+    const pathname = exportedFixture ? requestedPath.slice('/export-fixture'.length)
+      : graphFixture ? requestedPath.slice('/graph-fixture'.length) : requestedPath;
     response.setHeader('Cache-Control', 'no-store');
     // Supply the isolation headers directly, as a configured preview server can,
     // so COI service-worker installation does not reload a test mid-interaction.
     response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
     response.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-    if (pathname === '/beads.sqlite3') {
+    if (!exportedFixture && pathname === '/beads.sqlite3') {
       response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
       response.end(graphFixture ? graphDatabase : database);
       return;
     }
-    if (pathname === '/beads.sqlite3.config.json') {
+    if (!exportedFixture && pathname === '/beads.sqlite3.config.json') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end('{}');
       return;
@@ -168,8 +247,13 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const filename = path.resolve(assets, relative);
-    if (!filename.startsWith(assets + path.sep)) {
+    const servingRoot = exportedFixture ? securityExport : assets;
+    if (!servingRoot) {
+      response.writeHead(404).end();
+      return;
+    }
+    const filename = path.resolve(servingRoot, relative);
+    if (!filename.startsWith(servingRoot + path.sep)) {
       response.writeHead(403).end();
       return;
     }
@@ -982,4 +1066,206 @@ test('desktop: obsolete history response cannot overwrite a graph reopened befor
   await historyEventVisible(page, newerEvents[0], 0, newerEvents.length, snapshot);
   assert.equal(await page.locator('#time-travel-controls').count(), 1);
   assert.equal(route(page).path, '#/graph');
+});
+
+async function configureSecurityLibraries(page, mode) {
+  const missing = mode === 'missing both' ? ['marked', 'dompurify']
+    : mode === 'missing parser' ? ['marked'] : mode === 'missing sanitizer' ? ['dompurify'] : [];
+  for (const library of missing) {
+    // Model an actual failed local script request, before any x-html is evaluated.
+    await page.route(`**/vendor/${library}.min.js`, request => request.fulfill({ status: 404, body: '' }));
+  }
+  await page.addInitScript(failure => {
+    window.__viewerPayloads = [];
+    document.addEventListener('alpine:init', () => {
+      const fail = () => { throw new Error('Deliberately unavailable Markdown dependency'); };
+      if (failure === 'throwing parser') {
+        window.marked.parse = fail;
+        window.marked.parseInline = fail;
+      } else if (failure === 'throwing sanitizer') {
+        window.DOMPurify.sanitize = fail;
+      } else if (failure === 'unsupported sanitizer') {
+        window.DOMPurify.isSupported = false;
+      } else if (failure === 'incomplete parser') {
+        window.marked.parse = undefined;
+        window.marked.parseInline = undefined;
+      } else if (failure === 'incomplete sanitizer') {
+        window.DOMPurify.sanitize = null;
+      }
+      window.__securityLibraryMode = failure;
+    }, { once: true });
+  }, mode);
+}
+
+async function assertSecurityInert(page, surface, label) {
+  // Wait for actual load/error events and Alpine's initialization, then exercise
+  // the supplied click/hover directives. No browser DOM or event handler is mocked.
+  const observed = await surface.evaluate(async element => {
+    await Promise.all([...element.querySelectorAll('img')].map(image => image.complete ? undefined
+      : new Promise(resolve => {
+        image.addEventListener('load', resolve, { once: true });
+        image.addEventListener('error', resolve, { once: true });
+      })));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (const action of element.querySelectorAll('[data-security-action]')) {
+      action.dispatchEvent(new Event('click'));
+      action.dispatchEvent(new Event('mouseover'));
+    }
+    for (const link of element.querySelectorAll('a[href]')) {
+      if (/^javascript:/i.test(link.getAttribute('href').replace(/[\u0000-\u0020]/g, ''))) link.click();
+    }
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const attributes = [...element.querySelectorAll('*')].flatMap(node => [...node.attributes]
+      .filter(attribute => /^(?:on|x-|@|:)/i.test(attribute.name) || attribute.name === 'srcdoc'
+        || /(?:^|:)href$|^src$/i.test(attribute.name)
+          && /^(?:javascript|vbscript):/i.test(attribute.value.replace(/[\u0000-\u0020]/g, '')))
+      .map(attribute => `${node.tagName}.${attribute.name}=${attribute.value}`));
+    return {
+      executed: [...window.__viewerPayloads], attributes,
+      activeTags: [...element.querySelectorAll('script, iframe, object, embed')].map(node => node.tagName),
+    };
+  });
+  assert.deepEqual(observed.executed, [], `${label}: payloads remain inert in the running dashboard`);
+  assert.deepEqual(observed.attributes, [], `${label}: executable attributes and URLs are absent`);
+  assert.deepEqual(observed.activeTags, [], `${label}: active embedded content is absent`);
+}
+
+async function assertSecurityDescription(page, surface, issue, mode, kind) {
+  const label = `${mode}, ${kind}, ${issue.id}`;
+  if (!issue.description) {
+    if (kind === 'graph') {
+      assert.equal((await surface.textContent()).trim(), 'No description available', `${label}: empty state survives`);
+      assert.equal(await surface.locator('p.italic').count(), 1, `${label}: empty-state styling survives`);
+    } else {
+      assert.equal(await surface.isVisible(), false, `${label}: empty descriptions stay hidden`);
+    }
+  } else if (mode !== 'available') {
+    assert.equal(await surface.textContent(), issue.description, `${label}: original source is literal text`);
+    assert.equal(await surface.locator('*').count(), 0, `${label}: fallback creates no HTML elements`);
+  } else if (issue.id === 'security-markdown') {
+    assert.equal(await surface.locator('strong').textContent(), 'strong', `${label}: bold Markdown renders`);
+    assert.equal(await surface.locator('em').textContent(), 'emphasis');
+    assert.equal(await surface.locator('code').textContent(), 'inline code');
+    assert.equal(await surface.getByRole('link', { name: 'safe link', exact: true }).getAttribute('href'),
+      'https://example.invalid/docs?one=1&two=2');
+    if (kind !== 'excerpt') {
+      assert.deepEqual(await surface.locator('li').allTextContents(), ['First item', 'Second item']);
+      assert.equal((await surface.locator('blockquote').textContent()).trim(), 'Quoted text');
+    }
+  } else if (issue.id === 'security-html') {
+    assert.equal(await surface.locator('strong').textContent(), 'raw HTML', `${label}: safe HTML survives sanitization`);
+    assert.match(await surface.textContent(), /paragraph & café\./);
+  } else if (issue.id === 'security-events') {
+    assert.match(await surface.textContent(), /Before/);
+    assert.match(await surface.textContent(), /unsafe link/);
+  } else if (issue.id === 'security-alpine') {
+    assert.equal((await surface.textContent()).trim(), 'Directives stay inert');
+  }
+  await assertSecurityInert(page, surface, label);
+}
+
+async function selectSecurityGraphNode(page, id) {
+  // Invoke ForceGraph's installed click callback with its real exported node.
+  // This traverses the production selection bridge and Alpine x-html boundary,
+  // without depending on a moving force-layout node's screen coordinates.
+  await page.evaluate(async issueId => {
+    const graph = (await import('./graph.js')).getGraph();
+    const node = graph.graphData().nodes.find(item => item.id === issueId);
+    if (!node) throw new Error(`Missing exported graph node: ${issueId}`);
+    graph.onNodeClick()(node, new MouseEvent('click'));
+  }, id);
+  const panel = page.locator('[x-show="graphDetailNode"]');
+  await panel.waitFor({ state: 'visible' });
+  await page.waitForFunction(issueId =>
+    Alpine.$data(document.querySelector('[x-data="beadsApp()"]')).graphDetailNode?.id === issueId, id);
+  // Alpine renders the new selected node on its next tick.
+  await page.evaluate(() => Alpine.nextTick());
+  return panel.locator('[x-html]');
+}
+
+for (const mode of [
+  'available', 'missing parser', 'missing sanitizer', 'missing both',
+  'throwing parser', 'throwing sanitizer', 'unsupported sanitizer',
+  'incomplete parser', 'incomplete sanitizer',
+]) {
+  test(`security: exported Markdown, HTML and event payloads with ${mode}`, async t => {
+    const fixturePath = await exportedSecurityFixture(t);
+    const page = await openViewer(t, false, '#/issues', false, fixturePath,
+      page => configureSecurityLibraries(page, mode));
+    try {
+      assert.equal(await page.evaluate(() => window.__securityLibraryMode), mode,
+        'dependency fault was configured before Alpine rendered any issue');
+      const missing = await page.evaluate(() => ({
+        parser: typeof window.marked === 'undefined', sanitizer: typeof window.DOMPurify === 'undefined',
+      }));
+      assert.deepEqual(missing, {
+        parser: mode === 'missing parser' || mode === 'missing both',
+        sanitizer: mode === 'missing sanitizer' || mode === 'missing both',
+      }, 'failed script requests really remove the intended library');
+
+      for (const issue of securityDescriptions) {
+        const row = page.getByRole('button', { name: `View issue ${issue.id}: ${issue.title}`, exact: true });
+        await row.waitFor({ state: 'visible' });
+        await assertSecurityDescription(page, row.locator('[x-html]'), issue, mode, 'excerpt');
+        await row.click();
+        const modal = page.locator('[x-show="selectedIssue"]');
+        await modal.waitFor({ state: 'visible' });
+        await assertSecurityDescription(page, modal.locator('[x-html]'), issue, mode, 'issue');
+        await modal.locator('button').first().click();
+        await modal.waitFor({ state: 'hidden' });
+      }
+      await openForceGraph(page);
+      for (const issue of securityDescriptions) {
+        const description = await selectSecurityGraphNode(page, issue.id);
+        await assertSecurityDescription(page, description, issue, mode, 'graph');
+      }
+      await page.evaluate(async id => {
+        const graph = (await import('./graph.js')).getGraph();
+        const node = graph.graphData().nodes.find(item => item.id === id);
+        graph.onNodeHover()(node, null);
+      }, tooltipIssue.id);
+      const tooltip = page.locator('.bv-graph-tooltip');
+      await tooltip.waitFor({ state: 'visible' });
+      const text = await tooltip.textContent();
+      for (const value of [tooltipIssue.id, tooltipIssue.title, ...tooltipIssue.labels]) {
+        assert.ok(text.includes(value), `${mode}: tooltip shows imported metadata literally`);
+      }
+      assert.match(text, /P0/, 'zero priority remains visible');
+      assert.match(text, /Blockers: 0/, 'zero blocker count remains visible');
+      assert.match(text, /Dependents: 0/, 'zero dependent count remains visible');
+      assert.equal(await tooltip.locator('img, svg').count(), 0, 'tooltip metadata never becomes HTML');
+      await assertSecurityInert(page, tooltip, `${mode}, exported graph tooltip`);
+    } finally {
+      const evidence = await page.evaluate(() => ({ url: location.href, executed: window.__viewerPayloads }));
+      await writeFile(path.join(path.dirname(securityExport), `${mode.replaceAll(' ', '-')}.json`),
+        JSON.stringify({ mode, ...evidence }, null, 2));
+    }
+  });
+}
+
+test('security: graph tooltip escapes untyped metadata and preserves zero metrics', async t => {
+  const fixturePath = await exportedSecurityFixture(t);
+  const page = await openViewer(t, false, '#/graph', false, fixturePath,
+    page => configureSecurityLibraries(page, 'available'));
+  await openForceGraph(page);
+  const payload = '<img src=x onerror="window.__viewerPayloads.push(\'tooltip-metadata\')">';
+  await page.evaluate(async ({ id, value }) => {
+    const graph = (await import('./graph.js')).getGraph();
+    const node = graph.graphData().nodes.find(item => item.id === id);
+    // These fields are typed or computed in the Rust exporter. Exercise the
+    // additional JS boundary directly, without claiming a JSONL export can
+    // put arbitrary HTML into numeric Rust fields or validated status values.
+    Object.assign(node, {
+      status: value, priority: value, blockerCount: value, dependentCount: value,
+      criticalDepth: value, kcore: 0,
+    });
+    graph.onNodeHover()(node, null);
+  }, { id: 'security-markdown', value: payload });
+  const tooltip = page.locator('.bv-graph-tooltip');
+  await tooltip.waitFor({ state: 'visible' });
+  const text = await tooltip.textContent();
+  assert.equal(text.split(payload).length - 1, 5, 'every untyped interpolated value is literal text');
+  assert.match(text, /K-core: 0/, 'zero is a metric, not missing content');
+  assert.equal(await tooltip.locator('img').count(), 0);
+  await assertSecurityInert(page, tooltip, 'untyped graph tooltip metadata');
 });

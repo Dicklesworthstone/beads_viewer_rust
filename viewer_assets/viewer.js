@@ -2190,16 +2190,28 @@ function formatJsonWithHighlight(obj) {
 }
 
 /**
- * Render markdown safely
+ * Render markdown safely. If either library is unavailable or fails, show the
+ * original source as text; never pass unsanitized HTML to an x-html binding.
  */
-function renderMarkdown(text) {
+function renderMarkdown(text, inline = false) {
   if (!text) return '';
+  const source = String(text);
   try {
-    const html = marked.parse(text);
-    return DOMPurify.sanitize(html);
+    const parser = typeof marked !== 'undefined' ? marked : null;
+    const sanitizer = typeof DOMPurify !== 'undefined' ? DOMPurify : null;
+    const method = inline ? 'parseInline' : 'parse';
+    if (typeof parser?.[method] === 'function' &&
+        typeof sanitizer?.sanitize === 'function' &&
+        sanitizer.isSupported !== false) {
+      return sanitizer.sanitize(parser[method](source));
+    }
   } catch {
-    return DOMPurify.sanitize(text);
+    // A failed parser or sanitizer must take the same safe path as a missing one.
   }
+
+  const escaped = document.createElement('span');
+  escaped.textContent = source;
+  return escaped.innerHTML;
 }
 
 /**
@@ -2207,14 +2219,8 @@ function renderMarkdown(text) {
  * Converts markdown to HTML but wraps in a span to work with line-clamp
  */
 function renderMarkdownInline(text) {
-  if (!text) return '';
-  try {
-    // Use marked's parseInline to avoid block elements like <p>
-    const html = marked.parseInline(text);
-    return DOMPurify.sanitize(html);
-  } catch {
-    return DOMPurify.sanitize(text);
-  }
+  // Use marked's parseInline to avoid block elements like <p>.
+  return renderMarkdown(text, true);
 }
 
 /**

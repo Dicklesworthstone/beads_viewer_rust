@@ -95,6 +95,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  viewer:
+    name: Exported Viewer Browser Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build exporter with embedded viewer assets
+        run: cargo build --locked
+      - name: Prepare browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/bvr-browser-tests" --no-save --no-package-lock --ignore-scripts playwright@1.62.1
+          node "$RUNNER_TEMP/bvr-browser-tests/node_modules/playwright/cli.js" install --with-deps --only-shell chromium
+      - name: Run viewer and exported-dashboard regressions
+        env:
+          NODE_PATH: ${{ runner.temp }}/bvr-browser-tests/node_modules
+          BVR_BIN: ${{ github.workspace }}/target/debug/bvr
+          BVR_VIEWER_ARTIFACT_DIR: ${{ github.workspace }}/target/bvr-viewer-artifacts
+        run: node --test scripts/test_viewer_search.cjs
+      - name: Upload exported dashboard regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bvr-viewer-regression-artifacts
+          path: target/bvr-viewer-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   bench:
     name: Benchmarks (smoke)
     runs-on: ubuntu-latest
@@ -109,7 +141,7 @@ jobs:
   build:
     name: Release Build
     runs-on: ubuntu-latest
-    needs: [unit, conformance, e2e]
+    needs: [unit, conformance, e2e, viewer]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

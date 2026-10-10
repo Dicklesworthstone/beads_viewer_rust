@@ -2998,7 +2998,7 @@ function showTooltip(node) {
         extendedMetrics.push(`<span title="Bottleneck centrality">Between: ${safeMetric(node.betweenness * 100, 1, '%')}</span>`);
     }
     if (node.kcore !== undefined && isFinite(node.kcore)) {
-        extendedMetrics.push(`<span title="Cluster cohesion level">K-core: ${node.kcore}</span>`);
+        extendedMetrics.push(`<span title="Cluster cohesion level">K-core: ${escapeHtml(node.kcore)}</span>`);
     }
     if (node.hitsHub !== undefined || node.hitsAuth !== undefined) {
         const hub = safeMetric(node.hitsHub !== undefined ? node.hitsHub * 100 : undefined, 0);
@@ -3015,24 +3015,24 @@ function showTooltip(node) {
 
     tooltipEl.innerHTML = `
         <div style="font-weight: 600; margin-bottom: 8px; color: ${THEME.accent.cyan}">
-            ${icon} ${node.id}
+            ${icon} ${escapeHtml(node.id)}
         </div>
         <div style="margin-bottom: 8px; line-height: 1.4;">
             ${escapeHtml(node.title)}
         </div>
         <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
             <span style="background: ${statusColor}; color: ${THEME.bg}; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase;">
-                ${node.status}
+                ${escapeHtml(node.status)}
             </span>
             <span style="color: ${priorityColor}; font-weight: 600;">
-                P${node.priority}
+                P${escapeHtml(node.priority)}
             </span>
         </div>
         <div style="font-size: 10px; color: ${THEME.fgMuted}; display: grid; grid-template-columns: 1fr 1fr; gap: 4px;">
-            <span>Blockers: ${node.blockerCount ?? 0}</span>
-            <span>Dependents: ${node.dependentCount ?? 0}</span>
+            <span>Blockers: ${escapeHtml(node.blockerCount ?? 0)}</span>
+            <span>Dependents: ${escapeHtml(node.dependentCount ?? 0)}</span>
             <span>PageRank: ${safeMetric(node.pagerank !== undefined ? node.pagerank * 100 : undefined, 1, '%')}</span>
-            <span>Depth: ${node.criticalDepth ?? 0}</span>
+            <span>Depth: ${escapeHtml(node.criticalDepth ?? 0)}</span>
             ${extendedMetrics.join('')}
         </div>
         ${node.labels?.length ? `
@@ -3253,9 +3253,9 @@ function truncate(str, maxLen) {
 }
 
 function escapeHtml(str) {
-    if (!str) return '';
+    if (str === undefined || str === null) return '';
     const div = document.createElement('div');
-    div.textContent = str;
+    div.textContent = String(str);
     return div.innerHTML;
 }
 
