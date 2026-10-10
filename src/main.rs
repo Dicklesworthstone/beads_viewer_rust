@@ -5252,15 +5252,31 @@ fn render_report_template(
     include_graph: bool,
 ) -> Result<String, String> {
     use bvr::report_template::{Value, escape_report_text};
+    use std::io::Read;
+
     const MAX_TEMPLATE: u64 = 1 << 20;
-    let size = fs::metadata(template_path)
+    let file =
+        fs::File::open(template_path).map_err(|error| format!("read export template: {error}"))?;
+    let size = file
+        .metadata()
         .map_err(|error| format!("read export template: {error}"))?
         .len();
     if size > MAX_TEMPLATE {
         return Err(format!("export template exceeds {MAX_TEMPLATE} bytes"));
     }
-    let template = fs::read_to_string(template_path)
+
+    // Metadata can be stale or report zero for a stream. Bound the actual read
+    // before allocation, and check bytes before decoding a possibly split UTF-8
+    // sequence at the size limit.
+    let mut bytes = Vec::new();
+    file.take(MAX_TEMPLATE + 1)
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("read export template: {error}"))?;
+    if bytes.len() as u64 > MAX_TEMPLATE {
+        return Err(format!("export template exceeds {MAX_TEMPLATE} bytes"));
+    }
+    let template =
+        String::from_utf8(bytes).map_err(|error| format!("read export template: {error}"))?;
     let text = |value: &str| Value::Str(escape_report_text(value));
     let issue_values = issues
         .iter()

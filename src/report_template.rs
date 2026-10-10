@@ -12,6 +12,7 @@
 //! `println`, `html`, `js`, and `urlquery`.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fmt::Write as _;
 
 /// Template data: what Go's reflection would see in the report struct.
@@ -41,29 +42,55 @@ impl Value {
     }
 
     /// Go's `fmt` `%v` rendering.
-    fn display(&self) -> String {
+    fn write_display(&self, out: &mut impl fmt::Write) -> fmt::Result {
         match self {
-            Self::Nil => "<no value>".to_string(),
-            Self::Bool(b) => b.to_string(),
-            Self::Int(n) => n.to_string(),
-            Self::Float(f) => format!("{f}"),
-            Self::Str(s) => s.clone(),
-            Self::List(items) => format!(
-                "[{}]",
-                items
-                    .iter()
-                    .map(Self::display)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-            Self::Map(map) => format!(
-                "map[{}]",
-                map.iter()
-                    .map(|(k, v)| format!("{k}:{}", v.display()))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
+            Self::Nil => out.write_str("<no value>"),
+            Self::Bool(b) => write!(out, "{b}"),
+            Self::Int(n) => write!(out, "{n}"),
+            Self::Float(f) => write!(out, "{f}"),
+            Self::Str(s) => out.write_str(s),
+            Self::List(items) => {
+                out.write_char('[')?;
+                for (i, item) in items.iter().enumerate() {
+                    if i != 0 {
+                        out.write_char(' ')?;
+                    }
+                    item.write_display(out)?;
+                }
+                out.write_char(']')
+            }
+            Self::Map(map) => {
+                out.write_str("map[")?;
+                for (i, (key, value)) in map.iter().enumerate() {
+                    if i != 0 {
+                        out.write_char(' ')?;
+                    }
+                    write!(out, "{key}:")?;
+                    value.write_display(out)?;
+                }
+                out.write_char(']')
+            }
         }
+    }
+
+    /// Charge every value, including empty strings and numeric collections.
+    /// Counting only text lets aliases repeatedly clone arbitrarily large
+    /// containers without consuming the render's allocation/work allowance.
+    fn storage_bytes(&self) -> usize {
+        let contents = match self {
+            Self::Str(text) => text.len(),
+            Self::List(items) => items.iter().fold(0usize, |total, value| {
+                total.saturating_add(value.storage_bytes())
+            }),
+            Self::Map(map) => map.iter().fold(0usize, |total, (key, value)| {
+                total
+                    .saturating_add(std::mem::size_of::<String>())
+                    .saturating_add(key.len())
+                    .saturating_add(value.storage_bytes())
+            }),
+            _ => 0,
+        };
+        std::mem::size_of::<Self>().saturating_add(contents)
     }
 
     fn kind(&self) -> &'static str {
@@ -80,21 +107,111 @@ impl Value {
 }
 
 /// Render `template` against `data`, as Go's `text/template` with
-/// `missingkey=error` would. Output is capped at `max_output` bytes.
+/// `missingkey=error` would. Output and individual computed strings are capped
+/// at `max_output` bytes. Ranges share an iteration budget, including empty
+/// bodies, and generated/copied values share a budget of eight times the output
+/// limit (at least 1 MiB). This also bounds assignments whose values are never
+/// printed. These budgets apply to the whole render, not each nested action.
+/// Statement and parenthesized-expression nesting share a 128-level limit.
 pub fn render(template: &str, data: &Value, max_output: usize) -> Result<String, String> {
     let tokens = lex(template)?;
-    let mut parser = Parser { tokens, pos: 0 };
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    };
     let nodes = parser.parse_list(&[])?;
     if let Some(token) = parser.tokens.get(parser.pos) {
         return Err(format!("unexpected {}", token.describe()));
     }
-    let mut out = String::new();
+    let mut out = TextBuffer::new(max_output);
+    let max_value_bytes = max_output.saturating_mul(8).max(1 << 20);
+    let root_bytes = data.storage_bytes();
+    if root_bytes > max_value_bytes {
+        return Err(format!(
+            "export template evaluation exceeds {max_value_bytes} bytes of intermediate values"
+        ));
+    }
     let mut scope = Scope {
         vars: vec![("$".to_string(), data.clone())],
         max_output,
+        iterations_left: MAX_RANGE_ITERATIONS,
+        max_value_bytes,
+        value_bytes_left: max_value_bytes - root_bytes,
     };
     exec_list(&nodes, data, &mut scope, &mut out)?;
-    Ok(out)
+    Ok(out.text)
+}
+
+/// Empty/nested ranges must terminate even when they never write output.
+const MAX_RANGE_ITERATIONS: usize = 1_000_000;
+const MAX_NESTING: usize = 128;
+
+fn output_limit_error(limit: usize) -> String {
+    format!("rendered export template exceeds {limit} bytes")
+}
+
+struct TextBuffer {
+    text: String,
+    limit: usize,
+}
+
+impl TextBuffer {
+    const fn new(limit: usize) -> Self {
+        Self {
+            text: String::new(),
+            limit,
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        self.limit - self.text.len()
+    }
+
+    fn write_padding(&mut self, byte: char, mut count: usize) -> fmt::Result {
+        if count > self.remaining() {
+            return Err(fmt::Error);
+        }
+        let chunk = if byte == '0' {
+            "00000000000000000000000000000000"
+        } else {
+            "                                "
+        };
+        while count != 0 {
+            let len = count.min(chunk.len());
+            self.write_str(&chunk[..len])?;
+            count -= len;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Write for TextBuffer {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        if text.len() > self.remaining() {
+            return Err(fmt::Error);
+        }
+        self.text.push_str(text);
+        Ok(())
+    }
+}
+
+/// Precision truncates rendered Unicode characters, while the underlying
+/// buffer still enforces its byte limit before every write.
+struct PrecisionWriter<'a> {
+    out: &'a mut TextBuffer,
+    chars_left: usize,
+}
+
+impl fmt::Write for PrecisionWriter<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let mut end = 0;
+        for c in text.chars().take(self.chars_left) {
+            end += c.len_utf8();
+            self.chars_left -= 1;
+        }
+        self.out.write_str(&text[..end])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,12 +517,25 @@ const FUNCTIONS: &[&str] = &[
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
     /// Parse nodes until an action whose keyword is in `stops` (left
     /// unconsumed).
     fn parse_list(&mut self, stops: &[&str]) -> Result<Vec<Node>, String> {
+        if self.depth > MAX_NESTING {
+            return Err(format!(
+                "export template nesting exceeds {MAX_NESTING} levels"
+            ));
+        }
+        self.depth += 1;
+        let result = self.parse_list_body(stops);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_list_body(&mut self, stops: &[&str]) -> Result<Vec<Node>, String> {
         let mut nodes = Vec::new();
         while let Some(token) = self.tokens.get(self.pos).cloned() {
             match token {
@@ -425,12 +555,12 @@ impl Parser {
                     match keyword {
                         "if" => nodes.push(self.parse_if(&words[1..], line)?),
                         "range" => {
-                            let pipe = parse_pipeline(&words[1..], line, true)?;
+                            let pipe = parse_pipeline(&words[1..], line, true, self.depth - 1)?;
                             let (body, alt) = self.parse_body(line)?;
                             nodes.push(Node::Range(pipe, body, alt));
                         }
                         "with" => {
-                            let pipe = parse_pipeline(&words[1..], line, false)?;
+                            let pipe = parse_pipeline(&words[1..], line, false, self.depth - 1)?;
                             let (body, alt) = self.parse_body(line)?;
                             nodes.push(Node::With(pipe, body, alt));
                         }
@@ -442,7 +572,12 @@ impl Parser {
                                 "{{{{{keyword}}}}} is not supported in report templates (line {line})"
                             ));
                         }
-                        _ => nodes.push(Node::Action(parse_pipeline(&words, line, false)?)),
+                        _ => nodes.push(Node::Action(parse_pipeline(
+                            &words,
+                            line,
+                            false,
+                            self.depth - 1,
+                        )?)),
                     }
                 }
             }
@@ -470,7 +605,10 @@ impl Parser {
     }
 
     fn parse_if(&mut self, words: &[Word], line: usize) -> Result<Node, String> {
-        let mut branches = vec![(parse_pipeline(words, line, false)?, Vec::new())];
+        let mut branches = vec![(
+            parse_pipeline(words, line, false, self.depth - 1)?,
+            Vec::new(),
+        )];
         loop {
             let body = self.parse_list(&["else", "end"])?;
             branches.last_mut().expect("branch").1 = body;
@@ -483,7 +621,10 @@ impl Parser {
                     return Ok(Node::If(branches, Vec::new()));
                 }
                 Some(Word::Ident(k)) if k == "if" => {
-                    branches.push((parse_pipeline(&words[2..], line, false)?, Vec::new()));
+                    branches.push((
+                        parse_pipeline(&words[2..], line, false, self.depth - 1)?,
+                        Vec::new(),
+                    ));
                 }
                 _ => {
                     let alt = self.parse_list(&["end"])?;
@@ -495,7 +636,17 @@ impl Parser {
     }
 }
 
-fn parse_pipeline(words: &[Word], line: usize, allow_two_vars: bool) -> Result<Pipeline, String> {
+fn parse_pipeline(
+    words: &[Word],
+    line: usize,
+    allow_two_vars: bool,
+    depth: usize,
+) -> Result<Pipeline, String> {
+    if depth > MAX_NESTING {
+        return Err(format!(
+            "export template nesting exceeds {MAX_NESTING} levels on line {line}"
+        ));
+    }
     let mut decl = Vec::new();
     let mut declare = false;
     let mut rest = words;
@@ -538,18 +689,18 @@ fn parse_pipeline(words: &[Word], line: usize, allow_two_vars: bool) -> Result<P
                 commands.push(std::mem::take(&mut current));
             }
             Word::LParen => {
-                let mut depth = 1;
+                let mut paren_depth = 1;
                 let start = i + 1;
-                while depth > 0 {
+                while paren_depth > 0 {
                     i += 1;
                     match rest.get(i) {
-                        Some(Word::LParen) => depth += 1,
-                        Some(Word::RParen) => depth -= 1,
+                        Some(Word::LParen) => paren_depth += 1,
+                        Some(Word::RParen) => paren_depth -= 1,
                         Some(_) => {}
                         None => return Err(format!("unclosed ( on line {line}")),
                     }
                 }
-                let inner = parse_pipeline(&rest[start..i], line, false)?;
+                let inner = parse_pipeline(&rest[start..i], line, false, depth + 1)?;
                 // `(pipeline).Field` arrives as a following Field word.
                 let mut fields = Vec::new();
                 if let Some(Word::Field(path)) = rest.get(i + 1) {
@@ -602,19 +753,73 @@ fn parse_pipeline(words: &[Word], line: usize, allow_two_vars: bool) -> Result<P
 struct Scope {
     vars: Vec<(String, Value)>,
     max_output: usize,
+    iterations_left: usize,
+    max_value_bytes: usize,
+    value_bytes_left: usize,
 }
 
 impl Scope {
-    fn lookup(&self, name: &str) -> Result<Value, String> {
-        self.vars
+    fn consume_value_bytes(&mut self, bytes: usize) -> Result<(), String> {
+        self.value_bytes_left = self.value_bytes_left.checked_sub(bytes).ok_or_else(|| {
+            format!(
+                "export template evaluation exceeds {} bytes of intermediate values",
+                self.max_value_bytes
+            )
+        })?;
+        Ok(())
+    }
+
+    fn copy_value(&mut self, value: &Value) -> Result<Value, String> {
+        self.consume_value_bytes(value.storage_bytes())?;
+        Ok(value.clone())
+    }
+
+    fn lookup(&mut self, name: &str, path: &[String]) -> Result<Value, String> {
+        self.consume_value_bytes(name.len())?;
+        self.consume_path(path)?;
+        let value = self
+            .vars
             .iter()
             .rev()
             .find(|(var, _)| var == name)
-            .map(|(_, value)| value.clone())
-            .ok_or_else(|| format!("undefined variable {name:?}"))
+            .map(|(_, value)| value)
+            .ok_or_else(|| format!("undefined variable {name:?}"))?;
+        let value = field(value, path)?;
+        let bytes = value.storage_bytes();
+        if bytes > self.value_bytes_left {
+            // Check before cloning; aliases must share the same value budget.
+            return Err(format!(
+                "export template evaluation exceeds {} bytes of intermediate values",
+                self.max_value_bytes
+            ));
+        }
+        let value = value.clone();
+        self.consume_value_bytes(bytes)?;
+        Ok(value)
+    }
+
+    fn consume_iterations(&mut self, count: usize) -> Result<(), String> {
+        self.iterations_left = self.iterations_left.checked_sub(count).ok_or_else(|| {
+            format!("export template evaluation exceeds {MAX_RANGE_ITERATIONS} range iterations")
+        })?;
+        Ok(())
+    }
+
+    fn consume_path(&mut self, path: &[String]) -> Result<(), String> {
+        let bytes = path
+            .iter()
+            .fold(0usize, |total, part| total.saturating_add(part.len()));
+        self.consume_value_bytes(bytes)
+    }
+
+    fn declare(&mut self, name: &str, value: Value) -> Result<(), String> {
+        self.consume_value_bytes(name.len())?;
+        self.vars.push((name.to_string(), value));
+        Ok(())
     }
 
     fn assign(&mut self, name: &str, value: Value) -> Result<(), String> {
+        self.consume_value_bytes(name.len())?;
         let slot = self
             .vars
             .iter_mut()
@@ -626,30 +831,26 @@ impl Scope {
     }
 }
 
-fn write_output(out: &mut String, text: &str, scope: &Scope) -> Result<(), String> {
-    if out.len() + text.len() > scope.max_output {
-        return Err(format!(
-            "rendered export template exceeds {} MiB",
-            scope.max_output >> 20
-        ));
-    }
-    out.push_str(text);
-    Ok(())
+fn write_output(out: &mut TextBuffer, text: &str) -> Result<(), String> {
+    out.write_str(text)
+        .map_err(|_| output_limit_error(out.limit))
 }
 
 fn exec_list(
     nodes: &[Node],
     dot: &Value,
     scope: &mut Scope,
-    out: &mut String,
+    out: &mut TextBuffer,
 ) -> Result<(), String> {
     for node in nodes {
         match node {
-            Node::Text(text) => write_output(out, text, scope)?,
+            Node::Text(text) => write_output(out, text)?,
             Node::Action(pipe) => {
                 let value = eval_pipeline(pipe, dot, scope)?;
                 if pipe.decl.is_empty() {
-                    write_output(out, &value.display(), scope)?;
+                    value
+                        .write_display(out)
+                        .map_err(|_| output_limit_error(out.limit))?;
                 }
             }
             Node::If(branches, alt) => {
@@ -679,32 +880,46 @@ fn exec_list(
             }
             Node::Range(pipe, body, alt) => {
                 let depth = scope.vars.len();
-                let mut header = pipe.clone();
-                let decl = std::mem::take(&mut header.decl);
-                let value = eval_pipeline(&header, dot, scope)?;
-                let items: Vec<(Value, Value)> = match value {
-                    Value::List(items) => items
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, v)| (Value::Int(i64::try_from(i).unwrap_or(i64::MAX)), v))
-                        .collect(),
-                    Value::Map(map) => map.into_iter().map(|(k, v)| (Value::Str(k), v)).collect(),
-                    Value::Int(n) => (0..n.max(0))
-                        .map(|i| (Value::Int(i), Value::Int(i)))
-                        .collect(),
-                    Value::Nil => Vec::new(),
+                // Evaluate the header without declaring range variables or
+                // repeatedly cloning its template-controlled syntax tree.
+                let value = eval_pipeline_commands(pipe, dot, scope)?;
+                let count = match &value {
+                    Value::List(items) => items.len(),
+                    Value::Map(map) => map.len(),
+                    Value::Int(n) => usize::try_from((*n).max(0)).unwrap_or(usize::MAX),
+                    Value::Nil => 0,
                     other => return Err(format!("range can't iterate over {}", other.kind())),
                 };
-                if items.is_empty() {
+                scope.consume_iterations(count)?;
+                // Integer ranges produce one item at a time. No allocation is
+                // proportional to a template-provided integer.
+                let items: Box<dyn Iterator<Item = (Value, Value)>> = match value {
+                    Value::List(items) => Box::new(
+                        items
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| (Value::Int(i64::try_from(i).unwrap_or(i64::MAX)), v)),
+                    ),
+                    Value::Map(map) => Box::new(map.into_iter().map(|(k, v)| (Value::Str(k), v))),
+                    Value::Int(n) => {
+                        Box::new((0..n.max(0)).map(|i| (Value::Int(i), Value::Int(i))))
+                    }
+                    _ => Box::new(std::iter::empty()),
+                };
+                if count == 0 {
                     exec_list(alt, dot, scope, out)?;
                 }
                 for (key, item) in items {
                     let inner = scope.vars.len();
-                    match decl.as_slice() {
-                        [value_var] => scope.vars.push((value_var.clone(), item.clone())),
+                    match pipe.decl.as_slice() {
+                        [value_var] => {
+                            let value = scope.copy_value(&item)?;
+                            scope.declare(value_var, value)?;
+                        }
                         [key_var, value_var] => {
-                            scope.vars.push((key_var.clone(), key));
-                            scope.vars.push((value_var.clone(), item.clone()));
+                            scope.declare(key_var, key)?;
+                            let value = scope.copy_value(&item)?;
+                            scope.declare(value_var, value)?;
                         }
                         _ => {}
                     }
@@ -718,12 +933,12 @@ fn exec_list(
     Ok(())
 }
 
-fn field(value: &Value, path: &[String]) -> Result<Value, String> {
-    let mut current = value.clone();
+fn field<'a>(value: &'a Value, path: &[String]) -> Result<&'a Value, String> {
+    let mut current = value;
     for name in path {
         current = match current {
-            Value::Map(mut map) => map
-                .remove(name)
+            Value::Map(map) => map
+                .get(name)
                 .ok_or_else(|| format!("map has no entry for key {name:?}"))?,
             Value::Nil => return Err(format!("nil pointer evaluating .{name}")),
             other => {
@@ -738,6 +953,26 @@ fn field(value: &Value, path: &[String]) -> Result<Value, String> {
 }
 
 fn eval_pipeline(pipe: &Pipeline, dot: &Value, scope: &mut Scope) -> Result<Value, String> {
+    let value = eval_pipeline_commands(pipe, dot, scope)?;
+    match pipe.decl.as_slice() {
+        [name] if pipe.declare => {
+            let copy = scope.copy_value(&value)?;
+            scope.declare(name, copy)?;
+        }
+        [name] => {
+            let copy = scope.copy_value(&value)?;
+            scope.assign(name, copy)?;
+        }
+        _ => {}
+    }
+    Ok(value)
+}
+
+fn eval_pipeline_commands(
+    pipe: &Pipeline,
+    dot: &Value,
+    scope: &mut Scope,
+) -> Result<Value, String> {
     let mut piped: Option<Value> = None;
     for command in &pipe.commands {
         piped = Some(
@@ -745,22 +980,27 @@ fn eval_pipeline(pipe: &Pipeline, dot: &Value, scope: &mut Scope) -> Result<Valu
                 .map_err(|error| format!("line {}: {error}", pipe.line))?,
         );
     }
-    let value = piped.unwrap_or(Value::Nil);
-    match pipe.decl.as_slice() {
-        [name] if pipe.declare => scope.vars.push((name.clone(), value.clone())),
-        [name] => scope.assign(name, value.clone())?,
-        _ => {}
-    }
-    Ok(value)
+    Ok(piped.unwrap_or(Value::Nil))
 }
 
 fn eval_operand(operand: &Operand, dot: &Value, scope: &mut Scope) -> Result<Value, String> {
     match operand {
-        Operand::Field(path) => field(dot, path),
-        Operand::Var(name, path) => field(&scope.lookup(name)?, path),
-        Operand::Literal(value) => Ok(value.clone()),
-        Operand::Function(name) => call(name, Vec::new()),
-        Operand::Sub(pipe, path) => field(&eval_pipeline(pipe, dot, scope)?, path),
+        Operand::Field(path) => {
+            scope.consume_path(path)?;
+            scope.copy_value(field(dot, path)?)
+        }
+        Operand::Var(name, path) => scope.lookup(name, path),
+        Operand::Literal(value) => scope.copy_value(value),
+        Operand::Function(name) => call(name, Vec::new(), scope),
+        Operand::Sub(pipe, path) => {
+            let value = eval_pipeline(pipe, dot, scope)?;
+            if path.is_empty() {
+                Ok(value)
+            } else {
+                scope.consume_path(path)?;
+                scope.copy_value(field(&value, path)?)
+            }
+        }
     }
 }
 
@@ -780,8 +1020,8 @@ fn eval_command(
             let args = command[1..]
                 .iter()
                 .map(Some)
-                .chain(piped.iter().map(|_| None));
-            let mut piped = piped.clone();
+                .chain(std::iter::once(None).take(usize::from(piped.is_some())));
+            let mut piped = piped;
             for arg in args {
                 last = match arg {
                     Some(operand) => eval_operand(operand, dot, scope)?,
@@ -798,7 +1038,7 @@ fn eval_command(
             .map(|operand| eval_operand(operand, dot, scope))
             .collect::<Result<Vec<_>, _>>()?;
         args.extend(piped);
-        return call(name, args);
+        return call(name, args, scope);
     }
     if command.len() > 1 {
         return Err(format!("can't give argument to non-function {first:?}"));
@@ -843,9 +1083,9 @@ fn arity(name: &str, args: &[Value], want: usize) -> Result<(), String> {
     }
 }
 
-fn call(name: &str, args: Vec<Value>) -> Result<Value, String> {
+fn call(name: &str, args: Vec<Value>, scope: &mut Scope) -> Result<Value, String> {
     use std::cmp::Ordering;
-    match name {
+    let value = match name {
         "not" => {
             arity(name, &args, 1)?;
             Ok(Value::Bool(!args[0].truthy()))
@@ -942,51 +1182,68 @@ fn call(name: &str, args: Vec<Value>) -> Result<Value, String> {
             };
             Ok(Value::Bool(result))
         }
-        "print" => {
+        "print" | "println" => {
             // Go's fmt.Sprint: spaces between operands when neither is a string.
-            let mut out = String::new();
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 && !matches!(arg, Value::Str(_)) && !matches!(args[i - 1], Value::Str(_)) {
-                    out.push(' ');
+            text_value(scope.max_output, |out| {
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0
+                        && (name == "println"
+                            || (!matches!(arg, Value::Str(_))
+                                && !matches!(args[i - 1], Value::Str(_))))
+                    {
+                        out.write_char(' ')?;
+                    }
+                    arg.write_display(out)?;
                 }
-                out.push_str(&arg.display());
-            }
-            Ok(Value::Str(out))
+                if name == "println" {
+                    out.write_char('\n')?;
+                }
+                Ok(())
+            })
         }
-        "println" => Ok(Value::Str(format!(
-            "{}\n",
-            args.iter()
-                .map(Value::display)
-                .collect::<Vec<_>>()
-                .join(" ")
-        ))),
         "printf" => {
             let (format, rest) = args.split_first().ok_or("printf needs a format")?;
             let Value::Str(format) = format else {
                 return Err("printf format must be a string".to_string());
             };
-            Ok(Value::Str(sprintf(format, rest)))
+            sprintf(format, rest, scope.max_output).map(Value::Str)
         }
-        "html" => Ok(Value::Str(html_escape(&join_args(&args)))),
-        "js" => Ok(Value::Str(js_escape(&join_args(&args)))),
-        "urlquery" => Ok(Value::Str(url_escape(&join_args(&args)))),
+        "html" | "js" | "urlquery" => text_value(scope.max_output, |out| {
+            for arg in &args {
+                let mut text = TextBuffer::new(scope.max_output);
+                arg.write_display(&mut text)?;
+                match name {
+                    "html" => write_html_escape(&text.text, out)?,
+                    "js" => write_js_escape(&text.text, out)?,
+                    _ => write_url_escape(&text.text, out)?,
+                }
+            }
+            Ok(())
+        }),
         other => Err(format!("function {other:?} not defined")),
-    }
+    }?;
+    scope.consume_value_bytes(value.storage_bytes())?;
+    Ok(value)
 }
 
-fn join_args(args: &[Value]) -> String {
-    args.iter().map(Value::display).collect()
+fn text_value(
+    limit: usize,
+    write: impl FnOnce(&mut TextBuffer) -> fmt::Result,
+) -> Result<Value, String> {
+    let mut out = TextBuffer::new(limit);
+    write(&mut out).map_err(|_| output_limit_error(limit))?;
+    Ok(Value::Str(out.text))
 }
 
 /// Go's `fmt.Sprintf` for the verbs report templates use: `%v %s %d %q %t
 /// %f %%` with `-`/`0` flags, width, and precision.
-fn sprintf(format: &str, args: &[Value]) -> String {
-    let mut out = String::new();
+fn sprintf(format: &str, args: &[Value], limit: usize) -> Result<String, String> {
+    let mut out = TextBuffer::new(limit);
     let mut args = args.iter();
     let mut chars = format.chars().peekable();
     while let Some(c) = chars.next() {
         if c != '%' {
-            out.push(c);
+            out.write_char(c).map_err(|_| output_limit_error(limit))?;
             continue;
         }
         let mut left = false;
@@ -1000,72 +1257,115 @@ fn sprintf(format: &str, args: &[Value]) -> String {
             }
             chars.next();
         }
-        let mut width = 0usize;
-        while let Some(digit) = chars.peek().and_then(|c| c.to_digit(10)) {
-            width = width * 10 + digit as usize;
-            chars.next();
-        }
+        let width = format_number(&mut chars, limit, "width")?;
         let precision = if chars.peek() == Some(&'.') {
             chars.next();
-            let mut p = 0usize;
-            while let Some(digit) = chars.peek().and_then(|c| c.to_digit(10)) {
-                p = p * 10 + digit as usize;
-                chars.next();
-            }
-            Some(p)
+            Some(format_number(&mut chars, limit, "precision")?)
         } else {
             None
         };
         let Some(verb) = chars.next() else {
-            out.push_str("%!(NOVERB)");
+            write_output(&mut out, "%!(NOVERB)")?;
             break;
         };
         if verb == '%' {
-            out.push('%');
+            write_output(&mut out, "%")?;
             continue;
         }
         let Some(arg) = args.next() else {
-            let _ = write!(out, "%!{verb}(MISSING)");
+            write!(out, "%!{verb}(MISSING)").map_err(|_| output_limit_error(limit))?;
             continue;
         };
-        let mut text = match (verb, arg) {
-            ('d', Value::Int(n)) => n.to_string(),
-            ('f' | 'g' | 'e', Value::Float(f)) => format!("{:.*}", precision.unwrap_or(6), f),
-            ('f' | 'g' | 'e', Value::Int(n)) => format!("{:.*}", precision.unwrap_or(6), *n as f64),
-            ('q', Value::Str(s)) => format!("{s:?}"),
-            ('t', Value::Bool(b)) => b.to_string(),
+        let mut text = TextBuffer::new(out.remaining());
+        let rendered = match (verb, arg) {
+            ('d', Value::Int(n)) => write!(text, "{n}"),
+            ('f' | 'g' | 'e', Value::Float(f)) => {
+                write_float(&mut text, *f, precision.unwrap_or(6))
+            }
+            ('f' | 'g' | 'e', Value::Int(n)) => {
+                write_float(&mut text, *n as f64, precision.unwrap_or(6))
+            }
+            ('q', Value::Str(s)) => write!(text, "{s:?}"),
+            ('t', Value::Bool(b)) => write!(text, "{b}"),
             ('s' | 'v', value) => {
-                let mut text = value.display();
                 if let Some(p) = precision {
-                    text = text.chars().take(p).collect();
+                    value.write_display(&mut PrecisionWriter {
+                        out: &mut text,
+                        chars_left: p,
+                    })
+                } else {
+                    value.write_display(&mut text)
                 }
-                text
             }
-            (verb, value) => format!("%!{verb}({}={})", value.kind(), value.display()),
+            (verb, value) => (|| {
+                write!(text, "%!{verb}({}=", value.kind())?;
+                value.write_display(&mut text)?;
+                text.write_char(')')
+            })(),
         };
-        let len = text.chars().count();
-        if len < width {
-            let pad = width - len;
-            if left {
-                text.push_str(&" ".repeat(pad));
-            } else if zero && matches!(arg, Value::Int(_) | Value::Float(_)) {
-                let negative = text.starts_with('-');
-                let digits = text.trim_start_matches('-').to_string();
-                text = format!(
-                    "{}{}{digits}",
-                    if negative { "-" } else { "" },
-                    "0".repeat(pad)
-                );
-            } else {
-                text = format!("{}{text}", " ".repeat(pad));
-            }
+        rendered.map_err(|_| output_limit_error(limit))?;
+        let pad = width.saturating_sub(text.text.chars().count());
+        if pad > out.remaining().saturating_sub(text.text.len()) {
+            return Err(output_limit_error(limit));
         }
-        out.push_str(&text);
+        let padded = (|| {
+            if left {
+                out.write_str(&text.text)?;
+                out.write_padding(' ', pad)
+            } else if zero && matches!(arg, Value::Int(_) | Value::Float(_)) {
+                if text.text.starts_with('-') {
+                    out.write_char('-')?;
+                }
+                out.write_padding('0', pad)?;
+                out.write_str(text.text.trim_start_matches('-'))
+            } else {
+                out.write_padding(' ', pad)?;
+                out.write_str(&text.text)
+            }
+        })();
+        padded.map_err(|_| output_limit_error(limit))?;
     }
     if args.next().is_some() {
-        out.push_str("%!(EXTRA)");
+        write_output(&mut out, "%!(EXTRA)")?;
     }
-    out
+    Ok(out.text)
+}
+
+fn format_number(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    limit: usize,
+    kind: &str,
+) -> Result<usize, String> {
+    let mut number = 0usize;
+    while let Some(digit) = chars.peek().and_then(|c| c.to_digit(10)) {
+        number = number
+            .checked_mul(10)
+            .and_then(|n| n.checked_add(digit as usize))
+            .filter(|&n| n <= limit)
+            .ok_or_else(|| format!("printf {kind} exceeds {limit} bytes"))?;
+        chars.next();
+    }
+    Ok(number)
+}
+
+fn write_float(out: &mut TextBuffer, value: f64, precision: usize) -> fmt::Result {
+    // A binary64 fraction terminates within 1074 decimal places. Format that
+    // bounded prefix, then stream any additional zeros. Passing a template's
+    // arbitrary precision directly into Rust formatting can panic or allocate
+    // before the writer gets a chance to enforce the output limit.
+    let prefix_precision = precision.min(1074);
+    let minimum_len = precision
+        .saturating_add(1)
+        .saturating_add(usize::from(precision != 0))
+        .saturating_add(usize::from(value.is_sign_negative()));
+    if value.is_finite() && minimum_len > out.remaining() {
+        return Err(fmt::Error);
+    }
+    write!(out, "{value:.prefix_precision$}")?;
+    if value.is_finite() {
+        out.write_padding('0', precision - prefix_precision)?;
+    }
+    Ok(())
 }
 
 /// Legacy bv's `escapeReportText`: issue text in a report template stays
@@ -1105,57 +1405,57 @@ pub fn escape_report_text(value: &str) -> String {
 
 fn html_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&#34;"),
-            '\'' => out.push_str("&#39;"),
-            '\0' => out.push('\u{FFFD}'),
-            c => out.push(c),
-        }
-    }
+    // String's fmt::Write implementation cannot fail.
+    let _ = write_html_escape(text, &mut out);
     out
 }
 
-fn js_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+fn write_html_escape(text: &str, out: &mut impl fmt::Write) -> fmt::Result {
     for c in text.chars() {
         match c {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            '"' => out.push_str("\\\""),
-            '<' => out.push_str("\\u003C"),
-            '>' => out.push_str("\\u003E"),
-            '&' => out.push_str("\\u0026"),
-            '=' => out.push_str("\\u003D"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
-                let _ = write!(out, "\\u{:04X}", u32::from(c));
-            }
-            c => out.push(c),
-        }
+            '&' => out.write_str("&amp;"),
+            '<' => out.write_str("&lt;"),
+            '>' => out.write_str("&gt;"),
+            '"' => out.write_str("&#34;"),
+            '\'' => out.write_str("&#39;"),
+            '\0' => out.write_char('\u{FFFD}'),
+            c => out.write_char(c),
+        }?;
     }
-    out
+    Ok(())
 }
 
-fn url_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
+fn write_js_escape(text: &str, out: &mut impl fmt::Write) -> fmt::Result {
+    for c in text.chars() {
+        match c {
+            '\\' => out.write_str("\\\\"),
+            '\'' => out.write_str("\\'"),
+            '"' => out.write_str("\\\""),
+            '<' => out.write_str("\\u003C"),
+            '>' => out.write_str("\\u003E"),
+            '&' => out.write_str("\\u0026"),
+            '=' => out.write_str("\\u003D"),
+            '\n' => out.write_str("\\n"),
+            '\r' => out.write_str("\\r"),
+            '\t' => out.write_str("\\t"),
+            c if c.is_control() => write!(out, "\\u{:04X}", u32::from(c)),
+            c => out.write_char(c),
+        }?;
+    }
+    Ok(())
+}
+
+fn write_url_escape(text: &str, out: &mut impl fmt::Write) -> fmt::Result {
     for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(char::from(byte));
+                out.write_char(char::from(byte))
             }
-            b' ' => out.push('+'),
-            other => {
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
+            b' ' => out.write_char('+'),
+            other => write!(out, "%{other:02X}"),
+        }?;
     }
-    out
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1262,5 +1562,210 @@ mod tests {
         );
         let err = render("{{range .Issues}}{{.Title}}{{end}}", &data(), 4).unwrap_err();
         assert!(err.contains("exceeds"), "{err}");
+    }
+
+    #[test]
+    fn integer_ranges_preserve_values_and_empty_branches() {
+        assert_eq!(
+            ok("{{range $i, $v := 3}}{{$i}}={{$v}};{{end}}"),
+            "0=0;1=1;2=2;"
+        );
+        assert_eq!(
+            ok("{{range 0}}x{{else}}zero{{end}}/{{range -1}}x{{else}}negative{{end}}"),
+            "zero/negative"
+        );
+        assert_eq!(
+            render("{{range 1000000}}{{end}}ok", &Value::Nil, 2).unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn range_budget_is_shared_by_nested_and_empty_loops() {
+        for template in [
+            "{{range 9223372036854775807}}x{{end}}",
+            "{{range 1000001}}{{end}}",
+            "{{range 500000}}{{end}}{{range 500001}}{{end}}",
+            "{{range 1000}}{{range 1000}}{{end}}{{end}}",
+        ] {
+            let error = render(template, &Value::Nil, 16 << 20).unwrap_err();
+            assert!(
+                error.contains("exceeds 1000000 range iterations"),
+                "{template}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn printf_preserves_padding_precision_and_unicode_byte_boundaries() {
+        for (template, expected) in [
+            ("{{printf \"%05d\" -7}}", "-0007"),
+            ("{{printf \"%-5d\" -7}}", "-7   "),
+            ("{{printf \"%5.2s\" \"é中z\"}}", "   é中"),
+            ("{{printf \"%.0f\" 1.0}}", "1"),
+            ("{{printf \"%.2f\" 1.25}}", "1.25"),
+            ("{{printf \"%q\" \"a\\nb\"}}", "\"a\\nb\""),
+            ("{{printf \"%t%%\" true}}", "true%"),
+        ] {
+            assert_eq!(
+                render(template, &Value::Nil, expected.len()).unwrap(),
+                expected,
+                "{template}"
+            );
+            assert!(
+                render(template, &Value::Nil, expected.len() - 1).is_err(),
+                "{template} must enforce bytes, including Unicode and padding"
+            );
+        }
+    }
+
+    #[test]
+    fn printf_rejects_huge_or_overflowing_width_and_precision() {
+        for (template, detail) in [
+            ("{{printf \"%1000000000s\" \"x\"}}", "width"),
+            ("{{printf \"%-1000000000s\" \"x\"}}", "width"),
+            ("{{printf \"%01000000000d\" -1}}", "width"),
+            ("{{printf \"%.1000000000f\" 1.0}}", "precision"),
+            ("{{printf \"%184467440737095516160s\" \"x\"}}", "width"),
+        ] {
+            let error = render(template, &Value::Nil, 256).unwrap_err();
+            assert!(
+                error.contains(&format!("printf {detail} exceeds")),
+                "{error}"
+            );
+        }
+        for format in ["%184467440737095516160s", "%.184467440737095516160f"] {
+            // A permissive caller still cannot make numeric parsing overflow.
+            assert!(super::sprintf(format, &[Value::Int(1)], usize::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn large_float_precision_streams_without_formatter_panics() {
+        let template = "{{printf \"%.65536f\" 1.0}}";
+        let output = render(template, &Value::Nil, 65_538).unwrap();
+        assert_eq!(output.len(), 65_538);
+        assert!(output.starts_with("1."));
+        assert!(output[2..].bytes().all(|byte| byte == b'0'));
+        assert!(render(template, &Value::Nil, 65_537).is_err());
+    }
+
+    #[test]
+    fn composed_formatting_and_escaping_share_output_limits() {
+        for (template, expected) in [
+            ("{{printf \"%4s%4s\" \"a\" \"b\"}}", "   a   b"),
+            (
+                "{{print (printf \"%4s\" \"a\") (printf \"%4s\" \"b\")}}",
+                "   a   b",
+            ),
+            ("{{println \"a\" \"b\"}}", "a b\n"),
+            ("{{html (printf \"%s\" \"<&>\")}}", "&lt;&amp;&gt;"),
+            ("{{js \"<\"}}", "\\u003C"),
+            ("{{urlquery \"é\"}}", "%C3%A9"),
+        ] {
+            assert_eq!(
+                render(template, &Value::Nil, expected.len()).unwrap(),
+                expected
+            );
+            let error = render(template, &Value::Nil, expected.len() - 1).unwrap_err();
+            assert!(error.contains("exceeds"), "{template}: {error}");
+        }
+        // Truncation at an outer step cannot authorize an oversized temporary.
+        assert!(render("{{printf \"%.1s\" (printf \"%9s\" \"x\")}}", &Value::Nil, 8).is_err());
+        // Existing input text may be inspected/truncated without rendering it all.
+        assert_eq!(
+            render("{{printf \"%.1s\" \"abcdef\"}}", &Value::Nil, 1).unwrap(),
+            "a"
+        );
+    }
+
+    #[test]
+    fn intermediate_value_budget_covers_unprinted_assignments_and_aliases() {
+        let allowed = "{{$x := printf \"%65536s\" \"x\"}}{{range 6}}{{$y := $x}}{{end}}ok";
+        let excessive = "{{$x := printf \"%65536s\" \"x\"}}{{range 7}}{{$y := $x}}{{end}}ok";
+        assert_eq!(render(allowed, &Value::Nil, 128 << 10).unwrap(), "ok");
+        let error = render(excessive, &Value::Nil, 128 << 10).unwrap_err();
+        assert!(
+            error.contains("exceeds 1048576 bytes of intermediate values"),
+            "{error}"
+        );
+        // A separate render has a fresh allowance after a rejected template.
+        assert_eq!(render(allowed, &Value::Nil, 128 << 10).unwrap(), "ok");
+    }
+
+    #[test]
+    fn intermediate_value_budget_counts_empty_collection_storage() {
+        let values = Value::List(vec![Value::Str(String::new()); 1024]);
+        assert_eq!(
+            render(
+                "{{$items := .}}{{range 2}}{{$copy := $items}}{{end}}ok",
+                &values,
+                128 << 10
+            )
+            .unwrap(),
+            "ok"
+        );
+        let error = render(
+            "{{$items := .}}{{range 1000000}}{{$copy := $items}}{{end}}ok",
+            &values,
+            128 << 10,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("exceeds 1048576 bytes of intermediate values"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn intermediate_value_budget_counts_variable_names() {
+        let name = "v".repeat(64 << 10);
+        let body = ["{{$", &name, " := 1}}{{if $", &name, "}}ok{{end}}"].concat();
+        let allowed = format!("{{{{range 2}}}}{body}{{{{end}}}}");
+        let excessive = format!("{{{{range 1000000}}}}{body}{{{{end}}}}");
+        assert_eq!(render(&allowed, &Value::Nil, 128 << 10).unwrap(), "okok");
+        let error = render(&excessive, &Value::Nil, 128 << 10).unwrap_err();
+        assert!(
+            error.contains("exceeds 1048576 bytes of intermediate values"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn nesting_limit_covers_blocks_parentheses_and_combinations() {
+        let nested = |blocks: usize, expressions: usize| {
+            format!(
+                "{}{{{{{}print \"ok\"{}}}}}{}",
+                "{{if true}}".repeat(blocks),
+                "(".repeat(expressions),
+                ")".repeat(expressions),
+                "{{end}}".repeat(blocks),
+            )
+        };
+        for (blocks, expressions) in [(128, 0), (0, 128), (64, 64)] {
+            assert_eq!(
+                render(&nested(blocks, expressions), &Value::Nil, 2).unwrap(),
+                "ok"
+            );
+        }
+        for (blocks, expressions) in [(129, 0), (0, 129), (64, 65)] {
+            let error = render(&nested(blocks, expressions), &Value::Nil, 2).unwrap_err();
+            assert!(error.contains("nesting exceeds 128 levels"), "{error}");
+        }
+    }
+
+    #[test]
+    fn field_lookup_copies_only_the_selected_value() {
+        let data = Value::Map(BTreeMap::from([
+            ("Large".into(), Value::Str("x".repeat(1 << 20))),
+            ("Small".into(), Value::Str("ok".into())),
+        ]));
+        let expected = "ok".repeat(16);
+        for template in [
+            "{{.Small}}".repeat(16),
+            "{{range 16}}{{$.Small}}{{end}}".into(),
+        ] {
+            assert_eq!(render(&template, &data, 256 << 10).unwrap(), expected);
+        }
     }
 }
