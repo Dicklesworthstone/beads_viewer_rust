@@ -12,9 +12,12 @@
 // BVR_VIEWER_REVISION optionally serves index.html/viewer.js/graph.js from a git revision
 // to demonstrate that these regressions fail before a fix, without changing files.
 // Exported SQLite/data files always come from BVR_BIN, including in revision mode.
+// BVR_DOMPURIFY_REVISION serves only vendor/dompurify.min.js from a git revision
+// for sanitizer comparisons with current application code and exported data.
 
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { mkdir, mkdtemp, readFile, writeFile } = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
@@ -112,6 +115,7 @@ let server;
 let origin;
 let securityExport;
 let bottleneckExport;
+let mutationExport;
 
 const securityDescriptions = [
   {
@@ -149,6 +153,109 @@ const tooltipIssue = {
   labels: ['<img src=x onerror="window.__viewerPayloads.push(\'tooltip-label\')">'],
 };
 
+
+const dompurifyRelease = {
+  version: '3.4.16',
+  sha256: '2c90a9b46d6463f26038a29b686e82bc91de01fdac9d5229e7cfe3b360134ea2',
+};
+
+// Pinned upstream default-sanitize cases, not a claim that every advisory's
+// optional configuration is reachable here. See VIEWER_VENDOR_PROVENANCE.md.
+// Keep upstream alert() payloads unchanged; the browser test observes dialogs.
+function chainedTemplatePayload(links) {
+  const nesting = '<b>'.repeat(96);
+  const leaf = '<math><mtext><style><img src=x onerror=alert(1)></style></mtext></math>';
+  let dirty = '<div><?marker name="x1"></div>';
+  for (let index = 1; index <= links; index += 1) {
+    const next = index < links ? '<?marker name="x' + (index + 1) + '">' : leaf;
+    dirty += '<template for="x' + index + '">' + nesting + next + '</template>';
+  }
+  return dirty;
+}
+
+const mutationDescriptions = [
+  {
+    id: 'mutation-nesting-form-only', title: 'Upstream nesting with forms',
+    description: '<form><math><mtext></form><form><mglyph><style><img src=x onerror=alert(1)>',
+    expected: '<form><math><mtext><form></form></mtext></math></form>',
+  },
+  {
+    id: 'mutation-nesting-link', title: 'Upstream nesting with a script URL',
+    description: '<math><mtext><table><mglyph><style><math href=javascript:alert(1)>CLICKME</math>',
+    expected: '<math><mtext><table></table></mtext></math>',
+  },
+  {
+    id: 'mutation-nesting-comment', title: 'Upstream nesting with a comment',
+    description: '<math><mtext><table><mglyph><style><!--</style><img title="--&gt;&lt;img src=1 onerror=alert(1)&gt;">',
+    expected: '<math><mtext><table></table></mtext></math>',
+  },
+  {
+    id: 'mutation-nesting-form-svg', title: 'Upstream nesting with forms and SVG',
+    description: '<form><math><mtext></form><form><mglyph><svg><mtext><style><path id="</style><img onerror=alert(1) src>">',
+    expected: '<form><math><mtext><form></form></mtext></math></form>',
+  },
+  {
+    id: 'mutation-nesting-table-svg', title: 'Upstream nesting with tables and SVG',
+    description: '<math><mtext><table><mglyph><svg><mtext><style><path id="</style><img onerror=alert(1) src>">',
+    expected: ['', '<math><mtext><table></table></mtext></math>', '<math></math>'],
+  },
+  {
+    id: 'mutation-attribute-svg', title: 'Upstream SVG attribute mutation',
+    description: '<svg><foreignobject><p><style><p title="</style><iframe onload&#x3d;alert(1)<!--"></style>',
+    expected: '<svg></svg>',
+  },
+  {
+    id: 'mutation-attribute-math', title: 'Upstream MathML attribute mutation',
+    description: '<math><annotation-xml encoding="text/html"><p><style><p title="</style><iframe onload&#x3d;alert(1)<!--"></style>',
+    expected: '<math></math>',
+  },
+  {
+    id: 'mutation-removal-xmp', title: 'Upstream xmp removal mutation',
+    description: "<xmp><svg><b><style><b title='</style><img>'>",
+    expected: '',
+  },
+  {
+    id: 'mutation-removal-noembed', title: 'Upstream noembed removal mutation',
+    description: "<noembed><svg><b><style><b title='</style><img>'>",
+    expected: '',
+  },
+  {
+    id: 'mutation-namespace-svg', title: 'Upstream SVG namespace confusion',
+    description: 'a<svg><xss><desc><noscript>&lt;/noscript>&lt;/desc>&lt;s>&lt/s>&lt;style>&lt;a title="&lt;/style>&lt;img src onerror=alert(1)>">',
+    expected: 'a<svg><desc></desc></svg>',
+  },
+  {
+    id: 'mutation-namespace-math', title: 'Upstream MathML namespace confusion',
+    description: "<math><mtext><option><FAKEFAKE><option></option><mglyph><svg><mtext><style><a title=\"</style><img src='#' onerror='alert(1)'>\">",
+    expected: '<math><mtext><option><option></option></option></mtext></math>',
+  },
+  {
+    id: 'mutation-template-image', title: 'Upstream declarative template image',
+    description: '<div><?marker name="a"></div><template for="a"><img src=x onerror=alert(1)></template>',
+  },
+  {
+    id: 'mutation-template-math', title: 'Upstream template in a MathML integration point',
+    description: '<math><mtext><?marker name="f"></mtext></math><template for="f"><style><img src=x onerror=alert(1)></style></template>',
+  },
+  {
+    id: 'mutation-shadow-template', title: 'Upstream declarative shadow template',
+    description: '<section><template shadowrootmode="open"><img src=x onerror=alert(1)><a href="javascript:alert(2)">x</a></template></section>',
+    forbiddenOutput: 'shadowrootmode',
+  },
+  {
+    id: 'mutation-selectedcontent', title: 'Upstream selectedcontent content removal',
+    // This bounded, outside-select case pins the current default content-drop
+    // contract without constructing the engine's potentially unbounded mirror.
+    description: '<div><selectedcontent><img src=x onerror=alert(1)><b>copy</b></selectedcontent></div>',
+    expected: '<div></div>',
+  },
+  ...[4, 6, 8].map(links => ({
+    id: 'mutation-template-chain-' + links,
+    title: 'Upstream chained template depth ' + links,
+    description: chainedTemplatePayload(links),
+  })),
+];
+
 async function exportBrowserFixture(label, fixtureIssues) {
   const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
   await mkdir(parent, { recursive: true });
@@ -181,7 +288,7 @@ async function exportBrowserFixture(label, fixtureIssues) {
   }
   // include_bytes! can silently leave a stale binary with old viewer assets.
   // Check the emitted bytes before exercising them, even in negative-control mode.
-  for (const file of ['index.html', 'viewer.js', 'graph.js']) {
+  for (const file of ['index.html', 'viewer.js', 'graph.js', 'vendor/dompurify.min.js']) {
     assert.deepEqual(await readFile(path.join(directory, file)), await readFile(path.join(assets, file)),
       `rebuild BVR_BIN: exported ${file} must match this checkout`);
   }
@@ -194,6 +301,20 @@ async function exportedSecurityFixture(t) {
   }
   t.diagnostic(`Real --export-pages dashboard: ${securityExport}`);
   return 'export-fixture/';
+}
+
+
+async function exportedMutationFixture(t) {
+  if (!mutationExport) {
+    const vendor = await readFile(path.join(assets, 'vendor/dompurify.min.js'));
+    assert.equal(createHash('sha256').update(vendor).digest('hex'), dompurifyRelease.sha256,
+      'DOMPurify must retain the exact pinned upstream release bytes');
+    const fixtureIssues = [securityDescriptions[0], securityDescriptions[1], ...mutationDescriptions]
+      .map(({ id, title, description }) => ({ id, title, description }));
+    mutationExport = await exportBrowserFixture('mutations', fixtureIssues);
+  }
+  t.diagnostic('Real mutation-regression --export-pages dashboard: ' + mutationExport);
+  return 'mutation-fixture/';
 }
 
 async function exportedBottleneckFixture(t) {
@@ -250,13 +371,19 @@ before(async () => {
       overrides.set(file, execFileSync('git', ['show', `${process.env.BVR_VIEWER_REVISION}:viewer_assets/${file}`], { cwd: root }));
     }
   }
+  if (process.env.BVR_DOMPURIFY_REVISION) {
+    const file = 'vendor/dompurify.min.js';
+    overrides.set(file, execFileSync('git', ['show', process.env.BVR_DOMPURIFY_REVISION + ':viewer_assets/' + file], { cwd: root }));
+  }
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm' };
   server = http.createServer(async (request, response) => {
     const requestedPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
     const graphFixture = requestedPath.startsWith('/graph-fixture/');
     const bottleneckFixture = requestedPath.startsWith('/bottleneck-fixture/');
-    const exportedFixture = bottleneckFixture || requestedPath.startsWith('/export-fixture/');
-    const pathname = bottleneckFixture ? requestedPath.slice('/bottleneck-fixture'.length)
+    const mutationFixture = requestedPath.startsWith('/mutation-fixture/');
+    const exportedFixture = mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
+    const pathname = mutationFixture ? requestedPath.slice('/mutation-fixture'.length)
+      : bottleneckFixture ? requestedPath.slice('/bottleneck-fixture'.length)
       : exportedFixture ? requestedPath.slice('/export-fixture'.length)
       : graphFixture ? requestedPath.slice('/graph-fixture'.length) : requestedPath;
     response.setHeader('Cache-Control', 'no-store');
@@ -280,7 +407,8 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const servingRoot = bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
+    const servingRoot = mutationFixture ? mutationExport
+      : bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
     if (!servingRoot) {
       response.writeHead(404).end();
       return;
@@ -1143,36 +1271,50 @@ async function configureSecurityLibraries(page, mode) {
 }
 
 async function assertSecurityInert(page, surface, label) {
-  // Wait for actual load/error events and Alpine's initialization, then exercise
-  // the supplied click/hover directives. No browser DOM or event handler is mocked.
+  // Inspect actual parsed descendants, including inert template contents and
+  // open shadow roots. querySelectorAll alone misses those separate trees.
   const observed = await surface.evaluate(async element => {
-    await Promise.all([...element.querySelectorAll('img')].map(image => image.complete ? undefined
-      : new Promise(resolve => {
+    const descendants = () => {
+      const nodes = [...element.querySelectorAll('*')];
+      for (const node of nodes) {
+        if (node instanceof HTMLTemplateElement) nodes.push(...node.content.querySelectorAll('*'));
+        if (node.shadowRoot) nodes.push(...node.shadowRoot.querySelectorAll('*'));
+      }
+      return nodes;
+    };
+    // Inert template images do not load until insertion; waiting on them would
+    // deadlock the test. Their attributes are still inspected below.
+    await Promise.all(descendants().filter(node => node.localName === 'img' && node.isConnected)
+      .map(image => image.complete ? undefined : new Promise(resolve => {
         image.addEventListener('load', resolve, { once: true });
         image.addEventListener('error', resolve, { once: true });
       })));
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    for (const action of element.querySelectorAll('[data-security-action]')) {
+    for (const action of descendants().filter(node =>
+      node.isConnected && node.hasAttribute('data-security-action'))) {
       action.dispatchEvent(new Event('click'));
       action.dispatchEvent(new Event('mouseover'));
     }
-    for (const link of element.querySelectorAll('a[href]')) {
+    for (const link of descendants().filter(node =>
+      node.isConnected && node.localName === 'a' && node.hasAttribute('href'))) {
       if (/^javascript:/i.test(link.getAttribute('href').replace(/[\u0000-\u0020]/g, ''))) link.click();
     }
     await new Promise(resolve => requestAnimationFrame(resolve));
-    const attributes = [...element.querySelectorAll('*')].flatMap(node => [...node.attributes]
+    const nodes = descendants();
+    const attributes = nodes.flatMap(node => [...node.attributes]
       .filter(attribute => /^(?:on|x-|@|:)/i.test(attribute.name) || attribute.name === 'srcdoc'
         || /(?:^|:)href$|^src$/i.test(attribute.name)
           && /^(?:javascript|vbscript):/i.test(attribute.value.replace(/[\u0000-\u0020]/g, '')))
-      .map(attribute => `${node.tagName}.${attribute.name}=${attribute.value}`));
+      .map(attribute => node.tagName + '.' + attribute.name + '=' + attribute.value));
     return {
       executed: [...window.__viewerPayloads], attributes,
-      activeTags: [...element.querySelectorAll('script, iframe, object, embed')].map(node => node.tagName),
+      activeTags: nodes.filter(node => ['script', 'iframe', 'object', 'embed'].includes(node.localName))
+        .map(node => node.tagName),
     };
   });
-  assert.deepEqual(observed.executed, [], `${label}: payloads remain inert in the running dashboard`);
-  assert.deepEqual(observed.attributes, [], `${label}: executable attributes and URLs are absent`);
-  assert.deepEqual(observed.activeTags, [], `${label}: active embedded content is absent`);
+  assert.deepEqual(observed.executed, [], label + ': payloads remain inert in the running dashboard');
+  assert.deepEqual(observed.attributes, [], label + ': executable attributes and URLs are absent');
+  assert.deepEqual(observed.activeTags, [], label + ': active embedded content is absent');
 }
 
 async function assertSecurityDescription(page, surface, issue, mode, kind) {
@@ -1295,6 +1437,124 @@ for (const mode of [
     }
   });
 }
+
+test('security: exported DOMPurify neutralizes upstream mutation cases offline', async t => {
+  const fixturePath = await exportedMutationFixture(t);
+  const dialogs = [];
+  const externalRequests = [];
+  const completed = [];
+  let lastAttempt = 'initial dashboard load';
+  let runtimeVersion;
+  const page = await openViewer(t, false, '#/issues', false, fixturePath, async page => {
+    await configureSecurityLibraries(page, 'available');
+    page.on('dialog', async dialog => {
+      dialogs.push({ type: dialog.type(), message: dialog.message(), url: page.url() });
+      await dialog.dismiss();
+    });
+    await page.route('**/*', async request => {
+      const url = new URL(request.request().url());
+      if ((url.protocol === 'http:' || url.protocol === 'https:') && url.origin !== origin) {
+        externalRequests.push(url.href);
+        await request.abort();
+      } else {
+        await request.continue();
+      }
+    });
+  });
+  const assertNoExecution = label => {
+    assert.deepEqual(dialogs, [], label + ': upstream alert payloads never execute');
+    assert.deepEqual(externalRequests, [], label + ': the exported dashboard needs no external requests');
+  };
+  try {
+    runtimeVersion = await page.evaluate(() => DOMPurify.version);
+    t.diagnostic('DOMPurify loaded by the exported dashboard: ' + runtimeVersion);
+    assert.equal(await page.evaluate(() => DOMPurify.isSupported), true,
+      'the real browser supports the shipped sanitizer');
+    assertNoExecution(lastAttempt);
+
+    // First run the upstream string-input contract directly. This prevents a
+    // test from passing merely because Marked escaped a particular HTML shape.
+    // Reinsert into an ordinary live div, the issue/graph detail sink context.
+    for (const issue of mutationDescriptions) {
+      lastAttempt = 'default sanitize and div reparse: ' + issue.id;
+      const clean = await page.evaluate(dirty => {
+        const holder = document.createElement('div');
+        holder.id = 'dompurify-mutation-probe';
+        const sanitized = DOMPurify.sanitize(dirty);
+        holder.innerHTML = sanitized;
+        document.body.append(holder);
+        return sanitized;
+      }, issue.description);
+      const probe = page.locator('#dompurify-mutation-probe');
+      try {
+        await assertSecurityInert(page, probe, lastAttempt);
+        assertNoExecution(lastAttempt);
+        if (issue.expected !== undefined) {
+          const accepted = Array.isArray(issue.expected) ? issue.expected : [issue.expected];
+          assert.ok(accepted.includes(clean),
+            lastAttempt + ': default output matches the pinned upstream fixture; got ' + JSON.stringify(clean));
+        }
+        if (issue.forbiddenOutput) {
+          assert.equal(clean.includes(issue.forbiddenOutput), false,
+            lastAttempt + ': default sanitization removes ' + issue.forbiddenOutput);
+        }
+        completed.push({ id: issue.id, surface: 'default-div' });
+      } finally {
+        await probe.evaluate(element => element.remove());
+      }
+    }
+
+    const fixtureIssues = [securityDescriptions[0], securityDescriptions[1], ...mutationDescriptions];
+    for (const issue of fixtureIssues) {
+      // Search through the normal UI so pagination cannot hide a corpus case.
+      await page.locator(inputSelector).fill(issue.id);
+      await results(page, [issue.id], issue.id);
+      const row = page.getByRole('button', { name: 'View issue ' + issue.id + ': ' + issue.title, exact: true });
+      lastAttempt = 'exported excerpt: ' + issue.id;
+      await assertSecurityDescription(page, row.locator('[x-html]'), issue, 'available', 'excerpt');
+      assertNoExecution(lastAttempt);
+      completed.push({ id: issue.id, surface: 'excerpt' });
+      // The title opens the issue without accidentally following a safe link
+      // rendered in its description.
+      await row.getByRole('heading', { name: issue.title, exact: true }).click();
+      const modal = page.locator('[x-show="selectedIssue"]');
+      await modal.waitFor({ state: 'visible' });
+      lastAttempt = 'exported issue detail: ' + issue.id;
+      await assertSecurityDescription(page, modal.locator('[x-html]'), issue, 'available', 'issue');
+      assertNoExecution(lastAttempt);
+      completed.push({ id: issue.id, surface: 'issue' });
+      await modal.locator('button').first().click();
+      await modal.waitFor({ state: 'hidden' });
+    }
+    await page.locator(inputSelector).fill('');
+    await page.waitForFunction(() => !new URLSearchParams(location.hash.split('?')[1] || '').has('q'));
+    await openForceGraph(page);
+    for (const issue of fixtureIssues) {
+      lastAttempt = 'exported graph detail: ' + issue.id;
+      const description = await selectSecurityGraphNode(page, issue.id);
+      await assertSecurityDescription(page, description, issue, 'available', 'graph');
+      assertNoExecution(lastAttempt);
+      completed.push({ id: issue.id, surface: 'graph' });
+    }
+    lastAttempt = 'complete';
+  } finally {
+    let browserState;
+    try {
+      browserState = await page.evaluate(() => ({
+        url: location.href, executed: window.__viewerPayloads,
+      }));
+    } catch (error) {
+      browserState = { unavailable: error.message };
+    }
+    await writeFile(path.join(path.dirname(mutationExport), 'mutation-regressions.json'),
+      JSON.stringify({
+        release: dompurifyRelease, runtimeVersion,
+        libraryRevision: process.env.BVR_DOMPURIFY_REVISION || null,
+        applicationRevision: process.env.BVR_VIEWER_REVISION || null,
+        lastAttempt, completed, dialogs, externalRequests, ...browserState,
+      }, null, 2));
+  }
+});
 
 test('security: graph tooltip escapes untyped metadata and preserves zero metrics', async t => {
   const fixturePath = await exportedSecurityFixture(t);
