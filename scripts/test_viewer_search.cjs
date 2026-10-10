@@ -116,6 +116,7 @@ let origin;
 let securityExport;
 let bottleneckExport;
 let mutationExport;
+let dependencyExport;
 
 const securityDescriptions = [
   {
@@ -152,6 +153,22 @@ const tooltipIssue = {
   priority: 0,
   labels: ['<img src=x onerror="window.__viewerPayloads.push(\'tooltip-label\')">'],
 };
+
+const quotedDependencyId = 'task-"quoted"';
+const htmlDependencyId = 'task-<img src=x onerror="window.__viewerPayloads.push(\'mermaid-id\')">';
+const dependencyIssues = [
+  { id: 'dep-parent', title: 'Dependency parent', dependencies: [{ depends_on_id: 'dep-child', type: 'blocks' }] },
+  { id: 'dep-child', title: 'Dependency child', dependencies: [{ depends_on_id: 'dep-leaf', type: 'blocks' }] },
+  { id: 'dep-leaf', title: 'Dependency leaf' },
+  { id: 'task-a', title: 'Hyphenated issue', dependencies: [{ depends_on_id: 'task_a', type: 'blocks' }] },
+  { id: 'task_a', title: 'Underscored issue' },
+  { id: 'comma-root', title: 'Comma dependency root', dependencies: [{ depends_on_id: 'dep,comma', type: 'blocks' }] },
+  { id: 'dep,comma', title: 'Comma issue ID' },
+  { id: quotedDependencyId, title: 'Quoted issue ID', dependencies: [{ depends_on_id: 'dep-anchor', type: 'blocks' }] },
+  { id: htmlDependencyId, title: 'Literal HTML issue ID', dependencies: [{ depends_on_id: 'dep-anchor', type: 'blocks' }] },
+  { id: 'end', title: 'Mermaid keyword issue ID', dependencies: [{ depends_on_id: 'dep-anchor', type: 'blocks' }] },
+  { id: 'dep-anchor', title: 'Shared dependency anchor' },
+];
 
 
 const dompurifyRelease = {
@@ -303,6 +320,14 @@ async function exportedSecurityFixture(t) {
   return 'export-fixture/';
 }
 
+async function exportedDependencyFixture(t) {
+  if (!dependencyExport) {
+    dependencyExport = await exportBrowserFixture('dependencies', dependencyIssues);
+  }
+  t.diagnostic('Real dependency-diagram --export-pages dashboard: ' + dependencyExport);
+  return 'dependency-fixture/';
+}
+
 
 async function exportedMutationFixture(t) {
   if (!mutationExport) {
@@ -381,8 +406,10 @@ before(async () => {
     const graphFixture = requestedPath.startsWith('/graph-fixture/');
     const bottleneckFixture = requestedPath.startsWith('/bottleneck-fixture/');
     const mutationFixture = requestedPath.startsWith('/mutation-fixture/');
-    const exportedFixture = mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
-    const pathname = mutationFixture ? requestedPath.slice('/mutation-fixture'.length)
+    const dependencyFixture = requestedPath.startsWith('/dependency-fixture/');
+    const exportedFixture = dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
+    const pathname = dependencyFixture ? requestedPath.slice('/dependency-fixture'.length)
+      : mutationFixture ? requestedPath.slice('/mutation-fixture'.length)
       : bottleneckFixture ? requestedPath.slice('/bottleneck-fixture'.length)
       : exportedFixture ? requestedPath.slice('/export-fixture'.length)
       : graphFixture ? requestedPath.slice('/graph-fixture'.length) : requestedPath;
@@ -407,7 +434,7 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const servingRoot = mutationFixture ? mutationExport
+    const servingRoot = dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
       : bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
     if (!servingRoot) {
       response.writeHead(404).end();
@@ -531,15 +558,40 @@ function route(page) {
   return { path: hash.split('?')[0], params: new URLSearchParams(hash.split('?')[1] || '') };
 }
 
+async function viewerSearchState(page) {
+  try {
+    return await page.evaluate(({ rows, input }) => {
+      const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+      return {
+        hash: location.hash, view: app.view, searchQuery: app.searchQuery,
+        pendingSearch: app.pendingSearch !== null, loading: app.loading,
+        page: app.page, totalIssues: app.totalIssues,
+        issueIds: app.issues.map(issue => issue.id),
+        inputs: [...document.querySelectorAll(input)].filter(node => node.getClientRects().length)
+          .map(node => node.value),
+        visibleRows: [...document.querySelectorAll(rows)].filter(node => node.getClientRects().length)
+          .map(node => node.getAttribute('aria-label')),
+      };
+    }, { rows: rowSelector, input: 'input[placeholder="Search issues..."]' });
+  } catch (error) {
+    return { unavailable: error.message };
+  }
+}
+
 async function results(page, ids, query) {
-  await listView(page).waitFor({ state: 'visible' });
-  await page.waitForFunction(({ selector, expected }) => {
-    const actual = Array.from(document.querySelectorAll(selector))
-      .filter(row => row.getClientRects().length)
-      .map(row => row.getAttribute('aria-label').match(/^View issue ([^:]+):/)[1])
-      .sort();
-    return JSON.stringify(actual) === JSON.stringify(expected);
-  }, { selector: rowSelector, expected: [...ids].sort() });
+  try {
+    await listView(page).waitFor({ state: 'visible' });
+    await page.waitForFunction(({ selector, expected }) => {
+      const actual = Array.from(document.querySelectorAll(selector))
+        .filter(row => row.getClientRects().length)
+        .map(row => row.getAttribute('aria-label').match(/^View issue ([^:]+):/)[1])
+        .sort();
+      return JSON.stringify(actual) === JSON.stringify(expected);
+    }, { selector: rowSelector, expected: [...ids].sort() });
+  } catch (error) {
+    console.error('Search state after result wait failure:', JSON.stringify(await viewerSearchState(page)));
+    throw error;
+  }
   assert.equal(await page.locator(inputSelector).inputValue(), query);
   assert.equal(route(page).path, '#/issues');
   assert.equal(route(page).params.get('q'), query || null);
@@ -1583,6 +1635,147 @@ test('security: graph tooltip escapes untyped metadata and preserves zero metric
   await assertSecurityInert(page, tooltip, 'untyped graph tooltip metadata');
 });
 
+async function configureDependencyRendering(page) {
+  await configureSecurityLibraries(page, 'available');
+  await page.addInitScript(() => {
+    window.__dependencyRenders = [];
+    document.addEventListener('alpine:init', () => {
+      // Observe the real Mermaid parser/renderer. Do not replace its output,
+      // security configuration, binding functions, or application callbacks.
+      const render = window.mermaid.render.bind(window.mermaid);
+      window.mermaid.render = async (...args) => {
+        const attempt = { id: args[0], source: args[1], state: 'pending' };
+        window.__dependencyRenders.push(attempt);
+        try {
+          const output = await render(...args);
+          attempt.state = 'fulfilled';
+          return output;
+        } catch (error) {
+          attempt.state = 'rejected';
+          attempt.error = String(error);
+          throw error;
+        }
+      };
+    }, { once: true });
+  });
+}
+
+async function openDependencyDiagram(page, expectedIds) {
+  const modal = page.locator('[x-show="selectedIssue"]');
+  const diagram = modal.locator('[x-ref="depGraph"]');
+  const previous = await page.evaluate(() => window.__dependencyRenders.length);
+  await modal.getByRole('button', { name: 'Show Graph', exact: true }).click();
+  // Give the real Alpine watcher and its scheduled rendering tick a chance to
+  // run. A deleted watcher must fail explicitly instead of reusing stale SVG.
+  await page.evaluate(async () => {
+    await Alpine.nextTick();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert.ok(await page.evaluate(count => window.__dependencyRenders.length > count, previous),
+    'Show Graph starts a new Mermaid render, including after issue navigation');
+  await page.waitForFunction(count =>
+    window.__dependencyRenders.slice(count).every(attempt => attempt.state !== 'pending'), previous);
+  const attempts = await page.evaluate(count => window.__dependencyRenders.slice(count), previous);
+  assert.deepEqual(attempts.map(attempt => attempt.state), attempts.map(() => 'fulfilled'),
+    'the actual Mermaid parser accepts supported issue IDs: ' + JSON.stringify(attempts));
+  await diagram.locator('svg').waitFor({ state: 'visible' });
+  const labels = (await diagram.locator('svg g.node').allTextContents()).map(text => text.trim());
+  assert.deepEqual(labels.sort(), [...expectedIds].sort(),
+    'every distinct issue appears once with its complete literal ID');
+  assert.equal(await page.evaluate(() => mermaid.mermaidAPI.getConfig().securityLevel), 'strict',
+    'dependency diagrams retain Mermaid strict security');
+  assert.equal(await diagram.locator('img, image').count(), 0, 'HTML-like IDs cannot introduce images');
+  await assertSecurityInert(page, diagram, 'exported Mermaid dependency diagram');
+  return diagram;
+}
+
+async function selectedDependencyIssue(page, id) {
+  await page.waitForFunction(expected =>
+    Alpine.$data(document.querySelector('[x-data="beadsApp()"]')).selectedIssue?.id === expected, id);
+  assert.equal(route(page).path, '#/issue/' + encodeURIComponent(id),
+    'diagram navigation preserves the exact original issue ID');
+}
+
+for (const scenario of [
+  {
+    name: 'reopens after ordinary issue navigation', id: 'dep-parent',
+    initialIds: ['dep-parent', 'dep-child'], target: 'dep-child',
+    targetIds: ['dep-parent', 'dep-child', 'dep-leaf'], useDependencyList: true, key: 'Enter',
+  },
+  {
+    name: 'preserves distinct issue IDs', id: 'task-a',
+    initialIds: ['task-a', 'task_a'], target: 'task_a',
+    targetIds: ['task-a', 'task_a'], key: 'Enter',
+  },
+  {
+    name: 'preserves comma-containing dependency IDs', id: 'comma-root',
+    initialIds: ['comma-root', 'dep,comma'], target: 'dep,comma',
+    targetIds: ['comma-root', 'dep,comma'], key: 'Space',
+  },
+  {
+    name: 'renders quoted issue IDs literally', id: quotedDependencyId,
+    initialIds: [quotedDependencyId, 'dep-anchor'], target: 'dep-anchor',
+    targetIds: [quotedDependencyId, htmlDependencyId, 'end', 'dep-anchor'], key: 'Enter',
+  },
+  {
+    name: 'renders HTML-like issue IDs literally', id: htmlDependencyId,
+    initialIds: [htmlDependencyId, 'dep-anchor'], target: 'dep-anchor',
+    targetIds: [quotedDependencyId, htmlDependencyId, 'end', 'dep-anchor'], key: 'Space',
+  },
+]) {
+  test('security: exported dependency diagram ' + scenario.name, async t => {
+    const fixturePath = await exportedDependencyFixture(t);
+    const dialogs = [];
+    const page = await openViewer(t, false, '#/issues', false, fixturePath, async page => {
+      await configureDependencyRendering(page);
+      page.on('dialog', async dialog => {
+        dialogs.push({ type: dialog.type(), message: dialog.message() });
+        await dialog.dismiss();
+      });
+    });
+    const completed = [];
+    try {
+      const issue = dependencyIssues.find(item => item.id === scenario.id);
+      const row = page.getByRole('button', { name: 'View issue ' + issue.id + ': ' + issue.title, exact: true });
+      await row.getByRole('heading', { name: issue.title, exact: true }).click();
+      await selectedDependencyIssue(page, issue.id);
+      let diagram = await openDependencyDiagram(page, scenario.initialIds);
+      completed.push('initial diagram');
+      if (scenario.useDependencyList) {
+        // Isolate the watcher lifecycle from the independently broken Mermaid
+        // node callbacks in the old renderer, using an ordinary dependency link.
+        await page.locator('[x-show="selectedIssue"]').getByRole('button', {
+          name: scenario.target, exact: true,
+        }).click();
+      } else {
+        await diagram.getByRole('link', { name: 'Open issue ' + scenario.target, exact: true }).click();
+      }
+      await selectedDependencyIssue(page, scenario.target);
+      completed.push('pointer navigation');
+      diagram = await openDependencyDiagram(page, scenario.targetIds);
+      completed.push('reopened diagram');
+      const originalNode = diagram.getByRole('link', { name: 'Open issue ' + scenario.id, exact: true });
+      await originalNode.focus();
+      await originalNode.press(scenario.key);
+      await selectedDependencyIssue(page, scenario.id);
+      completed.push('keyboard navigation: ' + scenario.key);
+      await openDependencyDiagram(page, scenario.initialIds);
+      completed.push('second reopened diagram');
+      assert.deepEqual(dialogs, [], 'dependency IDs cannot execute dialog payloads');
+    } finally {
+      const evidence = await page.evaluate(() => ({
+        url: location.href,
+        selectedId: Alpine.$data(document.querySelector('[x-data="beadsApp()"]')).selectedIssue?.id,
+        executed: window.__viewerPayloads,
+        renders: window.__dependencyRenders,
+        diagram: document.querySelector('[x-ref="depGraph"]')?.innerHTML,
+      }));
+      await writeFile(path.join(path.dirname(dependencyExport), scenario.name.replaceAll(' ', '-') + '.json'),
+        JSON.stringify({ scenario: scenario.name, completed, dialogs, ...evidence }, null, 2));
+    }
+  });
+}
+
 test('bottlenecks: real WASM bounds fallback work at 500/501 nodes and omits zero rankings', async t => {
   const page = await openViewer(t, false, '#/insights');
   await page.waitForFunction(() => window.beadsViewer.GRAPH_STATE.ready);
@@ -1745,8 +1938,9 @@ for (const mode of ['available', 'missing', 'throwing']) {
       await page.locator(inputSelector).fill('09999');
       await results(page, ['fixture-09999'], '09999');
     } finally {
+      const search = await viewerSearchState(page);
       await writeFile(path.join(path.dirname(bottleneckExport), `approximation-${mode}.json`),
-        JSON.stringify({ mode, ...observed }, null, 2));
+        JSON.stringify({ mode, ...observed, search }, null, 2));
     }
   });
 }

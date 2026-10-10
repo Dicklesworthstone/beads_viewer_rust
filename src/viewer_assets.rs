@@ -687,12 +687,16 @@ mod tests {
         let js = std::str::from_utf8(viewer.bytes).expect("valid utf8");
 
         assert!(
-            js.contains("const mermaidBackdropView = JSON.stringify(this.view);"),
+            js.contains("const backdropView = this.view;"),
             "viewer runtime must capture the current backdrop view when wiring Mermaid issue links"
         );
         assert!(
-            js.contains("diagram += `  click ${nodeId} call window.beadsViewer.navigateToIssue(\"${id}\", ${mermaidBackdropView})\\n`;"),
+            js.contains("navigateToIssue(id, backdropView);"),
             "viewer runtime must preserve backdrop context for Mermaid issue-to-issue navigation"
+        );
+        assert!(
+            !js.contains("call window.beadsViewer.navigateToIssue("),
+            "viewer runtime must not interpolate issue IDs into Mermaid callback source"
         );
     }
 

@@ -3510,9 +3510,8 @@
                 <!-- Mermaid Dependency Graph (lazy-loaded) -->
                 <div x-show="showDepGraph" x-collapse class="mt-4">
                   <div class="bg-white dark:bg-gray-900 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-                    <div x-ref="depGraph" class="mermaid-container overflow-x-auto">
-                      <div x-init="$watch('showDepGraph', value => { if(value) renderDepGraph() })"></div>
-                    </div>
+                    <div x-ref="depGraph" class="mermaid-container overflow-x-auto"
+                         x-init="$watch('showDepGraph', value => { if(value) renderDepGraph() })"></div>
                   </div>
                   <p class="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center">
                     Click nodes to navigate. Current issue highlighted in blue.

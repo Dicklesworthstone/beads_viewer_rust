@@ -2343,6 +2343,7 @@ function beadsApp() {
     // Selected issue
     selectedIssue: null,
     showDepGraph: false,
+    depGraphGeneration: 0,
     issueNavList: [], // List of issue IDs for j/k navigation
     showKeyboardHelp: false, // Keyboard shortcuts help modal
 
@@ -3360,56 +3361,96 @@ function beadsApp() {
       if (!this.selectedIssue || !this.$refs.depGraph) return;
 
       const issue = this.selectedIssue;
-      const blockedBy = (issue.blocked_by_ids || '').split(',').filter(Boolean).map(s => s.trim());
-      const blocks = (issue.blocks_ids || '').split(',').filter(Boolean).map(s => s.trim());
+      const container = this.$refs.depGraph;
+      const generation = ++this.depGraphGeneration;
+      const backdropView = this.view;
+      const isCurrent = () => generation === this.depGraphGeneration
+        && this.selectedIssue === issue
+        && this.showDepGraph
+        && container.isConnected
+        && this.$refs.depGraph === container;
+
+      // Query exact IDs: comma-separated overview fields cannot preserve IDs
+      // that themselves contain commas or leading/trailing whitespace.
+      const blockedBy = execQuery(`
+        SELECT depends_on_id FROM dependencies
+        WHERE issue_id = ? AND (type = 'blocks' OR type = '')
+        ORDER BY depends_on_id
+      `, [issue.id]).map(row => row.depends_on_id);
+      const blocks = execQuery(`
+        SELECT issue_id FROM dependencies
+        WHERE depends_on_id = ? AND (type = 'blocks' OR type = '')
+        ORDER BY issue_id
+      `, [issue.id]).map(row => row.issue_id);
 
       if (blockedBy.length === 0 && blocks.length === 0) {
-        this.$refs.depGraph.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center">No dependencies</p>';
+        container.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center">No dependencies</p>';
         return;
       }
 
-      // Build Mermaid flowchart
+      // Keep issue IDs out of Mermaid identifiers and callback syntax. Each
+      // distinct ID gets a generated key; label punctuation uses Mermaid's
+      // decimal entity syntax so quotes, HTML and directives remain text.
+      const allIds = [...new Set([issue.id, ...blockedBy, ...blocks])];
+      const nodeIds = new Map(allIds.map((id, index) => [id, `n${index}`]));
+      const escapeLabel = id => Array.from(String(id), char =>
+        /^[a-zA-Z0-9 _-]$/.test(char) ? char : `#${char.codePointAt(0)};`
+      ).join('');
       let diagram = 'flowchart TB\n';
-
-      // Sanitize ID for mermaid (replace special chars)
-      const sanitizeId = (id) => id.replace(/[^a-zA-Z0-9]/g, '_');
-      const currentId = sanitizeId(issue.id);
+      for (const [id, nodeId] of nodeIds) {
+        diagram += `  ${nodeId}["${escapeLabel(id)}"]\n`;
+        diagram += `  class ${nodeId} bv-dep-${nodeId}\n`;
+      }
+      const currentId = nodeIds.get(issue.id);
 
       // Style for current node
-      diagram += `  ${currentId}["${issue.id}"]\n`;
       diagram += `  style ${currentId} fill:#0ea5e9,stroke:#0284c7,color:#fff\n`;
 
       // Add blocked-by nodes (upstream)
       for (const depId of blockedBy) {
-        const nodeId = sanitizeId(depId);
-        diagram += `  ${nodeId}["${depId}"]\n`;
+        const nodeId = nodeIds.get(depId);
         diagram += `  ${nodeId} --> ${currentId}\n`;
         diagram += `  style ${nodeId} fill:#fef3c7,stroke:#f59e0b\n`;
       }
 
       // Add blocks nodes (downstream)
       for (const depId of blocks) {
-        const nodeId = sanitizeId(depId);
-        diagram += `  ${nodeId}["${depId}"]\n`;
+        const nodeId = nodeIds.get(depId);
         diagram += `  ${currentId} --> ${nodeId}\n`;
         diagram += `  style ${nodeId} fill:#fee2e2,stroke:#ef4444\n`;
       }
 
-      // Add click handlers
-      const allIds = [issue.id, ...blockedBy, ...blocks];
-      const mermaidBackdropView = JSON.stringify(this.view);
-      for (const id of allIds) {
-        const nodeId = sanitizeId(id);
-        diagram += `  click ${nodeId} call window.beadsViewer.navigateToIssue("${id}", ${mermaidBackdropView})\n`;
-      }
-
       try {
-        // Render the diagram
-        const { svg } = await mermaid.render('dep-graph-' + Date.now(), diagram);
-        this.$refs.depGraph.innerHTML = svg;
+        const { svg } = await mermaid.render(`dep-graph-${Date.now()}-${generation}`, diagram);
+        if (!isCurrent()) return;
+        container.innerHTML = svg;
+
+        // Mermaid's strict mode disables diagram callbacks. Bind navigation
+        // through DOM APIs, retaining exact IDs without generating code.
+        for (const [id, nodeId] of nodeIds) {
+          const node = container.querySelector(`.bv-dep-${nodeId}`);
+          if (!node) throw new Error('Dependency graph node was not rendered');
+          node.setAttribute('data-issue-id', id);
+          node.setAttribute('role', 'link');
+          node.setAttribute('tabindex', '0');
+          node.setAttribute('aria-label', `Open issue ${id}`);
+          node.style.cursor = 'pointer';
+          const openIssue = () => {
+            if (isCurrent()) navigateToIssue(id, backdropView);
+          };
+          node.addEventListener('click', openIssue);
+          node.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              event.stopPropagation();
+              openIssue();
+            }
+          });
+        }
       } catch (err) {
+        if (!isCurrent()) return;
         console.warn('Mermaid render failed:', err);
-        this.$refs.depGraph.innerHTML = '<p class="text-red-500 text-center text-sm">Failed to render graph</p>';
+        container.innerHTML = '<p class="text-red-500 text-center text-sm">Failed to render graph</p>';
       }
     },
 
