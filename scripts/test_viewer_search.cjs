@@ -111,6 +111,7 @@ const executablePath = process.env.BVR_CHROMIUM_EXECUTABLE || process.env.CHROMI
 let server;
 let origin;
 let securityExport;
+let bottleneckExport;
 
 const securityDescriptions = [
   {
@@ -133,6 +134,12 @@ const securityDescriptions = [
     // attributes ensure this scenario really reaches DOMPurify in all views.
     description: '<span data-security-action="alpine" x-data="{}" x-init="window.__viewerPayloads.push(\'alpine-init\')" x-on:click="window.__viewerPayloads.push(\'alpine-click\')" x-on:mouseover="window.__viewerPayloads.push(\'alpine-hover\')" onclick="window.__viewerPayloads.push(\'click\')">Directives stay inert</span>',
   },
+  {
+    id: 'security-alpine-shorthand', title: 'Alpine shorthand directives',
+    // Marked can treat @click as literal source in inline parsing, while its
+    // block-HTML grammar accepts this div. Both paths must remain inert.
+    description: '<div data-security-action="shorthand" @click="window.__viewerPayloads.push(\'alpine-shorthand\')">Shorthand directives stay inert</div>',
+  },
 ];
 const tooltipIssue = {
   id: 'tooltip-<img src=x onerror="window.__viewerPayloads.push(\'tooltip-id\')">',
@@ -142,46 +149,67 @@ const tooltipIssue = {
   labels: ['<img src=x onerror="window.__viewerPayloads.push(\'tooltip-label\')">'],
 };
 
+async function exportBrowserFixture(label, fixtureIssues) {
+  const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
+  await mkdir(parent, { recursive: true });
+  const artifact = await mkdtemp(path.join(parent, `bvr-viewer-${label}-`));
+  const fixture = path.join(artifact, 'issues.jsonl');
+  const rows = fixtureIssues.map(issue => ({
+    status: 'open', priority: 2, issue_type: 'task', description: '',
+    created_at: '2026-10-09T12:00:00Z', updated_at: '2026-10-09T12:00:00Z', ...issue,
+  }));
+  await writeFile(fixture, rows.map(issue => JSON.stringify(issue)).join('\n') + '\n');
+  const directory = path.join(artifact, 'pages');
+  const binary = path.resolve(process.env.BVR_BIN || path.join(root, 'target/debug/bvr'));
+  let output;
+  try {
+    output = execFileSync(binary, ['--export-pages', directory, '--beads-file', fixture], {
+      cwd: root, encoding: 'utf8', timeout: 60000,
+    });
+  } catch (error) {
+    throw new Error(`Exported browser tests require a working, freshly built BVR_BIN (${binary}). ` +
+      `The real --export-pages invocation failed; no synthetic export is substituted.\n${error.message}`,
+    { cause: error });
+  }
+  await writeFile(path.join(artifact, 'export-stdout.txt'), output);
+  const exportedIssues = JSON.parse(await readFile(path.join(directory, 'data/issues.json'), 'utf8'));
+  const exportedById = new Map(exportedIssues.map(issue => [issue.id, issue]));
+  for (const issue of rows) {
+    const exported = exportedById.get(issue.id);
+    assert.ok(exported, `real export contains ${issue.id}`);
+    assert.equal(exported.description, issue.description, 'the exporter preserves the fixture source');
+  }
+  // include_bytes! can silently leave a stale binary with old viewer assets.
+  // Check the emitted bytes before exercising them, even in negative-control mode.
+  for (const file of ['index.html', 'viewer.js', 'graph.js']) {
+    assert.deepEqual(await readFile(path.join(directory, file)), await readFile(path.join(assets, file)),
+      `rebuild BVR_BIN: exported ${file} must match this checkout`);
+  }
+  return directory;
+}
+
 async function exportedSecurityFixture(t) {
   if (!securityExport) {
-    const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
-    await mkdir(parent, { recursive: true });
-    const artifact = await mkdtemp(path.join(parent, 'bvr-viewer-security-'));
-    const fixture = path.join(artifact, 'issues.jsonl');
-    const rows = [...securityDescriptions, tooltipIssue].map(issue => ({
-      status: 'open', priority: 2, issue_type: 'task',
-      created_at: '2026-10-09T12:00:00Z', updated_at: '2026-10-09T12:00:00Z', ...issue,
-    }));
-    await writeFile(fixture, rows.map(issue => JSON.stringify(issue)).join('\n') + '\n');
-    const directory = path.join(artifact, 'pages');
-    const binary = path.resolve(process.env.BVR_BIN || path.join(root, 'target/debug/bvr'));
-    let output;
-    try {
-      output = execFileSync(binary, ['--export-pages', directory, '--beads-file', fixture], {
-        cwd: root, encoding: 'utf8', timeout: 60000,
-      });
-    } catch (error) {
-      throw new Error(`Security browser tests require a working, freshly built BVR_BIN (${binary}). ` +
-        `The real --export-pages invocation failed; no synthetic export is substituted.\n${error.message}`,
-      { cause: error });
-    }
-    await writeFile(path.join(artifact, 'export-stdout.txt'), output);
-    const exportedIssues = JSON.parse(await readFile(path.join(directory, 'data/issues.json'), 'utf8'));
-    for (const issue of rows) {
-      const exported = exportedIssues.find(item => item.id === issue.id);
-      assert.ok(exported, `real export contains ${issue.id}`);
-      assert.equal(exported.description, issue.description, 'the exporter preserves the adversarial source');
-    }
-    // include_bytes! can silently leave a stale binary with old viewer assets.
-    // Check the emitted bytes before exercising them, even in negative-control mode.
-    for (const file of ['index.html', 'viewer.js', 'graph.js']) {
-      assert.deepEqual(await readFile(path.join(directory, file)), await readFile(path.join(assets, file)),
-        `rebuild BVR_BIN: exported ${file} must match this checkout`);
-    }
-    securityExport = directory;
+    securityExport = await exportBrowserFixture('security', [...securityDescriptions, tooltipIssue]);
   }
   t.diagnostic(`Real --export-pages dashboard: ${securityExport}`);
   return 'export-fixture/';
+}
+
+async function exportedBottleneckFixture(t) {
+  if (!bottleneckExport) {
+    const id = index => `fixture-${String(index).padStart(5, '0')}`;
+    // Rust intentionally omits betweenness above 10,000 vertices. Disjoint
+    // three-node chains provide real nonzero bottlenecks without an unrelated
+    // quadratic transitive-cascade workload from one enormous chain.
+    const rows = Array.from({ length: 10002 }, (_, index) => ({
+      id: id(index), title: `Chain issue ${String(index).padStart(5, '0')}`,
+      dependencies: index % 3 < 2 ? [{ depends_on_id: id(index + 1), type: 'blocks' }] : [],
+    }));
+    bottleneckExport = await exportBrowserFixture('bottlenecks', rows);
+  }
+  t.diagnostic(`Real 10,002-issue --export-pages dashboard: ${bottleneckExport}`);
+  return 'bottleneck-fixture/';
 }
 
 async function fixtureDatabase(fixtureIssues = issues, fixtureDependencies = dependencies) {
@@ -226,8 +254,10 @@ before(async () => {
   server = http.createServer(async (request, response) => {
     const requestedPath = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
     const graphFixture = requestedPath.startsWith('/graph-fixture/');
-    const exportedFixture = requestedPath.startsWith('/export-fixture/');
-    const pathname = exportedFixture ? requestedPath.slice('/export-fixture'.length)
+    const bottleneckFixture = requestedPath.startsWith('/bottleneck-fixture/');
+    const exportedFixture = bottleneckFixture || requestedPath.startsWith('/export-fixture/');
+    const pathname = bottleneckFixture ? requestedPath.slice('/bottleneck-fixture'.length)
+      : exportedFixture ? requestedPath.slice('/export-fixture'.length)
       : graphFixture ? requestedPath.slice('/graph-fixture'.length) : requestedPath;
     response.setHeader('Cache-Control', 'no-store');
     // Supply the isolation headers directly, as a configured preview server can,
@@ -250,7 +280,7 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const servingRoot = exportedFixture ? securityExport : assets;
+    const servingRoot = bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
     if (!servingRoot) {
       response.writeHead(404).end();
       return;
@@ -300,6 +330,7 @@ async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath 
   let context;
   const errors = [];
   const consoleErrors = [];
+  const pendingRequests = new Map();
   t.after(async () => {
     try {
       if (context) await context.close();
@@ -316,6 +347,9 @@ async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath 
     reducedMotion: 'reduce',
   });
   const page = await context.newPage();
+  page.on('request', request => pendingRequests.set(request, request.url()));
+  page.on('requestfinished', request => pendingRequests.delete(request));
+  page.on('requestfailed', request => pendingRequests.delete(request));
   page.setDefaultTimeout(10000);
   page.setDefaultNavigationTimeout(30000);
   if (useClock) await page.clock.install({ time: new Date('2026-10-07T12:00:00Z') });
@@ -346,8 +380,16 @@ async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath 
     });
   });
   if (setupPage) await setupPage(page);
-  await page.goto(origin + '/' + fixturePath + hash);
-  await page.locator('[x-show="loading"]').waitFor({ state: 'hidden', timeout: 30000 });
+  try {
+    await page.goto(origin + '/' + fixturePath + hash);
+    await page.locator('[x-show="loading"]').waitFor({ state: 'hidden', timeout: 30000 });
+  } catch (error) {
+    t.diagnostic(JSON.stringify({
+      url: page.url(), errors, consoleErrors,
+      pendingRequests: [...pendingRequests.values()],
+    }, null, 2));
+    throw error;
+  }
   await searchInput(page, mobile);
   return page;
 }
@@ -1165,6 +1207,12 @@ async function assertSecurityDescription(page, surface, issue, mode, kind) {
     assert.equal(await surface.locator('span[data-security-action="alpine"]').count(), 1,
       `${label}: valid raw HTML reaches the sanitizer and its harmless marker survives`);
     assert.equal((await surface.textContent()).trim(), 'Directives stay inert');
+  } else if (issue.id === 'security-alpine-shorthand') {
+    assert.match(await surface.textContent(), /Shorthand directives stay inert/);
+    if (kind !== 'excerpt') {
+      assert.equal(await surface.locator('div[data-security-action="shorthand"]').count(), 1,
+        'block Markdown parses shorthand-bearing HTML before sanitization');
+    }
   }
   await assertSecurityInert(page, surface, label);
 }
@@ -1274,3 +1322,171 @@ test('security: graph tooltip escapes untyped metadata and preserves zero metric
   assert.equal(await tooltip.locator('img').count(), 0);
   await assertSecurityInert(page, tooltip, 'untyped graph tooltip metadata');
 });
+
+test('bottlenecks: real WASM bounds fallback work at 500/501 nodes and omits zero rankings', async t => {
+  const page = await openViewer(t, false, '#/insights');
+  await page.waitForFunction(() => window.beadsViewer.GRAPH_STATE.ready);
+  const cases = [
+    { count: 500, shape: 'chains', mode: 'available', exact: 1, samples: [], positive: true },
+    { count: 501, shape: 'chains', mode: 'available', exact: 0, samples: [100], positive: true },
+    { count: 501, shape: 'empty', mode: 'available', exact: 0, samples: [], positive: false },
+    { count: 500, shape: 'pairs', mode: 'available', exact: 1, samples: [], positive: false },
+    { count: 501, shape: 'pairs', mode: 'available', exact: 0, samples: [100], positive: false },
+    { count: 501, shape: 'chains', mode: 'missing', exact: 0, samples: [], positive: false },
+    { count: 501, shape: 'chains', mode: 'throwing', exact: 0, samples: [100], positive: false },
+    { count: 501, shape: 'chains', mode: 'precomputed', exact: 0, samples: [], positive: true },
+  ];
+  for (const scenario of cases) {
+    const observed = await page.evaluate(({ count, shape, mode }) => {
+      const viewer = window.beadsViewer;
+      const graph = new window.bvGraphWasm.DiGraph();
+      const previous = viewer.GRAPH_STATE.graph;
+      const db = viewer.DB_STATE.db;
+      const calls = { exact: 0, samples: [] };
+      db.run('SAVEPOINT bottleneck_fixture');
+      try {
+        for (let index = 0; index < count; index += 1) {
+          const id = `boundary-${String(index).padStart(5, '0')}`;
+          graph.addNode(id);
+          db.run(`INSERT INTO issue_overview_mv
+            (id, title, description, status, priority, issue_type, labels, betweenness)
+            VALUES (?, ?, '', 'open', 2, 'task', '[]', 0)`, [id, `Boundary issue ${index}`]);
+        }
+        const stride = shape === 'chains' ? 3 : 2;
+        if (shape !== 'empty') {
+          for (let index = 0; index + stride - 1 < count; index += stride) {
+            graph.addEdge(index, index + 1);
+            if (shape === 'chains') graph.addEdge(index + 1, index + 2);
+          }
+        }
+        const exact = graph.betweenness.bind(graph);
+        const approximate = graph.betweennessApprox.bind(graph);
+        graph.betweenness = () => {
+          calls.exact += 1;
+          if (count > 500) throw new Error('Unbounded exact betweenness attempted');
+          return exact();
+        };
+        graph.betweennessApprox = mode === 'missing' ? undefined : samples => {
+          calls.samples.push(samples);
+          if (mode === 'throwing') throw new Error('Deliberately unavailable approximate betweenness');
+          return approximate(samples);
+        };
+        if (mode === 'precomputed') {
+          db.run("UPDATE issue_overview_mv SET betweenness = 0.125 WHERE id = 'boundary-00000'");
+        }
+        // The algorithm and SQL engine are real. Wrappers only observe calls or
+        // inject the explicitly named missing/failing optional-library cases.
+        viewer.GRAPH_STATE.graph = graph;
+        const top = viewer.getTopByBetweenness(10).map(issue => ({ id: issue.id, value: issue.betweenness }));
+        return { ...calls, top };
+      } finally {
+        viewer.GRAPH_STATE.graph = previous;
+        graph.free();
+        db.run('ROLLBACK TO bottleneck_fixture');
+        db.run('RELEASE bottleneck_fixture');
+      }
+    }, scenario);
+    const label = `${scenario.count} nodes, ${scenario.shape}, ${scenario.mode}`;
+    assert.equal(observed.exact, scenario.exact, `${label}: exact-call count`);
+    assert.deepEqual(observed.samples, scenario.samples, `${label}: bounded sampling`);
+    if (scenario.positive) {
+      assert.ok(observed.top.length > 0 && observed.top.length <= 10, `${label}: real positive bottlenecks are returned`);
+      assert.ok(observed.top.every(issue => Number.isFinite(issue.value) && issue.value > 0),
+        `${label}: returned scores are finite and strictly positive`);
+      if (scenario.mode === 'precomputed') {
+        assert.deepEqual(observed.top, [{ id: 'boundary-00000', value: 0.125 }], 'exported SQL scores retain precedence');
+      } else {
+        assert.ok(observed.top.every(issue => Number(issue.id.slice('boundary-'.length)) % 3 === 1),
+          `${label}: only internal chain vertices are bottlenecks`);
+      }
+    } else {
+      assert.deepEqual(observed.top, [], `${label}: zero or unavailable metrics do not invent rankings`);
+    }
+  }
+  await page.getByRole('link', { name: 'Issues', exact: true }).click();
+  await results(page, allIds, '');
+});
+
+for (const mode of ['available', 'missing', 'throwing']) {
+  test(`bottlenecks: actual 10002-issue export loads with ${mode} approximation`, async t => {
+    const fixturePath = await exportedBottleneckFixture(t);
+    const page = await openViewer(t, false, '#/insights', false, fixturePath, async page => {
+      await page.addInitScript(failure => {
+        window.__bottleneckCalls = { exact: 0, samples: [] };
+        document.addEventListener('alpine:init', () => {
+          const state = window.beadsViewer.GRAPH_STATE;
+          let current = state.graph;
+          Object.defineProperty(state, 'graph', {
+            configurable: true,
+            get: () => current,
+            set(graph) {
+              current = graph;
+              if (!graph) return;
+              const exact = graph.betweenness.bind(graph);
+              const approximate = graph.betweennessApprox.bind(graph);
+              graph.betweenness = () => {
+                window.__bottleneckCalls.exact += 1;
+                // A broken threshold fails promptly instead of hanging a test
+                // with the very unbounded computation this regression prevents.
+                if (graph.nodeCount() > 500) throw new Error('Unbounded exact betweenness attempted');
+                return exact();
+              };
+              graph.betweennessApprox = failure === 'missing' ? undefined : samples => {
+                window.__bottleneckCalls.samples.push(samples);
+                if (failure === 'throwing') throw new Error('Deliberately unavailable approximate betweenness');
+                return approximate(samples);
+              };
+            },
+          });
+        }, { once: true });
+      }, mode);
+    });
+    let observed;
+    try {
+      observed = await page.evaluate(() => {
+        const viewer = window.beadsViewer;
+        const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+        return {
+          calls: window.__bottleneckCalls,
+          sql: viewer.execQuery(`SELECT COUNT(*) AS total,
+            SUM(CASE WHEN betweenness > 0 THEN 1 ELSE 0 END) AS positive
+            FROM issue_overview_mv`)[0],
+          nodes: viewer.GRAPH_STATE.graph.nodeCount(),
+          edges: viewer.GRAPH_STATE.graph.edgeCount(),
+          loading: app.loading,
+          rankings: app.topByBetweenness.map(issue => ({ id: issue.id, value: issue.betweenness })),
+        };
+      });
+      assert.deepEqual(observed.sql, { total: 10002, positive: 0 },
+        'real export exceeds the Rust skip threshold and supplies no positive SQL metric');
+      assert.equal(observed.nodes, 10002, 'the real WASM graph contains every exported vertex');
+      assert.equal(observed.edges, 6668, 'the real graph contains the exported three-node chains');
+      assert.equal(observed.loading, false, 'the complete dashboard finishes initialization');
+      assert.equal(observed.calls.exact, 0, 'large exports never attempt main-thread exact betweenness');
+      const panel = page.locator('.metric-panel-premium').filter({ has: page.getByRole('heading', { name: 'Bottlenecks', exact: true }) });
+      if (mode === 'available') {
+        assert.ok(observed.calls.samples.length > 0 && observed.calls.samples.every(samples => samples === 100),
+          'initialization invokes the real approximate algorithm with a bounded sample count');
+        assert.ok(observed.rankings.length > 0 && observed.rankings.length <= 10,
+          'skipped exporter metrics are filled by actual positive sampled scores');
+        assert.ok(observed.rankings.every(issue => Number.isFinite(issue.value) && issue.value > 0
+          && Number(issue.id.slice('fixture-'.length)) % 3 === 1),
+        'only internal chain vertices receive positive bottleneck rankings');
+        assert.equal(await panel.locator('.metric-item').count(), Math.min(5, observed.rankings.length));
+        const first = observed.rankings[0];
+        await panel.getByText(`Chain issue ${first.id.slice('fixture-'.length)}`, { exact: true }).waitFor({ state: 'visible' });
+      } else {
+        assert.deepEqual(observed.rankings, [], 'optional metric failure does not fabricate bottlenecks');
+        if (mode === 'missing') assert.deepEqual(observed.calls.samples, []);
+        else assert.ok(observed.calls.samples.length > 0 && observed.calls.samples.every(samples => samples === 100));
+        await panel.getByText('No betweenness data available', { exact: true }).waitFor({ state: 'visible' });
+      }
+      await page.getByRole('link', { name: 'Issues', exact: true }).click();
+      await page.locator(inputSelector).fill('09999');
+      await results(page, ['fixture-09999'], '09999');
+    } finally {
+      await writeFile(path.join(path.dirname(bottleneckExport), `approximation-${mode}.json`),
+        JSON.stringify({ mode, ...observed }, null, 2));
+    }
+  });
+}

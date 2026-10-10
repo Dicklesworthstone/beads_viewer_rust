@@ -1451,23 +1451,36 @@ function getTopByBetweenness(limit = 10) {
     // Column may not exist
   }
 
-  // Fallback: use WASM if available
-  if (GRAPH_STATE.ready) {
-    const betweenness = GRAPH_STATE.graph.betweenness();
-    if (betweenness && betweenness.length > 0) {
-      // Get top N by betweenness value
-      const indexed = Array.from(betweenness).map((val, idx) => ({ idx, val }));
-      indexed.sort((a, b) => b.val - a.val);
-      const topNodes = indexed.slice(0, limit);
+  // The exporter can omit this metric for large graphs, and a computed metric
+  // can legitimately be all zero. Neither case warrants an unbounded exact
+  // calculation on the main thread. Match graph.js's sampling threshold.
+  if (GRAPH_STATE.ready && GRAPH_STATE.graph) {
+    try {
+      const graph = GRAPH_STATE.graph;
+      const nodeCount = graph.nodeCount();
+      if (nodeCount === 0 || graph.edgeCount() === 0) return [];
 
-      return topNodes.map(node => {
-        const id = GRAPH_STATE.graph.nodeId(node.idx);
-        const issue = getIssue(id);
-        if (issue) {
-          issue.betweenness = node.val;
-        }
-        return issue;
-      }).filter(Boolean);
+      const betweenness = nodeCount > 500
+        ? (typeof graph.betweennessApprox === 'function' ? graph.betweennessApprox(100) : null)
+        : graph.betweenness();
+      if (betweenness && betweenness.length > 0) {
+        const indexed = Array.from(betweenness, (val, idx) => ({ idx, val }))
+          .filter(node => Number.isFinite(node.val) && node.val > 0);
+        indexed.sort((a, b) => b.val - a.val);
+        const topNodes = indexed.slice(0, limit);
+
+        return topNodes.map(node => {
+          const id = graph.nodeId(node.idx);
+          const issue = getIssue(id);
+          if (issue) {
+            issue.betweenness = node.val;
+          }
+          return issue;
+        }).filter(Boolean);
+      }
+    } catch (err) {
+      // Optional rankings must not prevent the rest of the dashboard loading.
+      console.warn('[Insights] Betweenness calculation unavailable:', err);
     }
   }
 
