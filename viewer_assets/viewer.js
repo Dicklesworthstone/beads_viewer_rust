@@ -2322,6 +2322,7 @@ function beadsApp() {
     searchMode: 'text',
     searchPreset: 'default',
     pendingSearch: null,
+    pendingSearchHash: null,
 
     // Keep navigation links current even before the input debounce has fired.
     get issuesHref() {
@@ -2690,10 +2691,12 @@ function beadsApp() {
      * Handle hash change (browser back/forward navigation)
      */
     handleHashChange() {
-      // Navigation takes precedence over an input event still being debounced.
-      this.cancelPendingSearch();
-      const urlState = filtersFromURL();
       const hash = window.location.hash;
+      // Hash delivery is asynchronous. Input accepted after the URL changed
+      // belongs to the destination; only an older route's debounce is stale.
+      const inputAfterNavigation = this.pendingSearch !== null && this.pendingSearchHash === hash;
+      if (!inputAfterNavigation) this.cancelPendingSearch();
+      const urlState = filtersFromURL();
       const previousView = this.view;
 
       // Parse route
@@ -2728,9 +2731,11 @@ function beadsApp() {
           this.whatIfResult = null;
           this.filters = urlState.filters;
           this.sort = urlState.sort;
-          this.searchQuery = urlState.searchQuery;
           this.page = 1;
-          this.loadIssues();
+          if (!inputAfterNavigation) {
+            this.searchQuery = urlState.searchQuery;
+            this.loadIssues();
+          }
           break;
 
         case 'insights':
@@ -3215,6 +3220,7 @@ function beadsApp() {
      */
     queueSearch() {
       this.cancelPendingSearch();
+      this.pendingSearchHash = window.location.hash;
       this.pendingSearch = setTimeout(() => {
         this.pendingSearch = null;
         this.search();
@@ -3224,6 +3230,7 @@ function beadsApp() {
     cancelPendingSearch() {
       clearTimeout(this.pendingSearch);
       this.pendingSearch = null;
+      this.pendingSearchHash = null;
     },
 
     /**

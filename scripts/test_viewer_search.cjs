@@ -916,6 +916,48 @@ for (const mobile of [false, true]) {
     await results(page, ['bv-other'], 'unrelated');
   });
 
+  test(`${device}: newer input survives deferred navigation`, async t => {
+    const page = await openViewer(t, mobile, '#/insights', true);
+    await page.clock.pauseAt(new Date('2026-10-07T13:00:00Z'));
+    for (const scenario of [
+      { link: 'Issues', hash: '#/issues', query: 'needle', ids: matchingIds },
+      { link: 'Insights', hash: '#/insights', query: 'unrelated', ids: ['bv-other'] },
+    ]) {
+      const observed = await page.getByRole('link', { name: scenario.link, exact: true }).evaluate((link, query) => {
+        const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+        const input = [...document.querySelectorAll('input[placeholder="Search issues..."]')]
+          .find(node => node.getClientRects().length);
+        let afterInput;
+        const delivered = new Promise(resolve => {
+          window.addEventListener('hashchange', () => resolve({
+            afterInput,
+            afterNavigation: { hash: location.hash, query: app.searchQuery, pending: app.pendingSearch !== null },
+          }), { once: true });
+        });
+        // Hash assignment queues a browser task. Deliver a later user input before
+        // that task, using the real link, input, Alpine handlers, and router.
+        link.click();
+        input.focus();
+        input.value = query;
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: query }));
+        afterInput = { hash: location.hash, query: app.searchQuery, pending: app.pendingSearch !== null };
+        return delivered;
+      }, scenario.query);
+      assert.equal(observed.afterInput.hash, scenario.hash, 'navigation was requested before the input');
+      assert.equal(observed.afterInput.query, scenario.query, 'the real input handler accepted the newer query');
+      assert.equal(observed.afterInput.pending, true, 'the newer input has an active debounce');
+      assert.equal(observed.afterNavigation.query, scenario.query, 'a deferred route event must not erase newer input');
+      assert.equal(observed.afterNavigation.pending, true, 'a deferred route event must not cancel newer input');
+      if (scenario.hash === '#/issues') await page.clock.fastForward(450);
+      else await navigateWithClock(page, () => page.clock.fastForward(450));
+      await results(page, scenario.ids, scenario.query);
+    }
+    await navigateWithClock(page, () => page.goBack());
+    await page.locator('[x-show="view === \'insights\'"]').waitFor({ state: 'visible' });
+    await navigateWithClock(page, () => page.goBack());
+    await results(page, matchingIds, 'needle');
+  });
+
   test(`${device}: Back cancels pending input and empty dashboard searches stay put`, async t => {
     const page = await openViewer(t, mobile, '#/', true);
     await page.locator(inputSelector).fill('needle');
@@ -1415,8 +1457,15 @@ async function selectSecurityGraphNode(page, id) {
   // Invoke ForceGraph's installed click callback with its real exported node.
   // This traverses the production selection bridge and Alpine x-html boundary,
   // without depending on a moving force-layout node's screen coordinates.
-  await page.evaluate(async issueId => {
-    const graph = (await import('./graph.js')).getGraph();
+  await page.evaluate(issueId => {
+    const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+    // The visible graph already owns its initialized module. Reusing it avoids
+    // a redundant dynamic-import promise in the browser automation protocol.
+    if (!app.forceGraphReady || app.forceGraphLoading || !app.forceGraphModule) {
+      throw new Error('The exported force graph must be initialized before selection');
+    }
+    const graph = app.forceGraphModule.getGraph();
+    if (!graph) throw new Error('The initialized module must retain its real graph');
     const node = graph.graphData().nodes.find(item => item.id === issueId);
     if (!node) throw new Error(`Missing exported graph node: ${issueId}`);
     graph.onNodeClick()(node, new MouseEvent('click'));
@@ -1429,6 +1478,37 @@ async function selectSecurityGraphNode(page, id) {
   await page.evaluate(() => Alpine.nextTick());
   return panel.locator('[x-html]');
 }
+
+test('harness: graph inertness checks reject a disabled sanitizer', async t => {
+  const fixturePath = await exportedSecurityFixture(t);
+  const page = await openViewer(t, false, '#/graph', false, fixturePath,
+    page => configureSecurityLibraries(page, 'available'));
+  await openForceGraph(page);
+  // Deliberately inject one fault only in this test's isolated browser context.
+  // Source assets, Marked, exported issue data, and graph selection stay real.
+  await page.evaluate(() => {
+    DOMPurify.sanitize = html => html;
+  });
+  const issue = securityDescriptions.find(item => item.id === 'security-events');
+  const description = await selectSecurityGraphNode(page, issue.id);
+  let rejectedAssertion;
+  await assert.rejects(
+    () => assertSecurityDescription(page, description, issue, 'available', 'graph'),
+    error => {
+      rejectedAssertion = error.message;
+      return error.code === 'ERR_ASSERTION' && error.message.includes('payloads remain inert');
+    },
+    'the same graph checks must detect event execution when sanitization is deliberately bypassed',
+  );
+  const evidence = await page.evaluate(() => ({
+    selectedId: Alpine.$data(document.querySelector('[x-data="beadsApp()"]')).graphDetailNode?.id,
+    executed: [...window.__viewerPayloads],
+  }));
+  assert.equal(evidence.selectedId, issue.id, 'the production bridge selected the real exported issue');
+  assert.ok(evidence.executed.includes('image'), 'the unsanitized image handler reached the actual graph DOM');
+  await writeFile(path.join(path.dirname(securityExport), 'disabled-sanitizer-negative-control.json'),
+    JSON.stringify({ deliberateTestFault: true, rejectedAssertion, ...evidence }, null, 2));
+});
 
 for (const mode of [
   'available', 'missing parser', 'missing sanitizer', 'missing both',
