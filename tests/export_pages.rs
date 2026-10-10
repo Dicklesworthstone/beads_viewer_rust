@@ -1776,7 +1776,12 @@ fi
         fn run(&self, mode: &str, explicit_directory: bool) -> Output {
             let mut command = bvr_cmd(self.root());
             command
-                .args(["--export-pages", "pages-out", "--watch-export", "--no-hooks"])
+                .args([
+                    "--export-pages",
+                    "pages-out",
+                    "--watch-export",
+                    "--no-hooks",
+                ])
                 .env_remove("BEADS_DIR")
                 .env_remove("BEADS_DB")
                 .env_remove("BD_DB")
@@ -2016,7 +2021,10 @@ fi
             "one initial success and one failed refresh should enter the failure backoff"
         );
         assert_eq!(fixture.issues()[0]["description"], "Initial detail");
-        assert_eq!(fixture.issues()[0]["comments"][0]["text"], "Initial comment");
+        assert_eq!(
+            fixture.issues()[0]["comments"][0]["text"],
+            "Initial comment"
+        );
         fixture.assert_compatibility_snapshot_unchanged();
     }
 }

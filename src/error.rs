@@ -25,10 +25,7 @@ pub enum BvrError {
     #[error(
         "bd export failed for {beads_dir}: {message}; use BV_DATA_SOURCE=jsonl for an existing issues.jsonl snapshot"
     )]
-    DoltExport {
-        beads_dir: PathBuf,
-        message: String,
-    },
+    DoltExport { beads_dir: PathBuf, message: String },
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

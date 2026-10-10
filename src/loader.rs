@@ -1106,10 +1106,10 @@ fn read_bd_export(beads_dir: &Path) -> BdSnapshotResult {
     // Anonymous private files avoid pipe deadlocks, unbounded capture buffers,
     // and waiting for descendants that inherit the exporter's output handles.
     // No compatibility snapshot is created or replaced inside the tracker.
-    let mut stdout = tempfile::tempfile()
-        .map_err(|error| format!("could not capture stdout: {error}"))?;
-    let mut stderr = tempfile::tempfile()
-        .map_err(|error| format!("could not capture stderr: {error}"))?;
+    let mut stdout =
+        tempfile::tempfile().map_err(|error| format!("could not capture stdout: {error}"))?;
+    let mut stderr =
+        tempfile::tempfile().map_err(|error| format!("could not capture stderr: {error}"))?;
     let mut child = Command::new("bd")
         .arg("export")
         .current_dir(repo_root)
@@ -1219,7 +1219,9 @@ fn parse_bd_export(mut reader: impl BufRead) -> BdSnapshotResult {
         }
         line_no += 1;
         if bytes > MAX_LINE_BYTES {
-            return Err(format!("JSONL line {line_no} exceeded {MAX_LINE_BYTES} bytes"));
+            return Err(format!(
+                "JSONL line {line_no} exceeded {MAX_LINE_BYTES} bytes"
+            ));
         }
         let trimmed = if line_no == 1 {
             line.trim_start_matches('\u{feff}').trim()
@@ -3371,7 +3373,11 @@ mod tests {
 
     #[test]
     fn bd_export_parser_accepts_empty_and_mixed_issue_memory_snapshots() {
-        assert!(parse_bd_export(&b" \n\n"[..]).expect("empty snapshot").is_empty());
+        assert!(
+            parse_bd_export(&b" \n\n"[..])
+                .expect("empty snapshot")
+                .is_empty()
+        );
         let jsonl = concat!(
             "\u{feff}",
             "{\"_type\":\"memory\",\"key\":\"context\",\"value\":\"not an issue\"}\n",

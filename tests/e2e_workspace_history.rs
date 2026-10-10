@@ -1416,6 +1416,12 @@ case "$BVR_TEST_BD_MODE" in
             n=$((n + 1))
         done
         ;;
+    oversized-stdout)
+        exec /bin/dd if=/dev/zero bs=1048576 count=129
+        ;;
+    oversized-stderr)
+        exec /bin/dd if=/dev/zero bs=1048576 count=2 >&2
+        ;;
 esac
 /bin/cat "$payload"
 "#,
@@ -1689,6 +1695,38 @@ esac
     }
 
     #[test]
+    fn dolt_output_size_caps_reject_oversized_streams_without_stale_fallback() {
+        // Fixed-size writes exercise the total stream limits without relying
+        // on timeouts or an unbounded producer. A parser error is not a pass.
+        for (mode, expected_error) in [
+            ("oversized-stdout", "stdout exceeded 134217728 bytes"),
+            ("oversized-stderr", "stderr exceeded 1048576 bytes"),
+        ] {
+            let fixture = FakeDoltRepo::new();
+            let stale = fixture.write_compatibility_snapshot();
+            let output = fixture
+                .command()
+                .env("BVR_TEST_BD_MODE", mode)
+                .arg("--robot-triage")
+                .assert()
+                .failure()
+                .get_output()
+                .clone();
+            assert!(
+                output.stdout.is_empty(),
+                "an oversized backend stream must not contaminate robot stdout"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(expected_error),
+                "{mode} must fail at its byte cap, got: {stderr}"
+            );
+            assert_eq!(fixture.calls().lines().count(), 1);
+            fixture.assert_compatibility_snapshot(&stale);
+        }
+    }
+
+    #[test]
     fn dolt_success_does_not_wait_for_descendants_holding_output_descriptors() {
         let fixture = FakeDoltRepo::new();
         fixture.write_live(&issue_line("LIVE-1", "Exited exporter", "open", 1));
@@ -1752,6 +1790,8 @@ esac
             fixture
                 .command()
                 .current_dir(&linked)
+                .arg("--db")
+                .arg(linked.join(".beads"))
                 .env("BEADS_DB", linked.join("missing.db"))
                 .env("BD_DB", linked.join("missing-bd.db")),
         );
@@ -1770,18 +1810,57 @@ esac
     fn dolt_workspace_cache_keeps_independent_repositories_separate() {
         let fixture = FakeDoltRepo::new();
         let ws_path = setup_workspace(fixture.root(), &[("api", ""), ("web", "")]);
-        for (repo, id) in [("api", "API-1"), ("web", "WEB-1")] {
+        // A shared native ID with distinct content detects cross-workspace
+        // cache reuse even when namespacing would keep the issue count at two.
+        for repo in ["api", "web"] {
             let repo_path = fixture.root().join(repo);
-            fs::write(repo_path.join(".beads/metadata.json"), r#"{"backend":"dolt"}"#)
-                .expect("workspace Dolt metadata");
-            fs::write(repo_path.join("live.jsonl"), issue_line(id, repo, "open", 1))
-                .expect("independent live database");
+            fs::write(
+                repo_path.join(".beads/metadata.json"),
+                r#"{"backend":"dolt"}"#,
+            )
+            .expect("workspace Dolt metadata");
+            fs::write(
+                repo_path.join("live.jsonl"),
+                issue_line("LIVE-1", repo, "open", 1),
+            )
+            .expect("independent live database");
         }
         let value = robot_value(fixture.command().arg("--workspace").arg(ws_path));
-        assert_top_pick(&value, "api-API-1");
-        assert_top_pick(&value, "web-WEB-1");
+        let recommendations = value["triage"]["recommendations"]
+            .as_array()
+            .expect("workspace recommendations");
+        let calls = fixture.calls();
+        for repo in ["api", "web"] {
+            let id = format!("{repo}-LIVE-1");
+            assert_top_pick(&value, &id);
+            let recommendation = recommendations
+                .iter()
+                .find(|issue| issue["id"] == id)
+                .expect("independent workspace issue");
+            assert_eq!(recommendation["title"], repo);
+            let repo_path = fs::canonicalize(fixture.root().join(repo))
+                .expect("canonical workspace repository");
+            let quoted_path = bvr::model::shell_quote(&repo_path.to_string_lossy());
+            assert_eq!(
+                recommendation["claim_command"],
+                format!("cd {quoted_path} && br update LIVE-1 --status=in_progress")
+            );
+            assert_eq!(
+                recommendation["show_command"],
+                format!("cd {quoted_path} && br show LIVE-1")
+            );
+            assert!(
+                calls.lines().any(|call| call
+                    == format!(
+                        "export|{}|{}|unset|unset",
+                        repo_path.display(),
+                        repo_path.join(".beads").display()
+                    )),
+                "each independent workspace must invoke its own live backend: {calls}"
+            );
+        }
         assert_eq!(value["triage"]["quick_ref"]["total_open"], 2);
-        assert_eq!(fixture.calls().lines().count(), 2);
+        assert_eq!(calls.lines().count(), 2);
     }
 
     #[test]
