@@ -128,7 +128,10 @@ const securityDescriptions = [
   },
   {
     id: 'security-alpine', title: 'Alpine directives',
-    description: '<span data-security-action="alpine" x-data="{}" x-init="window.__viewerPayloads.push(\'alpine-init\')" @click="window.__viewerPayloads.push(\'alpine-click\')" x-on:mouseover="window.__viewerPayloads.push(\'alpine-hover\')" onclick="window.__viewerPayloads.push(\'click\')">Directives stay inert</span>',
+    // Use the long directive spelling: marked's inline HTML grammar treats
+    // @click as malformed markup and escapes the opening tag itself. Valid
+    // attributes ensure this scenario really reaches DOMPurify in all views.
+    description: '<span data-security-action="alpine" x-data="{}" x-init="window.__viewerPayloads.push(\'alpine-init\')" x-on:click="window.__viewerPayloads.push(\'alpine-click\')" x-on:mouseover="window.__viewerPayloads.push(\'alpine-hover\')" onclick="window.__viewerPayloads.push(\'click\')">Directives stay inert</span>',
   },
 ];
 const tooltipIssue = {
@@ -1159,6 +1162,8 @@ async function assertSecurityDescription(page, surface, issue, mode, kind) {
     assert.match(await surface.textContent(), /Before/);
     assert.match(await surface.textContent(), /unsafe link/);
   } else if (issue.id === 'security-alpine') {
+    assert.equal(await surface.locator('span[data-security-action="alpine"]').count(), 1,
+      `${label}: valid raw HTML reaches the sanitizer and its harmless marker survives`);
     assert.equal((await surface.textContent()).trim(), 'Directives stay inert');
   }
   await assertSecurityInert(page, surface, label);
