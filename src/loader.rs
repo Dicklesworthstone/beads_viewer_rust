@@ -1342,17 +1342,23 @@ fn parse_sqlite_time(raw: Option<String>) -> Option<chrono::DateTime<chrono::Utc
         .map(|parsed| parsed.with_timezone(&chrono::Utc))
 }
 
-fn sqlite_columns(conn: &rusqlite::Connection, table: &str) -> HashSet<String> {
-    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
-        return HashSet::new();
-    };
-    stmt.query_map([], |row| row.get::<_, String>(1))
-        .map(|rows| {
-            rows.filter_map(std::result::Result::ok)
-                .map(|name| name.to_ascii_lowercase())
-                .collect()
-        })
-        .unwrap_or_default()
+fn prepare_sqlite_read<'conn>(
+    conn: &'conn rusqlite::Connection,
+    query: &str,
+) -> rusqlite::Result<rusqlite::Statement<'conn>> {
+    // A database can forge sqlite_schema.rootpage, so checking that catalog
+    // value alone must never authorize a virtual-table module to run.
+    conn.prepare_with_flags(query, rusqlite::PrepFlags::SQLITE_PREPARE_NO_VTAB)
+}
+
+fn sqlite_columns(conn: &rusqlite::Connection, table: &str) -> rusqlite::Result<HashSet<String>> {
+    // table is one of the four fixed source names below, never database text.
+    let mut stmt = prepare_sqlite_read(conn, &format!("PRAGMA main.table_info({table})"))?;
+    stmt.query_map([], |row| {
+        row.get::<_, String>(1)
+            .map(|name| name.to_ascii_lowercase())
+    })?
+    .collect()
 }
 
 /// Read issues straight from a beads SQLite database (br schema, tolerant of
@@ -1361,18 +1367,68 @@ fn sqlite_columns(conn: &rusqlite::Connection, table: &str) -> HashSet<String> {
 pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
     use rusqlite::{Connection, OpenFlags};
 
-    let sql_err = |error: rusqlite::Error| {
-        BvrError::InvalidArgument(format!("sqlite read of {}: {error}", path.display()))
-    };
-    let conn = Connection::open_with_flags(
+    let mut conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(sql_err)?;
+    .map_err(|error| {
+        BvrError::InvalidArgument(format!("sqlite read of {}: {error}", path.display()))
+    })?;
+    read_issues_from_sqlite_connection(&mut conn, path)
+}
+
+fn read_issues_from_sqlite_connection(
+    conn: &mut rusqlite::Connection,
+    path: &Path,
+) -> Result<Vec<Issue>> {
+    use rusqlite::{OptionalExtension, config::DbConfig};
+
+    let sql_err = |error: rusqlite::Error| {
+        BvrError::InvalidArgument(format!("sqlite read of {}: {error}", path.display()))
+    };
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(sql_err)?;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)
+        .map_err(sql_err)?;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW, false)
+        .map_err(sql_err)?;
 
-    let issue_cols = sqlite_columns(&conn, "issues");
+    // Hold the read snapshot from schema validation through all related rows.
+    // In WAL mode a writer may otherwise replace a checked table with a view,
+    // or commit new relationships after we have read the old issue rows.
+    let conn = conn.transaction().map_err(sql_err)?;
+    {
+        let mut stmt = prepare_sqlite_read(
+            &conn,
+            "SELECT type, rootpage FROM main.sqlite_schema \
+             WHERE name = ?1 COLLATE NOCASE AND type IN ('table', 'view')",
+        )
+        .map_err(sql_err)?;
+        for table in ["issues", "labels", "dependencies", "comments"] {
+            let object = stmt
+                .query_row([table], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .optional()
+                .map_err(sql_err)?;
+            if let Some((kind, rootpage)) = object
+                && (kind != "table" || rootpage <= 0)
+            {
+                return Err(BvrError::InvalidArgument(format!(
+                    "sqlite read of {}: {table} must be a stored table; \
+                     views and virtual tables are not supported",
+                    path.display()
+                )));
+            }
+        }
+    }
+
+    // Validate every optional object before reading data. A present but invalid
+    // schema is an error, rather than a silently incomplete issue snapshot.
+    let issue_cols = sqlite_columns(&conn, "issues").map_err(sql_err)?;
+    let label_cols = sqlite_columns(&conn, "labels").map_err(sql_err)?;
+    let dep_cols = sqlite_columns(&conn, "dependencies").map_err(sql_err)?;
+    let comment_cols = sqlite_columns(&conn, "comments").map_err(sql_err)?;
     if !issue_cols.contains("id") || !issue_cols.contains("title") {
         return Err(BvrError::InvalidArgument(format!(
             "{} has no beads issues table",
@@ -1403,7 +1459,7 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
     let query = format!(
         "SELECT i.id, i.title, {desc}, {design}, {ac}, {notes}, {status}, {priority}, \
          {itype}, {assignee}, {est}, {created}, {updated}, {due}, {defer}, {closed}, \
-         {ext}, {repo}, {deleted} FROM issues i {where_clause} ORDER BY i.id",
+         {ext}, {repo}, {deleted} FROM main.issues i {where_clause} ORDER BY i.id",
         desc = col("description", "''"),
         design = col("design", "''"),
         ac = col("acceptance_criteria", "''"),
@@ -1425,7 +1481,7 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
 
     let mut issues = Vec::<Issue>::new();
     {
-        let mut stmt = conn.prepare(&query).map_err(sql_err)?;
+        let mut stmt = prepare_sqlite_read(&conn, &query).map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| {
                 let text = |idx: usize| -> rusqlite::Result<String> {
@@ -1483,10 +1539,12 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
         .map(|(idx, issue)| (issue.id.clone(), idx))
         .collect();
 
-    if sqlite_columns(&conn, "labels").contains("label") {
-        let mut stmt = conn
-            .prepare("SELECT issue_id, label FROM labels ORDER BY issue_id, label")
-            .map_err(sql_err)?;
+    if label_cols.contains("label") {
+        let mut stmt = prepare_sqlite_read(
+            &conn,
+            "SELECT issue_id, label FROM main.labels ORDER BY issue_id, label",
+        )
+        .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1499,7 +1557,6 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
         }
     }
 
-    let dep_cols = sqlite_columns(&conn, "dependencies");
     if dep_cols.contains("issue_id") && dep_cols.contains("depends_on_id") {
         let type_col = if dep_cols.contains("type") {
             "type"
@@ -1518,12 +1575,14 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
         } else {
             "NULL"
         };
-        let mut stmt = conn
-            .prepare(&format!(
+        let mut stmt = prepare_sqlite_read(
+            &conn,
+            &format!(
                 "SELECT issue_id, depends_on_id, {type_col}, {created_by}, {created_at} \
-                 FROM dependencies ORDER BY issue_id, depends_on_id"
-            ))
-            .map_err(sql_err)?;
+                 FROM main.dependencies ORDER BY issue_id, depends_on_id"
+            ),
+        )
+        .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(crate::model::Dependency {
@@ -1545,7 +1604,6 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
         }
     }
 
-    let comment_cols = sqlite_columns(&conn, "comments");
     if comment_cols.contains("issue_id") {
         let text_col = if comment_cols.contains("text") {
             "text"
@@ -1569,12 +1627,15 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
         } else {
             "NULL"
         };
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {id_col}, issue_id, {author_col}, {text_col}, {created_col} \
-                 FROM comments ORDER BY issue_id, {created_col}, {id_col}"
-            ))
-            .map_err(sql_err)?;
+        let mut stmt = prepare_sqlite_read(
+            &conn,
+            &format!(
+                "SELECT {id_col} AS comment_id, issue_id, {author_col}, {text_col}, \
+                 {created_col} AS comment_created_at FROM main.comments \
+                 ORDER BY issue_id, comment_created_at, comment_id"
+            ),
+        )
+        .map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(crate::model::Comment {
@@ -3258,6 +3319,420 @@ mod tests {
             .execute_batch("CREATE TABLE unrelated (x INTEGER);")
             .expect("create");
         assert!(load_issues_from_sqlite(&db).is_err());
+    }
+
+    #[test]
+    fn sqlite_rejects_recursive_source_views_before_reading_rows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (table, columns) in [
+            (
+                "IsSuEs",
+                "'bd-1' AS id, 'recursive issue' AS title, CAST(sum(x) AS TEXT) AS description",
+            ),
+            (
+                "LaBeLs",
+                "'bd-1' AS issue_id, CAST(sum(x) AS TEXT) AS label",
+            ),
+            (
+                "DePeNdEnCiEs",
+                "'bd-1' AS issue_id, CAST(sum(x) AS TEXT) AS depends_on_id",
+            ),
+            (
+                "CoMmEnTs",
+                "1 AS id, 'bd-1' AS issue_id, CAST(sum(x) AS TEXT) AS text",
+            ),
+        ] {
+            let db = dir.path().join(format!("{table}.db"));
+            let conn = rusqlite::Connection::open(&db).expect("open fixture");
+            if !table.eq_ignore_ascii_case("issues") {
+                conn.execute_batch(
+                    "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+                     INSERT INTO issues VALUES ('bd-1', 'stored issue');",
+                )
+                .expect("create ordinary issues");
+            }
+            // Finite work keeps a regression bounded even if the guard breaks.
+            conn.execute_batch(&format!(
+                "CREATE VIEW {table} AS WITH RECURSIVE ticks(x) AS (
+                    VALUES(1) UNION ALL SELECT x + 1 FROM ticks WHERE x < 50000
+                 ) SELECT {columns} FROM ticks;"
+            ))
+            .expect("create recursive source view");
+            drop(conn);
+            let before = std::fs::read(&db).expect("read original fixture");
+
+            let error = load_issues_from_sqlite(&db)
+                .expect_err("source views must not be evaluated")
+                .to_string();
+            assert!(
+                error.contains(&format!(
+                    "{} must be a stored table",
+                    table.to_ascii_lowercase()
+                )),
+                "{error}"
+            );
+            assert!(error.contains(&db.display().to_string()), "{error}");
+            assert_eq!(std::fs::read(&db).expect("read fixture after load"), before);
+        }
+    }
+
+    #[test]
+    fn sqlite_rejects_virtual_source_tables_even_with_forged_rootpage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (table, columns) in [
+            ("issues", "id, title"),
+            ("labels", "issue_id, label"),
+            ("dependencies", "issue_id, depends_on_id"),
+            ("comments", "id, issue_id, text"),
+        ] {
+            for forged_rootpage in [false, true] {
+                let db = dir
+                    .path()
+                    .join(format!("{table}-forged-{forged_rootpage}.db"));
+                let conn = rusqlite::Connection::open(&db).expect("open fixture");
+                if table != "issues" {
+                    conn.execute_batch(
+                        "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+                         INSERT INTO issues VALUES ('bd-1', 'stored issue');",
+                    )
+                    .expect("create ordinary issues");
+                }
+                conn.execute_batch(&format!(
+                    "CREATE VIRTUAL TABLE {table} USING fts5({columns});"
+                ))
+                .expect("create virtual source");
+                if forged_rootpage {
+                    conn.execute_batch(&format!(
+                        "PRAGMA writable_schema=ON;
+                         UPDATE sqlite_schema SET rootpage=2 WHERE name='{table}';
+                         PRAGMA writable_schema=OFF;"
+                    ))
+                    .expect("forge positive catalog rootpage");
+                }
+                drop(conn);
+
+                let error = load_issues_from_sqlite(&db)
+                    .expect_err("virtual source must be rejected before module access")
+                    .to_string();
+                if forged_rootpage {
+                    assert!(error.contains("no such table"), "{error}");
+                    assert!(error.contains(table), "{error}");
+                } else {
+                    assert!(
+                        error.contains(&format!("{table} must be a stored table")),
+                        "{error}"
+                    );
+                }
+                assert!(error.contains(&db.display().to_string()), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_accepts_stored_variant_schemas_and_unrelated_sql_objects() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for without_rowid in [false, true] {
+            let db = dir.path().join(format!("stored-{without_rowid}.db"));
+            let conn = rusqlite::Connection::open(&db).expect("open fixture");
+            let table_options = if without_rowid { "WITHOUT ROWID" } else { "" };
+            conn.execute_batch(&format!(
+                "CREATE TABLE IsSuEs (
+                    Id TEXT PRIMARY KEY, TiTlE TEXT NOT NULL CHECK(length(TiTlE) > 0),
+                    search_title TEXT GENERATED ALWAYS AS (lower(TiTlE)) VIRTUAL
+                 ) {table_options};
+                 INSERT INTO IsSuEs (Id, TiTlE) VALUES ('bd-1', 'Ordinary stored issue');
+                 CREATE INDEX issue_title ON IsSuEs (lower(TiTlE));
+                 CREATE TABLE LaBeLs (Issue_Id TEXT, LaBeL TEXT);
+                 INSERT INTO LaBeLs VALUES ('bd-1', 'backend');
+                 CREATE TABLE DePeNdEnCiEs (Issue_Id TEXT, Depends_On_Id TEXT, Dependency_Type TEXT);
+                 INSERT INTO DePeNdEnCiEs VALUES ('bd-1', 'bd-0', 'blocks');
+                 CREATE TABLE CoMmEnTs (Id INTEGER, Issue_Id TEXT, Body TEXT);
+                 INSERT INTO CoMmEnTs VALUES (7, 'bd-1', 'variant comment');
+                 CREATE VIRTUAL TABLE issues_search USING fts5(id, title);
+                 CREATE VIEW unrelated_recursive AS WITH RECURSIVE ticks(x) AS (
+                    VALUES(1) UNION ALL SELECT x + 1 FROM ticks
+                 ) SELECT x FROM ticks;"
+            ))
+            .expect("create legitimate variant schema");
+            drop(conn);
+
+            let issues = load_issues_from_sqlite(&db).expect("load stored variant schema");
+            assert_eq!(issues.len(), 1);
+            let issue = &issues[0];
+            assert_eq!(issue.id, "bd-1");
+            assert_eq!(issue.title, "Ordinary stored issue");
+            assert_eq!(issue.status, "open");
+            assert_eq!(issue.priority, 2);
+            assert_eq!(issue.labels, ["backend"]);
+            assert_eq!(issue.dependencies.len(), 1);
+            assert_eq!(issue.dependencies[0].depends_on_id, "bd-0");
+            assert!(issue.dependencies[0].is_blocking());
+            assert_eq!(issue.comments.len(), 1);
+            assert_eq!(issue.comments[0].id, 7);
+            assert_eq!(issue.comments[0].text, "variant comment");
+        }
+    }
+
+    #[test]
+    fn sqlite_reader_disables_untrusted_schema_function_evaluation() {
+        use rusqlite::{Connection, OpenFlags, functions::FunctionFlags};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("schema-function.db");
+        let writer = Connection::open(&db).expect("open writer");
+        let trusted_calls = Arc::new(AtomicUsize::new(0));
+        let callback_trusted_calls = Arc::clone(&trusted_calls);
+        writer
+            .create_scalar_function(
+                "application_only",
+                1,
+                FunctionFlags::SQLITE_DETERMINISTIC,
+                move |context| {
+                    callback_trusted_calls.fetch_add(1, Ordering::SeqCst);
+                    context
+                        .get::<String>(0)
+                        .map(|title| format!("Generated {title}"))
+                },
+            )
+            .expect("register writer function");
+        writer
+            .execute_batch(
+                "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+                 INSERT INTO issues VALUES ('bd-1', 'stored issue');",
+            )
+            .expect("create ordinary stored issue");
+
+        let mut reader = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open read-only reader");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        reader
+            .create_scalar_function(
+                "application_only",
+                1,
+                FunctionFlags::SQLITE_DETERMINISTIC,
+                move |context| {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                    context
+                        .get::<String>(0)
+                        .map(|title| format!("Generated {title}"))
+                },
+            )
+            .expect("register reader function");
+        let issues = read_issues_from_sqlite_connection(&mut reader, &db)
+            .expect("configure reader and load ordinary issue");
+        assert_eq!(issues[0].title, "stored issue");
+
+        // CHECK expressions are not evaluated by SELECT, and table_info omits
+        // generated columns. Read a VIRTUAL column explicitly on the configured
+        // connection so this regression exercises the trusted-schema boundary.
+        writer
+            .execute_batch(
+                "ALTER TABLE issues ADD COLUMN description TEXT
+                 GENERATED ALWAYS AS (application_only(title)) VIRTUAL;",
+            )
+            .expect("add schema expression after the initial read finishes");
+        let trusted_description: String = writer
+            .query_row("SELECT description FROM issues", [], |row| row.get(0))
+            .expect("trusted control evaluates the generated expression");
+        assert_eq!(trusted_description, "Generated stored issue");
+        assert_eq!(trusted_calls.load(Ordering::SeqCst), 1);
+
+        let error = prepare_sqlite_read(&reader, "SELECT description FROM main.issues")
+            .and_then(|mut statement| statement.query_row([], |row| row.get::<_, String>(0)))
+            .expect_err("untrusted schema expressions must be rejected when read")
+            .to_string();
+        assert!(
+            error.contains("unsafe use of application_only()"),
+            "{error}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn sqlite_loads_comments_without_ids_in_issue_and_timestamp_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("comments-without-ids.db");
+        let conn = rusqlite::Connection::open(&db).expect("open fixture");
+        conn.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+             INSERT INTO issues VALUES ('bd-2', 'Second issue'), ('bd-1', 'First issue');
+             CREATE TABLE comments (issue_id TEXT, author TEXT, body TEXT, created_at TEXT);
+             INSERT INTO comments VALUES
+                ('bd-2', 'Dan', 'second later', '2026-01-04T00:00:00Z'),
+                ('bd-1', 'Bea', 'first later', '2026-01-03T00:00:00Z'),
+                ('bd-2', 'Cara', 'second earlier', '2026-01-02T00:00:00Z'),
+                ('bd-1', 'Ada', 'first earlier', '2026-01-01T00:00:00Z');",
+        )
+        .expect("create comments variant without id column");
+        drop(conn);
+
+        let issues = load_issues_from_sqlite(&db).expect("load comments without ids");
+        assert_eq!(issues.len(), 2);
+        for (issue, expected_id, expected_comments) in [
+            (
+                &issues[0],
+                "bd-1",
+                [("Ada", "first earlier"), ("Bea", "first later")],
+            ),
+            (
+                &issues[1],
+                "bd-2",
+                [("Cara", "second earlier"), ("Dan", "second later")],
+            ),
+        ] {
+            assert_eq!(issue.id, expected_id);
+            assert_eq!(issue.comments.len(), 2);
+            for (comment, (author, text)) in issue.comments.iter().zip(expected_comments) {
+                assert_eq!(comment.id, 0);
+                assert_eq!(comment.issue_id, expected_id);
+                assert_eq!(comment.author, author);
+                assert_eq!(comment.text, text);
+                assert!(comment.created_at.is_some());
+            }
+            assert!(issue.comments[0].created_at < issue.comments[1].created_at);
+        }
+    }
+
+    #[test]
+    fn sqlite_loads_minimal_comments_without_ids_or_timestamps() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("minimal-comments.db");
+        let conn = rusqlite::Connection::open(&db).expect("open fixture");
+        conn.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+             INSERT INTO issues VALUES ('bd-1', 'Stored issue');
+             CREATE TABLE comments (issue_id TEXT, text TEXT);
+             INSERT INTO comments VALUES ('bd-1', 'Minimal comment');",
+        )
+        .expect("create minimal comments schema");
+        drop(conn);
+
+        let issues = load_issues_from_sqlite(&db).expect("load minimal comments");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].comments.len(), 1);
+        let comment = &issues[0].comments[0];
+        assert_eq!(comment.id, 0);
+        assert_eq!(comment.issue_id, "bd-1");
+        assert_eq!(comment.text, "Minimal comment");
+        assert!(comment.author.is_empty());
+        assert!(comment.created_at.is_none());
+    }
+
+    #[test]
+    fn sqlite_reads_issues_and_relationships_from_one_wal_snapshot() {
+        use rusqlite::{
+            Connection, OpenFlags,
+            hooks::{AuthAction, AuthContext, Authorization},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("concurrent-update.db");
+        write_br_sqlite(&db);
+        let writer = Connection::open(&db).expect("open writer");
+        writer
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .expect("enable WAL");
+        let mut reader = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open read-only reader");
+        let updated = Arc::new(AtomicBool::new(false));
+        let callback_updated = Arc::clone(&updated);
+        reader
+            .authorizer(Some(move |context: AuthContext<'_>| {
+                if let AuthAction::Read { table_name, .. } = context.action
+                    && table_name.eq_ignore_ascii_case("labels")
+                    && !callback_updated.swap(true, Ordering::SeqCst)
+                {
+                    writer
+                        .execute_batch(
+                            "BEGIN IMMEDIATE;
+                             UPDATE issues SET title='New root task' WHERE id='bd-1';
+                             UPDATE labels SET label=upper(label);
+                             COMMIT;",
+                        )
+                        .expect("commit update between issue and label reads");
+                }
+                Authorization::Allow
+            }))
+            .expect("install deterministic writer hook");
+
+        let issues = read_issues_from_sqlite_connection(&mut reader, &db)
+            .expect("read consistent snapshot during writer commit");
+        assert!(updated.load(Ordering::SeqCst));
+        assert_eq!(issues[0].title, "Root task");
+        assert_eq!(issues[0].labels, ["api", "backend"]);
+        drop(reader);
+
+        let updated_issues = load_issues_from_sqlite(&db).expect("read next committed snapshot");
+        assert_eq!(updated_issues[0].title, "New root task");
+        assert_eq!(updated_issues[0].labels, ["API", "BACKEND"]);
+    }
+
+    #[test]
+    fn sqlite_schema_validation_and_rows_share_one_wal_snapshot() {
+        use rusqlite::{
+            Connection, OpenFlags,
+            hooks::{AuthAction, AuthContext, Authorization},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("concurrent-schema.db");
+        write_br_sqlite(&db);
+        let writer = Connection::open(&db).expect("open writer");
+        writer
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .expect("enable WAL");
+        let mut reader = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("open read-only reader");
+        let replaced = Arc::new(AtomicBool::new(false));
+        let callback_replaced = Arc::clone(&replaced);
+        reader
+            .authorizer(Some(move |context: AuthContext<'_>| {
+                if let AuthAction::Read {
+                    table_name,
+                    column_name,
+                } = context.action
+                    && table_name.eq_ignore_ascii_case("issues")
+                    && column_name.eq_ignore_ascii_case("title")
+                    && !callback_replaced.swap(true, Ordering::SeqCst)
+                {
+                    writer
+                        .execute_batch(
+                            "BEGIN IMMEDIATE;
+                             ALTER TABLE issues RENAME TO stored_issues;
+                             CREATE VIEW issues AS
+                                SELECT 'view-1' AS id, 'Replaced after validation' AS title;
+                             COMMIT;",
+                        )
+                        .expect("replace source after catalog validation");
+                }
+                Authorization::Allow
+            }))
+            .expect("install deterministic schema writer hook");
+
+        let issues = read_issues_from_sqlite_connection(&mut reader, &db)
+            .expect("finish reading the validated stored-table snapshot");
+        assert!(replaced.load(Ordering::SeqCst));
+        assert_eq!(issues[0].id, "bd-1");
+        assert_eq!(issues[0].title, "Root task");
+        drop(reader);
+
+        let error = load_issues_from_sqlite(&db)
+            .expect_err("next load must reject the newly committed view")
+            .to_string();
+        assert!(error.contains("issues must be a stored table"), "{error}");
     }
 
     fn set_mtime(path: &Path, secs: i64) {

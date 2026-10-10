@@ -146,6 +146,128 @@ fn setup_workspace_with_discovery(root: &Path, layout: &[(&str, &str)]) -> PathB
 }
 
 // ===================================================================
+// SQLITE INPUT BOUNDARIES
+// ===================================================================
+
+#[test]
+fn sqlite_robot_rejects_query_backed_tracker_objects_without_stale_fallback() {
+    for (table, projection) in [
+        ("issues", "CAST(n AS TEXT) AS id, 'recursive' AS title"),
+        ("labels", "'SAFE-1' AS issue_id, CAST(n AS TEXT) AS label"),
+        (
+            "dependencies",
+            "'SAFE-1' AS issue_id, CAST(n AS TEXT) AS depends_on_id",
+        ),
+        (
+            "comments",
+            "n AS id, 'SAFE-1' AS issue_id, CAST(n AS TEXT) AS text",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("SQLite fixture");
+        let beads = dir.path().join(".beads");
+        fs::create_dir(&beads).expect("tracker directory");
+        let database = beads.join("beads.db");
+        let conn = rusqlite::Connection::open(&database).expect("fixture database");
+        if table != "issues" {
+            conn.execute_batch(
+                "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+                 INSERT INTO issues VALUES ('SAFE-1', 'Stored issue');",
+            )
+            .expect("stored issues");
+        }
+        conn.execute_batch(&format!(
+            "CREATE VIEW {table} AS
+             WITH RECURSIVE tally(n) AS (
+                 VALUES(1) UNION ALL SELECT n + 1 FROM tally WHERE n < 100000000
+             ) SELECT {projection} FROM tally;"
+        ))
+        .expect("recursive tracker view");
+        drop(conn);
+        fs::write(
+            beads.join("metadata.json"),
+            r#"{"backend":"sqlite","database":"beads.db","jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("SQLite metadata");
+        let stale = issue_line("STALE-1", "Saved export", "open", 1);
+        fs::write(beads.join("issues.jsonl"), &stale).expect("compatibility snapshot");
+        let before = fs::read(&database).expect("database bytes before read");
+
+        // Check both public entry points. The declared SQLite source must not
+        // hide a rejected schema by publishing the saved JSONL snapshot.
+        for source in [&database, &beads] {
+            let output = bvr()
+                .current_dir(dir.path())
+                .env_remove("BEADS_DIR")
+                .env_remove("BEADS_DB")
+                .env_remove("BD_DB")
+                .env("BV_DATA_SOURCE", "sqlite")
+                .arg("--db")
+                .arg(source)
+                .arg("--robot-triage")
+                .timeout(std::time::Duration::from_secs(5))
+                .assert()
+                .failure()
+                .get_output()
+                .clone();
+            assert_eq!(
+                output.stdout, b"",
+                "rejected {table} must not publish issues"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(&format!("{table} must be a stored table")),
+                "{table} must fail schema validation rather than hang: {stderr}"
+            );
+            assert_eq!(fs::read(&database).expect("database still present"), before);
+            assert_eq!(
+                fs::read_to_string(beads.join("issues.jsonl")).expect("snapshot still present"),
+                stale
+            );
+        }
+    }
+}
+
+#[test]
+fn sqlite_robot_loads_stored_tables_with_unrelated_views_and_virtual_tables() {
+    let dir = tempfile::tempdir().expect("SQLite fixture");
+    let database = dir.path().join("beads.db");
+    let conn = rusqlite::Connection::open(&database).expect("fixture database");
+    conn.execute_batch(
+        "CREATE TABLE Issues (id TEXT PRIMARY KEY, title TEXT) WITHOUT ROWID;
+         INSERT INTO Issues VALUES ('SAFE-1', 'Stored issue');
+         CREATE TABLE Labels (issue_id TEXT, label TEXT);
+         INSERT INTO Labels VALUES ('SAFE-1', 'ready');
+         CREATE VIRTUAL TABLE unrelated_search USING fts5(content);
+         CREATE VIEW unrelated_recursive_view AS
+         WITH RECURSIVE tally(n) AS (
+             VALUES(1) UNION ALL SELECT n + 1 FROM tally WHERE n < 100000000
+         ) SELECT n FROM tally;",
+    )
+    .expect("stored tables and unrelated schema objects");
+    drop(conn);
+    let before = fs::read(&database).expect("database bytes before read");
+    let output = bvr()
+        .current_dir(dir.path())
+        .arg("--db")
+        .arg(&database)
+        .arg("--robot-triage")
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).expect("valid robot output");
+    assert_eq!(json["triage"]["quick_ref"]["total_open"], 1);
+    assert_eq!(json["triage"]["recommendations"][0]["id"], "SAFE-1");
+    assert_eq!(
+        json["triage"]["recommendations"][0]["title"],
+        "Stored issue"
+    );
+    assert_eq!(fs::read(&database).expect("database still present"), before);
+}
+
+// ===================================================================
 // WORKSPACE DISCOVERY E2E
 // ===================================================================
 
