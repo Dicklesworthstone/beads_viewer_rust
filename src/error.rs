@@ -22,6 +22,14 @@ pub enum BvrError {
     #[error("invalid issue data: {0}")]
     InvalidIssue(String),
 
+    #[error(
+        "bd export failed for {beads_dir}: {message}; use BV_DATA_SOURCE=jsonl for an existing issues.jsonl snapshot"
+    )]
+    DoltExport {
+        beads_dir: PathBuf,
+        message: String,
+    },
+
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
@@ -77,6 +85,19 @@ mod tests {
     fn invalid_issue_shows_detail() {
         let err = BvrError::InvalidIssue("bad id".to_string());
         assert!(err.to_string().contains("bad id"));
+    }
+
+    #[test]
+    fn dolt_error_identifies_workspace_and_explicit_snapshot_option() {
+        let err = BvrError::DoltExport {
+            beads_dir: PathBuf::from("/tmp/live/.beads"),
+            message: "timed out after 5 seconds".to_string(),
+        };
+        let message = err.to_string();
+        assert!(message.contains("bd export"));
+        assert!(message.contains("/tmp/live/.beads"));
+        assert!(message.contains("timed out"));
+        assert!(message.contains("BV_DATA_SOURCE=jsonl"));
     }
 
     #[test]

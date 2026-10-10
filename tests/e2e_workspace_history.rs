@@ -1357,3 +1357,506 @@ fn workspace_robot_graph_shows_cross_repo_edges() {
     let edges = json["edges"].as_u64().unwrap_or(0);
     assert!(edges >= 1, "should have cross-repo edge, got {edges}");
 }
+
+// A fake backend is scoped to each child process. These tests must never invoke
+// an installed bd or change the process-wide environment of parallel tests.
+#[cfg(unix)]
+mod dolt_backend {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    struct FakeDoltRepo {
+        directory: tempfile::TempDir,
+    }
+
+    impl FakeDoltRepo {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().expect("Dolt fixture directory");
+            let root = directory.path();
+            fs::create_dir_all(root.join(".beads/dolt")).expect("Dolt marker directory");
+            fs::create_dir(root.join("bin")).expect("fake executable directory");
+            fs::write(root.join(".beads/metadata.json"), r#"{"backend":"dolt"}"#)
+                .expect("Dolt metadata");
+            fs::write(root.join("live.jsonl"), "").expect("initial live snapshot");
+            let executable = root.join("bin/bd");
+            fs::write(
+                &executable,
+                r#"#!/bin/sh
+beads_db=unset
+if [ -n "$BEADS_DB" ]; then beads_db="$BEADS_DB"; fi
+bd_db=unset
+if [ -n "$BD_DB" ]; then bd_db="$BD_DB"; fi
+printf '%s|%s|%s|%s|%s\n' "$*" "$PWD" "$BEADS_DIR" "$beads_db" "$bd_db" >> "$BVR_TEST_BD_CALLS"
+if [ "$#" -ne 1 ] || [ "$1" != export ]; then
+    printf 'expected a read-only bd export on stdout\n' >&2
+    exit 64
+fi
+payload="$BEADS_DIR/../live.jsonl"
+if [ -n "$BVR_TEST_BD_PAYLOAD" ]; then payload="$BVR_TEST_BD_PAYLOAD"; fi
+case "$BVR_TEST_BD_MODE" in
+    fail)
+        /bin/cat "$payload"
+        printf 'fake bd export failed after partial output\n' >&2
+        exit 7
+        ;;
+    hang)
+        printf '%s\n' "$$" > "$BVR_TEST_BD_PID"
+        exec /bin/sleep 30
+        ;;
+    hold-open)
+        /bin/sleep 30 &
+        printf '%s\n' "$!" > "$BVR_TEST_BD_DESCENDANT_PID"
+        ;;
+    noisy)
+        n=0
+        while [ "$n" -lt 4096 ]; do
+            printf 'fake bd diagnostic: enough stderr to exceed the capacity of an unread output pipe\n' >&2
+            n=$((n + 1))
+        done
+        ;;
+esac
+/bin/cat "$payload"
+"#,
+            )
+            .expect("fake bd executable");
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+                .expect("make fake bd executable");
+            Self { directory }
+        }
+
+        fn root(&self) -> &Path {
+            self.directory.path()
+        }
+
+        fn command(&self) -> Command {
+            let mut command = bvr();
+            command
+                .current_dir(self.root())
+                .env_remove("BEADS_DIR")
+                .env_remove("BEADS_DB")
+                .env_remove("BD_DB")
+                .env_remove("BV_DATA_SOURCE")
+                .env_remove("BVR_TEST_BD_MODE")
+                .env_remove("BVR_TEST_BD_PAYLOAD")
+                .env("PATH", self.root().join("bin"))
+                .env("BVR_TEST_BD_CALLS", self.root().join("calls.log"))
+                .env("BVR_TEST_BD_PID", self.root().join("child.pid"))
+                .env(
+                    "BVR_TEST_BD_DESCENDANT_PID",
+                    self.root().join("descendant.pid"),
+                )
+                .timeout(Duration::from_secs(12));
+            command
+        }
+
+        fn write_live(&self, content: &str) {
+            fs::write(self.root().join("live.jsonl"), content).expect("live backend snapshot");
+        }
+
+        fn write_compatibility_snapshot(&self) -> String {
+            let content = format!("{}\n", issue_line("STALE-1", "Stale snapshot", "open", 1));
+            fs::write(self.root().join(".beads/issues.jsonl"), &content)
+                .expect("compatibility snapshot");
+            content
+        }
+
+        fn assert_compatibility_snapshot(&self, expected: &str) {
+            assert_eq!(
+                fs::read_to_string(self.root().join(".beads/issues.jsonl"))
+                    .expect("compatibility snapshot still exists"),
+                expected,
+                "live reads must not modify the compatibility export"
+            );
+        }
+
+        fn calls(&self) -> String {
+            fs::read_to_string(self.root().join("calls.log")).unwrap_or_default()
+        }
+    }
+
+    impl Drop for FakeDoltRepo {
+        fn drop(&mut self) {
+            // Only the hold-open case records a still-live descendant. The
+            // direct child in the timeout case is reaped and never killed again.
+            if let Ok(pid) = fs::read_to_string(self.root().join("descendant.pid")) {
+                let _ = ProcessCommand::new("/bin/kill")
+                    .args(["-KILL", pid.trim()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+
+    fn robot_value(command: &mut Command) -> Value {
+        let output = command
+            .arg("--robot-triage")
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        serde_json::from_slice(&output.stdout)
+            .expect("stdout contains exactly one robot JSON value")
+    }
+
+    fn assert_top_pick(value: &Value, id: &str) {
+        assert!(
+            value["triage"]["quick_ref"]["top_picks"]
+                .as_array()
+                .expect("triage top picks")
+                .iter()
+                .any(|pick| pick["id"] == id),
+            "expected live issue {id} in {value}"
+        );
+    }
+
+    #[test]
+    fn dolt_reads_live_stdout_over_stale_jsonl_on_every_new_process() {
+        let fixture = FakeDoltRepo::new();
+        let stale = fixture.write_compatibility_snapshot();
+        fixture.write_live(&issue_line("LIVE-1", "First live state", "open", 1));
+        assert_top_pick(&robot_value(&mut fixture.command()), "LIVE-1");
+
+        fixture.write_live(&issue_line("LIVE-2", "Second live state", "open", 1));
+        let value = robot_value(fixture.command().args(["--db", ".beads"]));
+        assert_top_pick(&value, "LIVE-2");
+        assert!(!value.to_string().contains("STALE-1"));
+        assert_eq!(fixture.calls().lines().count(), 2);
+        fixture.assert_compatibility_snapshot(&stale);
+    }
+
+    #[test]
+    fn dolt_needs_no_compatibility_file_and_accepts_an_empty_live_database() {
+        let fixture = FakeDoltRepo::new();
+        fixture.write_live(&issue_line("LIVE-1", "Live only", "open", 1));
+        assert_top_pick(&robot_value(&mut fixture.command()), "LIVE-1");
+        assert!(!fixture.root().join(".beads/issues.jsonl").exists());
+
+        let stale = fixture.write_compatibility_snapshot();
+        fixture.write_live("");
+        let value = robot_value(&mut fixture.command());
+        assert_eq!(value["triage"]["quick_ref"]["total_open"], 0);
+        assert!(
+            value["triage"]["quick_ref"]["top_picks"]
+                .as_array()
+                .expect("empty-store top picks")
+                .is_empty()
+        );
+        fixture.assert_compatibility_snapshot(&stale);
+    }
+
+    #[test]
+    fn dolt_skips_only_explicit_memory_records() {
+        let fixture = FakeDoltRepo::new();
+        fixture.write_live(&format!(
+            "{{\"_type\":\"memory\",\"key\":\"context\",\"value\":\"not an issue\"}}\n{}\n",
+            issue_line("LIVE-1", "Real issue", "open", 1)
+        ));
+        let value = robot_value(&mut fixture.command());
+        assert_top_pick(&value, "LIVE-1");
+        assert_eq!(value["triage"]["quick_ref"]["total_open"], 1);
+    }
+
+    #[test]
+    fn dolt_rejects_corrupt_partial_invalid_and_unknown_records_without_stale_fallback() {
+        let fixture = FakeDoltRepo::new();
+        let stale = fixture.write_compatibility_snapshot();
+        let valid = issue_line("LIVE-1", "Valid prefix", "open", 1);
+        for payload in [
+            "not JSON\n".to_string(),
+            format!("{valid}\n{{unfinished\n"),
+            r#"{"id":"INVALID","title":"","status":"open","issue_type":"task"}"#.to_string(),
+            concat!(
+                r#"{"_type":"unknown","id":"UNKNOWN","title":"Unknown record kind","#,
+                r#""status":"open","issue_type":"task"}"#,
+            )
+            .to_string(),
+        ] {
+            fixture.write_live(&payload);
+            let output = fixture
+                .command()
+                .arg("--robot-triage")
+                .assert()
+                .failure()
+                .get_output()
+                .clone();
+            assert!(
+                output.stdout.is_empty(),
+                "failed live reads must not emit partial robot JSON"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("bd export"),
+                "the live backend error must remain visible in robot mode: {stderr}"
+            );
+            fixture.assert_compatibility_snapshot(&stale);
+        }
+    }
+
+    #[test]
+    fn dolt_nonzero_exit_is_visible_in_robot_mode_and_preserves_the_snapshot() {
+        let fixture = FakeDoltRepo::new();
+        let stale = fixture.write_compatibility_snapshot();
+        fixture.write_live(&issue_line("PARTIAL-1", "Partial result", "open", 1));
+        let output = fixture
+            .command()
+            .env("BVR_TEST_BD_MODE", "fail")
+            .env("BV_ROBOT", "1")
+            .arg("--robot-triage")
+            .assert()
+            .failure()
+            .get_output()
+            .clone();
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("bd export"),
+            "backend error must be visible: {stderr}"
+        );
+        assert!(
+            stderr.contains("BV_DATA_SOURCE=jsonl"),
+            "error should explain the explicit offline option: {stderr}"
+        );
+        fixture.assert_compatibility_snapshot(&stale);
+    }
+
+    #[test]
+    fn dolt_missing_executable_fails_instead_of_returning_stale_data() {
+        let fixture = FakeDoltRepo::new();
+        let stale = fixture.write_compatibility_snapshot();
+        let empty_bin = fixture.root().join("empty-bin");
+        fs::create_dir(&empty_bin).expect("empty executable search path");
+        let output = fixture
+            .command()
+            .env("PATH", &empty_bin)
+            .arg("--robot-triage")
+            .assert()
+            .failure()
+            .get_output()
+            .clone();
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("bd export"));
+        assert!(fixture.calls().is_empty());
+        fixture.assert_compatibility_snapshot(&stale);
+    }
+
+    #[test]
+    fn dolt_hung_export_is_bounded_and_the_child_is_reaped() {
+        let fixture = FakeDoltRepo::new();
+        let stale = fixture.write_compatibility_snapshot();
+        let started = Instant::now();
+        let output = fixture
+            .command()
+            .env("BVR_TEST_BD_MODE", "hang")
+            .arg("--robot-triage")
+            .assert()
+            .failure()
+            .get_output()
+            .clone();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "backend timeout should precede the outer test deadline"
+        );
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("bd export") && stderr.contains("timed out"),
+            "expected a visible bounded timeout: {stderr}"
+        );
+        let pid = fs::read_to_string(fixture.root().join("child.pid")).expect("fake child pid");
+        assert!(
+            !ProcessCommand::new("/bin/kill")
+                .args(["-0", pid.trim()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("check fake child lifetime")
+                .success(),
+            "the timed-out fake backend must not remain running or unreaped"
+        );
+        fixture.assert_compatibility_snapshot(&stale);
+    }
+
+    #[test]
+    fn dolt_large_stderr_cannot_deadlock_or_corrupt_robot_stdout() {
+        let fixture = FakeDoltRepo::new();
+        fixture.write_live(&issue_line("LIVE-1", "Noisy backend", "open", 1));
+        let value = robot_value(fixture.command().env("BVR_TEST_BD_MODE", "noisy"));
+        assert_top_pick(&value, "LIVE-1");
+        assert!(!value.to_string().contains("fake bd diagnostic"));
+    }
+
+    #[test]
+    fn dolt_success_does_not_wait_for_descendants_holding_output_descriptors() {
+        let fixture = FakeDoltRepo::new();
+        fixture.write_live(&issue_line("LIVE-1", "Exited exporter", "open", 1));
+        let started = Instant::now();
+        let value = robot_value(fixture.command().env("BVR_TEST_BD_MODE", "hold-open"));
+        assert_top_pick(&value, "LIVE-1");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "an exited exporter must not wait for inherited output descriptors"
+        );
+    }
+
+    #[test]
+    fn dolt_explicit_jsonl_sources_bypass_the_backend() {
+        let fixture = FakeDoltRepo::new();
+        let stale = fixture.write_compatibility_snapshot();
+        for flag in ["--beads-file", "--db"] {
+            let value = robot_value(fixture.command().args([flag, ".beads/issues.jsonl"]));
+            assert_top_pick(&value, "STALE-1");
+        }
+        let value = robot_value(
+            fixture
+                .command()
+                .env("BEADS_DB", fixture.root().join(".beads/issues.jsonl")),
+        );
+        assert_top_pick(&value, "STALE-1");
+        let value = robot_value(fixture.command().env("BV_DATA_SOURCE", "jsonl"));
+        assert_top_pick(&value, "STALE-1");
+        assert!(
+            fixture.calls().is_empty(),
+            "explicit file reads must not invoke bd"
+        );
+        fixture.assert_compatibility_snapshot(&stale);
+
+        let missing = FakeDoltRepo::new();
+        fs::write(missing.root().join(".beads/beads.jsonl"), &stale)
+            .expect("unrelated compatibility filename");
+        missing
+            .command()
+            .env("BV_DATA_SOURCE", "jsonl")
+            .arg("--robot-triage")
+            .assert()
+            .failure();
+        assert!(missing.calls().is_empty());
+    }
+
+    #[test]
+    fn dolt_redirect_uses_the_resolved_workspace_and_removes_database_overrides() {
+        let fixture = FakeDoltRepo::new();
+        fixture.write_live(&issue_line("LIVE-1", "Redirected live issue", "open", 1));
+        let linked = fixture.root().join("linked");
+        fs::create_dir_all(linked.join(".beads")).expect("redirected checkout");
+        let resolved =
+            fs::canonicalize(fixture.root().join(".beads")).expect("canonical beads path");
+        fs::write(
+            linked.join(".beads/redirect"),
+            resolved.to_string_lossy().as_bytes(),
+        )
+        .expect("beads redirect");
+        let value = robot_value(
+            fixture
+                .command()
+                .current_dir(&linked)
+                .env("BEADS_DB", linked.join("missing.db"))
+                .env("BD_DB", linked.join("missing-bd.db")),
+        );
+        assert_top_pick(&value, "LIVE-1");
+        assert_eq!(
+            fixture.calls(),
+            format!(
+                "export|{}|{}|unset|unset\n",
+                resolved.parent().expect("repo root").display(),
+                resolved.display()
+            )
+        );
+    }
+
+    #[test]
+    fn dolt_workspace_cache_keeps_independent_repositories_separate() {
+        let fixture = FakeDoltRepo::new();
+        let ws_path = setup_workspace(fixture.root(), &[("api", ""), ("web", "")]);
+        for (repo, id) in [("api", "API-1"), ("web", "WEB-1")] {
+            let repo_path = fixture.root().join(repo);
+            fs::write(repo_path.join(".beads/metadata.json"), r#"{"backend":"dolt"}"#)
+                .expect("workspace Dolt metadata");
+            fs::write(repo_path.join("live.jsonl"), issue_line(id, repo, "open", 1))
+                .expect("independent live database");
+        }
+        let value = robot_value(fixture.command().arg("--workspace").arg(ws_path));
+        assert_top_pick(&value, "api-API-1");
+        assert_top_pick(&value, "web-WEB-1");
+        assert_eq!(value["triage"]["quick_ref"]["total_open"], 2);
+        assert_eq!(fixture.calls().lines().count(), 2);
+    }
+
+    #[test]
+    fn dolt_workspace_fails_instead_of_emitting_partial_live_data() {
+        // Exercise both strict-record rejection and a backend process failure.
+        for failed_payload in [Some("not JSON\n"), None] {
+            let fixture = FakeDoltRepo::new();
+            let ws_path = setup_workspace(fixture.root(), &[("api", ""), ("web", "")]);
+            for repo in ["api", "web"] {
+                fs::write(
+                    fixture.root().join(repo).join(".beads/metadata.json"),
+                    r#"{"backend":"dolt"}"#,
+                )
+                .expect("workspace Dolt metadata");
+            }
+            fs::write(
+                fixture.root().join("api/live.jsonl"),
+                issue_line("API-1", "Valid live issue", "open", 1),
+            )
+            .expect("valid first live repository");
+            if let Some(payload) = failed_payload {
+                fs::write(fixture.root().join("web/live.jsonl"), payload)
+                    .expect("malformed second live repository");
+            }
+            // Otherwise the absent file makes the second fake bd exit nonzero.
+            let output = fixture
+                .command()
+                .arg("--workspace")
+                .arg(ws_path)
+                .arg("--robot-triage")
+                .assert()
+                .failure()
+                .get_output()
+                .clone();
+            assert!(
+                output.stdout.is_empty(),
+                "a workspace must not publish only its successful live repositories"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("bd export") && stderr.contains("web"),
+                "the failed live repository must remain visible to the caller: {stderr}"
+            );
+            assert_eq!(
+                fixture.calls().lines().count(),
+                2,
+                "the fixture must load one valid repository before the live failure"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_metadata_outvotes_leftover_dolt_directory_and_explicit_sqlite_stays_direct() {
+        let fixture = FakeDoltRepo::new();
+        let database = fixture.root().join(".beads/beads.db");
+        rusqlite::Connection::open(&database)
+            .expect("fixture SQLite database")
+            .execute_batch(
+                "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+                 INSERT INTO issues VALUES ('SQLITE-1', 'Current SQLite issue');",
+            )
+            .expect("seed SQLite fixture");
+        fs::write(
+            fixture.root().join(".beads/metadata.json"),
+            r#"{"backend":"sqlite","database":"beads.db","jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("authoritative SQLite metadata");
+        assert_top_pick(&robot_value(&mut fixture.command()), "SQLITE-1");
+        assert_top_pick(
+            &robot_value(fixture.command().arg("--beads-file").arg(database)),
+            "SQLITE-1",
+        );
+        assert!(
+            fixture.calls().is_empty(),
+            "SQLite must not invoke a leftover Dolt backend"
+        );
+    }
+}

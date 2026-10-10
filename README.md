@@ -361,9 +361,9 @@ bvr --preview-pages ./bv-pages
 
 `bvr` loads issues from `.beads` by default:
 
-- **br workspaces** declare their store in `.beads/metadata.json` (`database` and `jsonl_export`). `bvr` reads whichever is fresher: the SQLite database (read-only, including un-flushed writes in its `-wal` file) or the JSONL export (for example right after a `git pull`, before `br sync --import-only`). If the database cannot be read, `bvr` warns and falls back to the export. Set `BV_DATA_SOURCE=sqlite|jsonl` to force one.
+- **br workspaces** declare their store in `.beads/metadata.json` (`database` and `jsonl_export`). `bvr` reads whichever is fresher: the SQLite database (read-only, including un-flushed writes in its `-wal` file) or the JSONL export (for example right after a `git pull`, before `br sync --import-only`). In automatic mode, an unreadable database produces a warning and falls back to the export. Set `BV_DATA_SOURCE=sqlite|jsonl` to require one source. Explicit SQLite metadata takes precedence over leftover Dolt directories.
 - **Without metadata**, it reads the first non-empty file among `beads.jsonl`, `issues.jsonl`, and `beads.base.jsonl`.
-- **bd (Dolt) workspaces** (`.beads/dolt/`, `.beads/embeddeddolt/`, or `backend: dolt`) are read only through `.beads/issues.jsonl`. If that file is missing, `bvr` runs `bd export` to create it. Other JSONL files in the directory are never used.
+- **bd (Dolt) workspaces** (`.beads/dolt/`, `.beads/embeddeddolt/`, or `backend: dolt`) are read from live `bd export` output. Each export has a five-second process deadline; successful snapshots are shared for two seconds within the process, and failures back off for 30 seconds. Output size and JSONL records are checked before the snapshot is accepted. A failed export reports an error, including in robot mode, instead of silently loading stale or partial data. `bvr` does not create or replace `.beads/issues.jsonl`; `bd` itself may perform its normal backend startup or maintenance. Set `BV_DATA_SOURCE=jsonl` to read an existing `issues.jsonl` without invoking `bd`. Other JSONL files in a Dolt directory are never substituted. TUI background reload and `--watch-export` refresh live snapshots and detect description/comment edits even when timestamps do not change; a failed refresh preserves the last displayed or exported snapshot.
 - **`.beads/redirect`** chains are followed the same way `br where` follows them.
 - **`BEADS_DB`** (a database or JSONL file, or a `.beads` directory) takes priority over `BEADS_DIR`. `--db` accepts the same kinds of path.
 
@@ -684,6 +684,7 @@ experimental:
 
 | Variable | Purpose |
 |---|---|
+| `BV_DATA_SOURCE` | Source selection: `auto` (live Dolt or freshest declared br store), `jsonl`, or `sqlite` |
 | `BV_OUTPUT_FORMAT` | Default robot output format: `json` or `toon` |
 | `TOON_DEFAULT_FORMAT` | Fallback output format if `BV_OUTPUT_FORMAT` is unset |
 | `TOON_STATS` | Print JSON vs TOON token estimates on stderr |

@@ -2495,7 +2495,16 @@ fn main() -> ExitCode {
             };
             let initial_watched_tokens = initial_watched_paths
                 .iter()
-                .map(|path| watch_export_token_for_path(path).map(|token| (path.clone(), token)))
+                .map(|path| {
+                    let token = if path.is_dir() {
+                        // Use the snapshot that produced the bundle, even if
+                        // exporting it took longer than the live cache TTL.
+                        Ok(cached_dolt_watch_token(path))
+                    } else {
+                        watch_export_token_for_path(path)
+                    };
+                    token.map(|token| (path.clone(), token))
+                })
                 .collect::<bvr::Result<Vec<_>>>();
             let mut watched_mtimes = match initial_watched_tokens {
                 Ok(entries) => entries,
@@ -2533,8 +2542,16 @@ fn main() -> ExitCode {
             let mut cycle_count: u64 = 0;
             let mut last_outcome = "initial export";
             let mut last_change_at: Option<std::time::Instant> = None;
+            let mut regeneration_pending = false;
 
             loop {
+                if let Some(remaining) = max_loops.as_mut() {
+                    if *remaining == 0 {
+                        eprintln!("watch: max loops reached, exiting (last: {last_outcome})");
+                        break;
+                    }
+                    *remaining = remaining.saturating_sub(1);
+                }
                 std::thread::sleep(std::time::Duration::from_millis(watch_interval_ms));
 
                 let path_set_changed = match reconcile_watch_export_paths(&cli, &mut watched_mtimes)
@@ -2570,16 +2587,15 @@ fn main() -> ExitCode {
                     }
                 }
 
+                if changed_files.is_empty() && regeneration_pending {
+                    changed_files.push("retry pending regeneration".to_string());
+                }
                 if changed_files.is_empty() {
-                    if let Some(remaining) = max_loops.as_mut() {
-                        *remaining = remaining.saturating_sub(1);
-                        if *remaining == 0 {
-                            eprintln!("watch: max loops reached, exiting (last: {last_outcome})");
-                            break;
-                        }
-                    }
                     continue;
                 }
+                // Observed tokens can advance before a load or bundle write
+                // fails. Retain that work until a complete export succeeds.
+                regeneration_pending = true;
 
                 // Debounce: if we detected a change, wait the debounce period
                 // then re-check to coalesce rapid successive writes.
@@ -2655,7 +2671,15 @@ fn main() -> ExitCode {
                     Ok(summary) => {
                         let elapsed = reload_start.elapsed();
                         last_outcome = "success";
+                        regeneration_pending = false;
                         issue_count = refreshed_issue_count;
+                        for (path, token) in &mut watched_mtimes {
+                            if path.is_dir() {
+                                // Loading a slow workspace may refresh a
+                                // snapshot again after the earlier poll.
+                                *token = cached_dolt_watch_token(path);
+                            }
+                        }
                         eprintln!(
                             "watch: regenerated in {elapsed:.1?} (path: {}, issues: {}, history: {})",
                             summary.export_path, summary.issue_count, summary.include_history,
@@ -2666,14 +2690,6 @@ fn main() -> ExitCode {
                         eprintln!(
                             "warning: export failed: {error} (last good export still served)"
                         );
-                    }
-                }
-
-                if let Some(remaining) = max_loops.as_mut() {
-                    *remaining = remaining.saturating_sub(1);
-                    if *remaining == 0 {
-                        eprintln!("watch: max loops reached after {cycle_count} cycle(s), exiting");
-                        break;
                     }
                 }
             }
@@ -3386,7 +3402,7 @@ fn count_pages_export_issues(
 
 fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
     match resolve_issue_load_target(cli)? {
-        IssueLoadTarget::BeadsFile(path) => Ok(vec![path]),
+        IssueLoadTarget::BeadsFile(path) => loader::issue_path_watch_paths(&path),
         IssueLoadTarget::WorkspaceConfig(path) => {
             let mut paths = vec![path.clone()];
             paths.extend(loader::find_workspace_issue_paths(&path)?);
@@ -3394,13 +3410,17 @@ fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
             paths.dedup();
             Ok(paths)
         }
-        IssueLoadTarget::RepoPath(repo_path) => {
-            let beads_dir = loader::get_beads_dir(repo_path.as_deref())
-                .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
-            loader::issue_source_watch_paths(&beads_dir)
-                .map_err(|error| with_workspace_discovery_guidance(cli, error))
-        }
+        IssueLoadTarget::RepoPath(repo_path) => loader::issue_watch_paths(repo_path.as_deref())
+            .map_err(|error| with_workspace_discovery_guidance(cli, error)),
     }
+}
+
+fn cached_dolt_watch_token(path: &Path) -> Option<FileWatchToken> {
+    loader::cached_dolt_snapshot_hash(path).map(|content_fingerprint| FileWatchToken {
+        modified_millis: 0,
+        len_bytes: 0,
+        content_fingerprint,
+    })
 }
 
 fn watch_export_token_for_path(path: &Path) -> bvr::Result<Option<FileWatchToken>> {
@@ -3452,6 +3472,16 @@ fn file_watch_token(path: &Path) -> bvr::Result<Option<FileWatchToken>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(bvr::BvrError::Io(error)),
     };
+    if metadata.is_dir() {
+        let issues = loader::load_issues_from_path(path)?;
+        return Ok(Some(FileWatchToken {
+            // Backend maintenance can change directory metadata without
+            // changing an issue. Only complete live content controls reloads.
+            modified_millis: 0,
+            len_bytes: 0,
+            content_fingerprint: bvr::robot::compute_snapshot_hash(&issues),
+        }));
+    }
     let modified_millis = metadata
         .modified()
         .ok()

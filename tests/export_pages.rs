@@ -1672,3 +1672,351 @@ fn preview_pages_handles_sigterm_gracefully() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Preview server stopped: received shutdown signal."));
 }
+
+#[cfg(unix)]
+mod dolt_watch {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Output;
+
+    struct FakeDoltWatch {
+        directory: tempfile::TempDir,
+        compatibility_snapshot: String,
+    }
+
+    impl FakeDoltWatch {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().expect("Dolt watch fixture");
+            let root = directory.path();
+            fs::create_dir_all(root.join(".beads/dolt")).expect("Dolt marker directory");
+            fs::create_dir(root.join("bin")).expect("fake backend executable directory");
+            fs::write(root.join(".beads/metadata.json"), r#"{"backend":"dolt"}"#)
+                .expect("Dolt metadata");
+            let compatibility_snapshot = snapshot("Offline detail", "Offline comment");
+            fs::write(root.join(".beads/issues.jsonl"), &compatibility_snapshot)
+                .expect("offline compatibility snapshot");
+            fs::write(
+                root.join("initial.jsonl"),
+                snapshot("Initial detail", "Initial comment"),
+            )
+            .expect("first live snapshot");
+            fs::write(
+                root.join("updated.jsonl"),
+                snapshot("Changed detail", "Changed comment"),
+            )
+            .expect("later live snapshot");
+            let executable = root.join("bin/bd");
+            fs::write(
+                &executable,
+                r#"#!/bin/sh
+if [ "$#" -ne 1 ] || [ "$1" != export ]; then
+    printf 'expected plain bd export on stdout\n' >&2
+    exit 64
+fi
+if [ "$BVR_TEST_DOLT_MODE" = recover-workspace ]; then
+    case "$BEADS_DIR" in
+        */api/.beads) repo=api ;;
+        */web/.beads) repo=web ;;
+        *) printf 'unexpected workspace backend\n' >&2; exit 64 ;;
+    esac
+    count=0
+    counter="$BVR_TEST_DOLT_ROOT/$repo.calls"
+    if [ -f "$counter" ]; then count=$(/bin/cat "$counter"); fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$counter"
+    if [ "$repo" = api ]; then
+        if [ "$count" -eq 1 ]; then
+            /bin/cat "$BVR_TEST_DOLT_ROOT/api-first.jsonl"
+        else
+            /bin/cat "$BVR_TEST_DOLT_ROOT/api-updated.jsonl"
+        fi
+    elif [ "$count" -eq 2 ]; then
+        printf 'fake web backend temporarily unavailable\n' >&2
+        exit 7
+    else
+        /bin/cat "$BVR_TEST_DOLT_ROOT/web.jsonl"
+    fi
+    exit
+fi
+count=0
+if [ -f "$BVR_TEST_DOLT_ROOT/calls" ]; then
+    count=$(/bin/cat "$BVR_TEST_DOLT_ROOT/calls")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$BVR_TEST_DOLT_ROOT/calls"
+if [ "$count" -gt 1 ]; then
+    case "$BVR_TEST_DOLT_MODE" in
+        change)
+            /bin/cat "$BVR_TEST_DOLT_ROOT/updated.jsonl"
+            exit 0
+            ;;
+        fail)
+            printf 'partial invalid output\n'
+            printf 'fake live backend became unavailable\n' >&2
+            exit 7
+            ;;
+    esac
+fi
+/bin/cat "$BVR_TEST_DOLT_ROOT/initial.jsonl"
+"#,
+            )
+            .expect("fake bd for watch");
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+                .expect("make watch backend executable");
+            Self {
+                directory,
+                compatibility_snapshot,
+            }
+        }
+
+        fn root(&self) -> &Path {
+            self.directory.path()
+        }
+
+        fn run(&self, mode: &str, explicit_directory: bool) -> Output {
+            let mut command = bvr_cmd(self.root());
+            command
+                .args(["--export-pages", "pages-out", "--watch-export", "--no-hooks"])
+                .env_remove("BEADS_DIR")
+                .env_remove("BEADS_DB")
+                .env_remove("BD_DB")
+                .env_remove("BV_DATA_SOURCE")
+                .env("PATH", self.root().join("bin"))
+                .env("BVR_TEST_DOLT_ROOT", self.root())
+                .env("BVR_TEST_DOLT_MODE", mode)
+                .env("BVR_WATCH_MAX_LOOPS", "24")
+                .env("BVR_WATCH_INTERVAL_MS", "200")
+                .env("BVR_WATCH_DEBOUNCE_MS", "50")
+                .timeout(Duration::from_secs(18));
+            if explicit_directory {
+                command.args(["--db", ".beads"]);
+            }
+            command.assert().success().get_output().clone()
+        }
+
+        fn issues(&self) -> Value {
+            serde_json::from_slice(
+                &fs::read(self.root().join("pages-out/data/issues.json"))
+                    .expect("exported live issues"),
+            )
+            .expect("valid exported issues JSON")
+        }
+
+        fn calls(&self) -> usize {
+            fs::read_to_string(self.root().join("calls"))
+                .expect("backend invocation count")
+                .trim()
+                .parse()
+                .expect("numeric invocation count")
+        }
+
+        fn assert_compatibility_snapshot_unchanged(&self) {
+            assert_eq!(
+                fs::read_to_string(self.root().join(".beads/issues.jsonl"))
+                    .expect("offline snapshot still exists"),
+                self.compatibility_snapshot,
+                "watch reads must not replace the compatibility export"
+            );
+        }
+    }
+
+    fn snapshot(description: &str, comment: &str) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "id": "DOLT-1",
+                "title": "Stable title",
+                "status": "open",
+                "priority": 1,
+                "issue_type": "task",
+                "created_at": "2026-10-09T10:00:00Z",
+                "updated_at": "2026-10-09T10:00:00Z",
+                "description": description,
+                "comments": [{
+                    "id": 1,
+                    "issue_id": "DOLT-1",
+                    "author": "fixture",
+                    "text": comment,
+                    "created_at": "2026-10-09T10:00:00Z"
+                }]
+            })
+        )
+    }
+
+    #[test]
+    fn dolt_watch_exports_description_and_comment_changes_without_jsonl_updates() {
+        // Both discovery and an explicit directory must watch the live source.
+        // Every issue field in the public robot data hash stays unchanged.
+        for explicit_directory in [false, true] {
+            let fixture = FakeDoltWatch::new();
+            let output = fixture.run("change", explicit_directory);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("watch: regenerated"),
+                "live backend changes must regenerate the export: {stderr}"
+            );
+            let issues = fixture.issues();
+            let rows = issues.as_array().expect("exported issue rows");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["id"], "DOLT-1");
+            assert_eq!(rows[0]["title"], "Stable title");
+            assert_eq!(rows[0]["status"], "open");
+            assert_eq!(rows[0]["issue_type"], "task");
+            assert_eq!(rows[0]["description"], "Changed detail");
+            assert_eq!(rows[0]["comments"][0]["text"], "Changed comment");
+            assert_eq!(rows[0]["updated_at"], "2026-10-09T10:00:00Z");
+            assert!(fixture.calls() >= 2, "live backend must be refreshed");
+            fixture.assert_compatibility_snapshot_unchanged();
+        }
+    }
+
+    #[test]
+    fn dolt_watch_unchanged_snapshots_are_quiet_and_backend_reads_are_cached() {
+        let fixture = FakeDoltWatch::new();
+        let output = fixture.run("same", false);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("max loops reached"),
+            "watch should complete its bounded poll loop: {stderr}"
+        );
+        assert!(
+            !stderr.contains("watch: regenerated") && !stderr.contains("change #"),
+            "unchanged live content must not trigger regeneration: {stderr}"
+        );
+        let calls = fixture.calls();
+        assert!(
+            calls >= 2,
+            "the unchanged-snapshot case must include at least one real backend refresh"
+        );
+        assert!(
+            calls < 12,
+            "the cache must coalesce repeated loads across 24 polls, got {calls} exports"
+        );
+        assert_eq!(fixture.issues()[0]["description"], "Initial detail");
+        fixture.assert_compatibility_snapshot_unchanged();
+    }
+
+    #[test]
+    fn dolt_watch_retries_a_pending_workspace_change_after_an_unchanged_repo_recovers() {
+        let fixture = FakeDoltWatch::new();
+        let root = fixture.root();
+        fs::create_dir(root.join(".bv")).expect("workspace configuration directory");
+        fs::write(
+            root.join(".bv/workspace.yaml"),
+            concat!(
+                "name: dolt-recovery\nrepos:\n",
+                "  - name: api\n    path: api\n    prefix: api-\n",
+                "  - name: web\n    path: web\n    prefix: web-\n",
+            ),
+        )
+        .expect("two-repository workspace");
+        for repo in ["api", "web"] {
+            let beads_dir = root.join(repo).join(".beads");
+            fs::create_dir_all(&beads_dir).expect("workspace beads directory");
+            fs::write(beads_dir.join("metadata.json"), r#"{"backend":"dolt"}"#)
+                .expect("live workspace metadata");
+        }
+        fs::write(
+            root.join("api-first.jsonl"),
+            snapshot("A1", "Stable API comment"),
+        )
+        .expect("initial API snapshot");
+        fs::write(
+            root.join("api-updated.jsonl"),
+            snapshot("A2", "Stable API comment"),
+        )
+        .expect("changed API snapshot");
+        fs::write(root.join("web.jsonl"), snapshot("B1", "Stable web comment"))
+            .expect("unchanging web snapshot");
+
+        // API changes once. Web fails its second export and then recovers with
+        // its original content after the 30-second failure cache expires.
+        // Neither backend changes any further content to trigger a fresh token.
+        let output = bvr_cmd(root)
+            .args([
+                "--export-pages",
+                "pages-out",
+                "--watch-export",
+                "--no-hooks",
+                "--workspace",
+                ".bv/workspace.yaml",
+            ])
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .env("PATH", root.join("bin"))
+            .env("BVR_TEST_DOLT_ROOT", root)
+            .env("BVR_TEST_DOLT_MODE", "recover-workspace")
+            .env("BVR_WATCH_MAX_LOOPS", "120")
+            .env("BVR_WATCH_INTERVAL_MS", "300")
+            .env("BVR_WATCH_DEBOUNCE_MS", "50")
+            .timeout(Duration::from_secs(45))
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("reload failed"),
+            "the test must encounter a failed complete-workspace reload: {stderr}"
+        );
+        assert!(
+            stderr.contains("watch: regenerated"),
+            "a pending change must be published after the unchanged repo recovers: {stderr}"
+        );
+        let web_calls: usize = fs::read_to_string(root.join("web.calls"))
+            .expect("web backend call counter")
+            .trim()
+            .parse()
+            .expect("numeric web call count");
+        assert!(
+            web_calls >= 3,
+            "the web backend must recover after its second call fails"
+        );
+        let issues = fixture.issues();
+        let rows = issues.as_array().expect("complete workspace export");
+        assert_eq!(rows.len(), 2, "both live repositories must remain present");
+        let api = rows
+            .iter()
+            .find(|row| row["id"] == "api-DOLT-1")
+            .expect("exported API issue");
+        let web = rows
+            .iter()
+            .find(|row| row["id"] == "web-DOLT-1")
+            .expect("exported web issue");
+        assert_eq!(api["description"], "A2");
+        assert_eq!(web["description"], "B1");
+        assert_eq!(api["updated_at"], "2026-10-09T10:00:00Z");
+        assert_eq!(web["updated_at"], "2026-10-09T10:00:00Z");
+        for repo in ["api", "web"] {
+            assert!(
+                !root.join(repo).join(".beads/issues.jsonl").exists(),
+                "live recovery must not manufacture a compatibility snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn dolt_watch_backend_failure_keeps_last_good_export_and_backs_off() {
+        let fixture = FakeDoltWatch::new();
+        let output = fixture.run("fail", false);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("bd export"),
+            "a failed refresh must be visible while the last export stays available: {stderr}"
+        );
+        assert!(
+            !stderr.contains("watch: regenerated"),
+            "a failed live read must not publish stale or partial data: {stderr}"
+        );
+        assert_eq!(
+            fixture.calls(),
+            2,
+            "one initial success and one failed refresh should enter the failure backoff"
+        );
+        assert_eq!(fixture.issues()[0]["description"], "Initial detail");
+        assert_eq!(fixture.issues()[0]["comments"][0]["text"], "Initial comment");
+        fixture.assert_compatibility_snapshot_unchanged();
+    }
+}

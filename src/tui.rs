@@ -17,7 +17,7 @@ use crate::analysis::triage::TriageOptions;
 use crate::loader;
 use crate::model::{Issue, Sprint};
 #[cfg(not(test))]
-use crate::robot::compute_data_hash;
+use crate::robot::compute_snapshot_hash;
 use crate::{BvrError, Result};
 use chrono::{DateTime, Utc};
 use ftui::core::event::{
@@ -139,7 +139,7 @@ struct BackgroundRuntimeState {
     config: BackgroundModeConfig,
     in_flight: bool,
     cancel_requested: Arc<AtomicBool>,
-    last_data_hash: String,
+    last_snapshot_hash: [u8; 32],
     timeline: VecDeque<String>,
 }
 
@@ -162,8 +162,8 @@ fn decide_background_tick(cancel_requested: bool, in_flight: bool) -> Background
 
 fn should_apply_background_reload(
     cancel_requested: bool,
-    new_hash: &str,
-    previous_hash: &str,
+    new_hash: &[u8; 32],
+    previous_hash: &[u8; 32],
 ) -> bool {
     !cancel_requested && new_hash != previous_hash
 }
@@ -4710,13 +4710,13 @@ impl BvrApp {
 
             match result {
                 Ok(issues) => {
-                    let hash = compute_data_hash(&issues);
+                    let hash = compute_snapshot_hash(&issues);
                     if should_apply_background_reload(
                         cancel_requested,
                         &hash,
-                        &runtime.last_data_hash,
+                        &runtime.last_snapshot_hash,
                     ) {
-                        runtime.last_data_hash = hash;
+                        runtime.last_snapshot_hash = hash;
                         status_update = push_background_timeline(
                             runtime,
                             "reload applied: issue snapshot changed",
@@ -20636,7 +20636,7 @@ fn new_app_with_background(
     background_config: Option<BackgroundModeConfig>,
 ) -> BvrApp {
     #[cfg(not(test))]
-    let initial_data_hash = compute_data_hash(&issues);
+    let initial_snapshot_hash = compute_snapshot_hash(&issues);
     #[cfg(not(test))]
     let background_runtime = background_config.map(|config| {
         let mut timeline = VecDeque::new();
@@ -20646,7 +20646,7 @@ fn new_app_with_background(
             config: config.normalized(),
             in_flight: false,
             cancel_requested: Arc::new(AtomicBool::new(false)),
-            last_data_hash: initial_data_hash,
+            last_snapshot_hash: initial_snapshot_hash,
             timeline,
         }
     });
@@ -22279,17 +22279,26 @@ mod tests {
 
     #[test]
     fn background_reload_apply_requires_no_cancel_and_hash_change() {
-        assert!(should_apply_background_reload(
-            false, "new-hash", "old-hash"
-        ));
-        assert!(!should_apply_background_reload(
-            false,
-            "same-hash",
-            "same-hash"
-        ));
-        assert!(!should_apply_background_reload(
-            true, "new-hash", "old-hash"
-        ));
+        assert!(should_apply_background_reload(false, &[1; 32], &[2; 32]));
+        assert!(!should_apply_background_reload(false, &[1; 32], &[1; 32]));
+        assert!(!should_apply_background_reload(true, &[1; 32], &[2; 32]));
+    }
+
+    #[test]
+    fn background_reload_observes_description_changes_without_timestamp_updates() {
+        let issue = Issue {
+            id: "A".to_string(),
+            description: "Original description".to_string(),
+            updated_at: crate::model::ts("2026-10-10T00:00:00Z"),
+            ..Default::default()
+        };
+        let previous = crate::robot::compute_snapshot_hash(std::slice::from_ref(&issue));
+        let mut changed = issue;
+        changed.description = "Updated description".to_string();
+        let current = crate::robot::compute_snapshot_hash(std::slice::from_ref(&changed));
+
+        assert!(should_apply_background_reload(false, &current, &previous));
+        assert!(!should_apply_background_reload(true, &current, &previous));
     }
 
     #[test]

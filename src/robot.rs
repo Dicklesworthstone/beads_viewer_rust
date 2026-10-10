@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -73,6 +74,36 @@ pub fn compute_data_hash(issues: &[Issue]) -> String {
 
     let digest = hasher.finalize();
     format!("{digest:x}")[..16].to_string()
+}
+
+/// Fingerprint every issue field for in-process change detection, including
+/// workspace routing fields omitted from serialized output. Issue order is
+/// ignored; ordering within labels, comments, and dependencies remains meaningful.
+///
+/// This is separate from the robot data hash and is not a stable wire format.
+#[must_use]
+pub fn compute_snapshot_hash(issues: &[Issue]) -> [u8; 32] {
+    let mut stable = issues.iter().collect::<Vec<_>>();
+    stable.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut hasher = SnapshotHasher(Sha256::new());
+    stable.hash(&mut hasher);
+    hasher.0.finalize().into()
+}
+
+struct SnapshotHasher(Sha256);
+
+impl Hasher for SnapshotHasher {
+    fn finish(&self) -> u64 {
+        let digest = self.0.clone().finalize();
+        let mut prefix = [0; 8];
+        prefix.copy_from_slice(&digest[..8]);
+        u64::from_le_bytes(prefix)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
 }
 
 pub fn emit<T: Serialize>(format: OutputFormat, payload: &T) -> Result<()> {
@@ -2364,6 +2395,125 @@ mod tests {
             compute_data_hash(&v1),
             compute_data_hash(&v2),
             "different status should produce different hash"
+        );
+    }
+
+    #[test]
+    fn snapshot_hash_detects_content_changes_without_timestamp_updates() {
+        let issue = Issue {
+            id: "A".to_string(),
+            title: "Original title".to_string(),
+            description: "Original description".to_string(),
+            status: "open".to_string(),
+            updated_at: crate::model::ts("2026-10-10T00:00:00Z"),
+            labels: vec!["backend".to_string()],
+            comments: vec![crate::model::Comment {
+                id: 1,
+                issue_id: "A".to_string(),
+                text: "Original comment".to_string(),
+                ..Default::default()
+            }],
+            dependencies: vec![crate::model::Dependency {
+                issue_id: "A".to_string(),
+                depends_on_id: "B".to_string(),
+                dep_type: "blocks".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let original = compute_snapshot_hash(std::slice::from_ref(&issue));
+        let robot_hash = compute_data_hash(std::slice::from_ref(&issue));
+
+        let mut description = issue.clone();
+        description.description = "Updated description".to_string();
+        let mut comment = issue.clone();
+        comment.comments[0].text = "Updated comment".to_string();
+        let mut dependency = issue.clone();
+        dependency.dependencies[0].depends_on_id = "C".to_string();
+        let mut title = issue.clone();
+        title.title = "Updated title".to_string();
+        let mut label = issue.clone();
+        label.labels[0] = "frontend".to_string();
+
+        for (field, changed) in [
+            ("description", description),
+            ("comment", comment),
+            ("dependency", dependency),
+            ("title", title),
+            ("label", label),
+        ] {
+            assert_eq!(
+                compute_data_hash(std::slice::from_ref(&changed)),
+                robot_hash,
+                "{field} edit must leave the public robot hash unchanged"
+            );
+            assert_ne!(
+                compute_snapshot_hash(std::slice::from_ref(&changed)),
+                original,
+                "{field} edit must invalidate the full snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_hash_detects_workspace_routing_changes() {
+        let issue = Issue {
+            id: "repo-A".to_string(),
+            workspace_prefix: Some("repo-".to_string()),
+            workspace_repo_path: Some(std::path::PathBuf::from("/workspace/first")),
+            workspace_local_id: Some("A".to_string()),
+            ..Default::default()
+        };
+        let original = compute_snapshot_hash(std::slice::from_ref(&issue));
+        let serialized = serde_json::to_value(&issue).expect("serialize issue");
+
+        let mut repo_path = issue.clone();
+        repo_path.workspace_repo_path = Some(std::path::PathBuf::from("/workspace/second"));
+        let mut prefix = issue.clone();
+        prefix.workspace_prefix = Some("other-".to_string());
+        let mut local_id = issue.clone();
+        local_id.workspace_local_id = Some("local-A".to_string());
+
+        for changed in [repo_path, prefix, local_id] {
+            assert_eq!(
+                serde_json::to_value(&changed).expect("serialize changed issue"),
+                serialized,
+                "workspace routing is omitted from serialized issue data"
+            );
+            assert_ne!(
+                compute_snapshot_hash(std::slice::from_ref(&changed)),
+                original,
+                "workspace routing changes must invalidate the full snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_hash_ignores_issue_order_but_preserves_nested_order() {
+        let issues = [
+            Issue {
+                id: "A".to_string(),
+                labels: vec!["first".to_string(), "second".to_string()],
+                ..Default::default()
+            },
+            Issue {
+                id: "B".to_string(),
+                ..Default::default()
+            },
+        ];
+        let original = compute_snapshot_hash(&issues);
+        assert_eq!(
+            original,
+            compute_snapshot_hash(&[issues[1].clone(), issues[0].clone()]),
+            "the issue array may arrive in a different order"
+        );
+
+        let mut reordered_labels = issues.clone();
+        reordered_labels[0].labels.reverse();
+        assert_ne!(
+            original,
+            compute_snapshot_hash(&reordered_labels),
+            "nested order is part of the displayed content"
         );
     }
 

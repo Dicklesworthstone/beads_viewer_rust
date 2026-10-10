@@ -15,7 +15,7 @@ const KNOWN_STATUSES: &[&str] = &[
     "tombstone",
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
 pub struct Issue {
     #[serde(default)]
     pub id: String,
@@ -82,7 +82,7 @@ pub struct Issue {
     pub external_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
 pub struct Dependency {
     #[serde(default)]
     pub issue_id: String,
@@ -96,7 +96,7 @@ pub struct Dependency {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
 pub struct Comment {
     #[serde(default)]
     pub id: i64,

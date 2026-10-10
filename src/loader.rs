@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek};
 use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::model::{Issue, Sprint};
 use crate::{BvrError, Result};
@@ -740,17 +743,17 @@ pub fn load_issues(repo_path: Option<&Path>) -> Result<Vec<Issue>> {
 // a JSONL export; `metadata.json` names both. The export can lag the database
 // (no `br sync --flush-only` yet) and the database can lag the export (a `git
 // pull` before `br sync --import-only`), so the freshest declared store wins.
-// Dolt-native `bd` workspaces are read through their `issues.jsonl`
-// compatibility export only; a stray JSONL there (memories, interactions) is
-// never mistaken for the issue store.
+// Dolt-native `bd` workspaces are read from a bounded live `bd export` on
+// stdout, without creating a compatibility file. An existing `issues.jsonl`
+// is used only with the explicit JSONL override; other JSONL is never used.
 // ---------------------------------------------------------------------------
 
 /// Env var naming a specific database/JSONL file or a `.beads` directory.
 /// Takes priority over `BEADS_DIR`.
 pub const BEADS_DB_ENV: &str = "BEADS_DB";
 
-/// Env var forcing the store read from a br `.beads` directory:
-/// `jsonl`, `sqlite`, or `auto` (default: freshest declared store).
+/// Env var forcing the store read from a `.beads` directory:
+/// `jsonl`, `sqlite`, or `auto` (default: live Dolt or freshest br store).
 pub const DATA_SOURCE_ENV: &str = "BV_DATA_SOURCE";
 
 /// Bounds for `.beads/redirect` resolution, matching br's routing limits so
@@ -780,22 +783,23 @@ pub fn read_beads_metadata(beads_dir: &Path) -> Option<BeadsMetadata> {
 pub enum IssueSource {
     Jsonl(PathBuf),
     Sqlite(PathBuf),
+    Dolt(PathBuf),
 }
 
 impl IssueSource {
     #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            Self::Jsonl(path) | Self::Sqlite(path) => path,
+            Self::Jsonl(path) | Self::Sqlite(path) | Self::Dolt(path) => path,
         }
     }
 
-    /// Files whose change means the issue data may have changed (the
-    /// database plus its WAL sidecar, or the JSONL file).
+    /// Sources to poll for changes: a JSONL file, SQLite and its WAL, or a
+    /// Dolt directory whose live snapshot must be checked through the loader.
     #[must_use]
     pub fn watch_paths(&self) -> Vec<PathBuf> {
         match self {
-            Self::Jsonl(path) => vec![path.clone()],
+            Self::Jsonl(path) | Self::Dolt(path) => vec![path.clone()],
             Self::Sqlite(path) => vec![path.clone(), sqlite_wal_path(path)],
         }
     }
@@ -812,14 +816,19 @@ fn sqlite_wal_path(path: &Path) -> PathBuf {
 /// `backend: dolt`.
 #[must_use]
 pub fn is_bd_workspace(beads_dir: &Path) -> bool {
-    if ["dolt", "embeddeddolt"]
+    if let Some(metadata) = read_beads_metadata(beads_dir) {
+        let backend = metadata.backend.trim();
+        if !backend.is_empty() {
+            return backend.eq_ignore_ascii_case("dolt");
+        }
+        // A declared SQLite store takes precedence over leftover Dolt files.
+        if is_sqlite_path(Path::new(metadata.database.trim())) {
+            return false;
+        }
+    }
+    ["dolt", "embeddeddolt"]
         .iter()
         .any(|dir| beads_dir.join(dir).is_dir())
-    {
-        return true;
-    }
-    read_beads_metadata(beads_dir)
-        .is_some_and(|meta| meta.backend.trim().eq_ignore_ascii_case("dolt"))
 }
 
 fn is_sqlite_path(path: &Path) -> bool {
@@ -948,34 +957,55 @@ fn newest_mtime(paths: &[PathBuf]) -> Option<std::time::SystemTime> {
         .max()
 }
 
-/// Pick the store to read for a `.beads` directory (see the section comment).
+/// Pick the store to read without launching a backend or writing any files.
 pub fn select_issue_source(beads_dir: &Path) -> Result<IssueSource> {
-    if is_bd_workspace(beads_dir) {
-        let issues_path = beads_dir.join("issues.jsonl");
-        if !issues_path.is_file() {
-            refresh_bd_export(beads_dir, &issues_path);
-        }
-        if issues_path.is_file() {
-            return Ok(IssueSource::Jsonl(issues_path));
-        }
+    let mode = std::env::var(DATA_SOURCE_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(mode.as_str(), "" | "auto" | "jsonl" | "sqlite") {
         return Err(BvrError::InvalidArgument(format!(
-            "no compatibility JSONL found at {}; run 'bd export -o .beads/issues.jsonl'",
-            issues_path.display()
+            "{DATA_SOURCE_ENV} must be auto, jsonl, or sqlite (got {mode:?})"
         )));
+    }
+
+    if is_bd_workspace(beads_dir) {
+        return match mode.as_str() {
+            "jsonl" => {
+                let path = beads_dir.join("issues.jsonl");
+                if path.is_file() {
+                    Ok(IssueSource::Jsonl(path))
+                } else {
+                    Err(BvrError::InvalidArgument(format!(
+                        "{DATA_SOURCE_ENV}=jsonl requires an existing {}",
+                        path.display()
+                    )))
+                }
+            }
+            "sqlite" => Err(BvrError::InvalidArgument(format!(
+                "{DATA_SOURCE_ENV}=sqlite cannot read a Dolt workspace: {}",
+                beads_dir.display()
+            ))),
+            _ => Ok(IssueSource::Dolt(std::fs::canonicalize(beads_dir)?)),
+        };
     }
 
     let metadata = read_beads_metadata(beads_dir).unwrap_or_default();
     let jsonl = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
         .map_or_else(|| find_jsonl_path(beads_dir), Ok);
     let database = resolve_metadata_path(beads_dir, &metadata.database);
-
-    let mode = std::env::var(DATA_SOURCE_ENV)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    if mode == "jsonl" {
+        return jsonl.map(IssueSource::Jsonl);
+    }
+    if mode == "sqlite" {
+        return database.map(IssueSource::Sqlite).ok_or_else(|| {
+            BvrError::InvalidArgument(format!(
+                "{DATA_SOURCE_ENV}=sqlite requires a declared database in {}",
+                beads_dir.display()
+            ))
+        });
+    }
     match (database, jsonl) {
-        (Some(db), _) if mode == "sqlite" => Ok(IssueSource::Sqlite(db)),
-        (_, Ok(jsonl)) if mode == "jsonl" => Ok(IssueSource::Jsonl(jsonl)),
         (Some(db), Ok(jsonl)) => {
             let db_source = IssueSource::Sqlite(db);
             let db_time = newest_mtime(&db_source.watch_paths());
@@ -991,29 +1021,239 @@ pub fn select_issue_source(beads_dir: &Path) -> Result<IssueSource> {
     }
 }
 
-/// Refresh a bd workspace's compatibility export (`bd export -o`) when `bd`
-/// is installed. Failures are warnings; the caller reports a missing export.
-fn refresh_bd_export(beads_dir: &Path, issues_path: &Path) {
-    let beads_dir = std::fs::canonicalize(beads_dir).unwrap_or_else(|_| beads_dir.to_path_buf());
-    let Some(repo_root) = beads_dir.parent() else {
-        return;
+const BD_EXPORT_TIMEOUT: Duration = Duration::from_secs(5);
+const BD_EXPORT_SUCCESS_TTL: Duration = Duration::from_secs(2);
+const BD_EXPORT_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
+const BD_EXPORT_MAX_STDOUT: u64 = 128 * 1024 * 1024;
+const BD_EXPORT_MAX_STDERR: u64 = 1024 * 1024;
+const BD_EXPORT_DIAGNOSTIC_BYTES: u64 = 4096;
+
+type BdSnapshotResult = std::result::Result<Vec<Issue>, String>;
+
+struct BdExportSnapshot {
+    refresh_at: Instant,
+    result: BdSnapshotResult,
+}
+
+type BdExportCache = HashMap<PathBuf, Arc<Mutex<Option<BdExportSnapshot>>>>;
+static BD_EXPORT_CACHE: OnceLock<Mutex<BdExportCache>> = OnceLock::new();
+
+/// Hash the already loaded snapshot for a canonical Dolt directory without
+/// refreshing it or doing I/O. Watch initialization uses this even after the
+/// TTL expires, so its token describes the data actually exported. Ordinary
+/// polling must still use the live loader to discover subsequent changes.
+#[must_use]
+pub fn cached_dolt_snapshot_hash(beads_dir: &Path) -> Option<[u8; 32]> {
+    let entry = BD_EXPORT_CACHE
+        .get()?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(beads_dir)
+        .cloned()?;
+    let snapshot = entry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let issues = snapshot.as_ref()?.result.as_ref().ok()?;
+    Some(crate::robot::compute_snapshot_hash(issues))
+}
+
+fn load_issues_from_bd(beads_dir: &Path) -> Result<Vec<Issue>> {
+    // Source selection canonicalizes this path, so redirects share one cache.
+    // Only callers for the same workspace wait for its export; the global map
+    // lock is released before running a child process.
+    let entry = {
+        let mut cache = BD_EXPORT_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            cache
+                .entry(beads_dir.to_path_buf())
+                .or_insert_with(|| Arc::new(Mutex::new(None))),
+        )
     };
-    let output = std::process::Command::new("bd")
+    let mut snapshot = entry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let result = if let Some(cached) = snapshot
+        .as_ref()
+        .filter(|cached| Instant::now() < cached.refresh_at)
+    {
+        cached.result.clone()
+    } else {
+        let result = read_bd_export(beads_dir);
+        let ttl = if result.is_ok() {
+            BD_EXPORT_SUCCESS_TTL
+        } else {
+            BD_EXPORT_FAILURE_BACKOFF
+        };
+        *snapshot = Some(BdExportSnapshot {
+            refresh_at: Instant::now() + ttl,
+            result: result.clone(),
+        });
+        result
+    };
+    result.map_err(|message| BvrError::DoltExport {
+        beads_dir: beads_dir.to_path_buf(),
+        message,
+    })
+}
+
+fn read_bd_export(beads_dir: &Path) -> BdSnapshotResult {
+    let repo_root = beads_dir
+        .parent()
+        .ok_or_else(|| "the beads directory has no parent".to_string())?;
+    // Anonymous private files avoid pipe deadlocks, unbounded capture buffers,
+    // and waiting for descendants that inherit the exporter's output handles.
+    // No compatibility snapshot is created or replaced inside the tracker.
+    let mut stdout = tempfile::tempfile()
+        .map_err(|error| format!("could not capture stdout: {error}"))?;
+    let mut stderr = tempfile::tempfile()
+        .map_err(|error| format!("could not capture stderr: {error}"))?;
+    let mut child = Command::new("bd")
         .arg("export")
-        .arg("-o")
-        .arg(beads_dir.join(issues_path.file_name().unwrap_or_default()))
         .current_dir(repo_root)
         .env_remove(BEADS_DB_ENV)
-        .env(BEADS_DIR_ENV, &beads_dir)
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => warn(format!(
-            "bd export failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )),
-        Err(_) => {}
+        .env_remove("BD_DB")
+        .env(BEADS_DIR_ENV, beads_dir)
+        .stdin(Stdio::null())
+        .stdout(
+            stdout
+                .try_clone()
+                .map_err(|error| format!("could not capture stdout: {error}"))?,
+        )
+        .stderr(
+            stderr
+                .try_clone()
+                .map_err(|error| format!("could not capture stderr: {error}"))?,
+        )
+        .spawn()
+        .map_err(|error| format!("could not start bd: {error}"))?;
+    let status = match wait_for_bd_export(&mut child, &stdout, &stderr) {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    if !status.success() {
+        stderr
+            .rewind()
+            .map_err(|error| format!("could not read stderr: {error}"))?;
+        let mut diagnostic = Vec::new();
+        stderr
+            .take(BD_EXPORT_DIAGNOSTIC_BYTES)
+            .read_to_end(&mut diagnostic)
+            .map_err(|error| format!("could not read stderr: {error}"))?;
+        return Err(format!(
+            "{status}: {}",
+            String::from_utf8_lossy(&diagnostic).trim()
+        ));
     }
+    let output_len = stdout
+        .metadata()
+        .map_err(|error| format!("could not inspect stdout: {error}"))?
+        .len();
+    if output_len > BD_EXPORT_MAX_STDOUT {
+        return Err(format!("stdout exceeded {BD_EXPORT_MAX_STDOUT} bytes"));
+    }
+    stdout
+        .rewind()
+        .map_err(|error| format!("could not read stdout: {error}"))?;
+    // Take only the completed snapshot, even if a descendant retains a handle.
+    parse_bd_export(BufReader::new(stdout.take(output_len)))
+}
+
+fn wait_for_bd_export(
+    child: &mut Child,
+    stdout: &File,
+    stderr: &File,
+) -> std::result::Result<ExitStatus, String> {
+    let started = Instant::now();
+    loop {
+        let status = child
+            .try_wait()
+            .map_err(|error| format!("could not wait for bd: {error}"))?;
+        for (name, file, limit) in [
+            ("stdout", stdout, BD_EXPORT_MAX_STDOUT),
+            ("stderr", stderr, BD_EXPORT_MAX_STDERR),
+        ] {
+            if file
+                .metadata()
+                .map_err(|error| format!("could not inspect {name}: {error}"))?
+                .len()
+                > limit
+            {
+                return Err(format!("{name} exceeded {limit} bytes"));
+            }
+        }
+        if let Some(status) = status {
+            return Ok(status);
+        }
+        if started.elapsed() >= BD_EXPORT_TIMEOUT {
+            return Err(format!(
+                "timed out after {} seconds",
+                BD_EXPORT_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Parse a complete live snapshot strictly. A corrupt or partial export must
+/// never become a successful partial database or silently select stale JSONL.
+fn parse_bd_export(mut reader: impl BufRead) -> BdSnapshotResult {
+    let mut issues = Vec::new();
+    let mut ids = HashSet::new();
+    let mut line = String::new();
+    let mut line_no = 0usize;
+    loop {
+        line.clear();
+        let bytes = (&mut reader)
+            .take(MAX_LINE_BYTES as u64 + 1)
+            .read_line(&mut line)
+            .map_err(|error| format!("could not read JSONL line {}: {error}", line_no + 1))?;
+        if bytes == 0 {
+            break;
+        }
+        line_no += 1;
+        if bytes > MAX_LINE_BYTES {
+            return Err(format!("JSONL line {line_no} exceeded {MAX_LINE_BYTES} bytes"));
+        }
+        let trimmed = if line_no == 1 {
+            line.trim_start_matches('\u{feff}').trim()
+        } else {
+            line.trim()
+        };
+        if trimmed.is_empty() {
+            continue;
+        }
+        let record: serde_json::Value = serde_json::from_str(trimmed)
+            .map_err(|error| format!("invalid JSON on line {line_no}: {error}"))?;
+        if let Some(kind) = record.get("_type") {
+            match kind.as_str() {
+                // bd 1.0 includes memories by default; newer releases omit them.
+                Some("memory") => continue,
+                Some("issue") => {}
+                _ => return Err(format!("unknown record type on JSONL line {line_no}")),
+            }
+        }
+        let mut issue: Issue = serde_json::from_value(record)
+            .map_err(|error| format!("invalid issue on JSONL line {line_no}: {error}"))?;
+        issue.status = issue.normalized_status();
+        issue
+            .validate()
+            .map_err(|error| format!("invalid issue on JSONL line {line_no}: {error}"))?;
+        if !ids.insert(issue.id.clone()) {
+            return Err(format!(
+                "duplicate issue ID {:?} on JSONL line {line_no}",
+                issue.id
+            ));
+        }
+        issues.push(issue);
+    }
+    Ok(issues)
 }
 
 /// Load issues from a `.beads` directory through its selected store. A
@@ -1021,9 +1261,15 @@ fn refresh_bd_export(beads_dir: &Path, issues_path: &Path) {
 pub fn load_issues_from_beads_dir(beads_dir: &Path) -> Result<Vec<Issue>> {
     match select_issue_source(beads_dir)? {
         IssueSource::Jsonl(path) => load_issues_from_file(&path),
+        IssueSource::Dolt(path) => load_issues_from_bd(&path),
         IssueSource::Sqlite(db) => match load_issues_from_sqlite(&db) {
             Ok(issues) => Ok(issues),
             Err(error) => {
+                if std::env::var(DATA_SOURCE_ENV)
+                    .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("sqlite"))
+                {
+                    return Err(error);
+                }
                 warn(format!(
                     "could not read {} ({error}); falling back to the JSONL export",
                     db.display()
@@ -1053,6 +1299,26 @@ pub fn load_issues_from_path(path: &Path) -> Result<Vec<Issue>> {
 /// Watch paths for the store a `.beads` directory currently reads from.
 pub fn issue_source_watch_paths(beads_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(select_issue_source(beads_dir)?.watch_paths())
+}
+
+/// Watch the same source as an explicit file/directory load, including redirects
+/// and SQLite WAL writes.
+pub fn issue_path_watch_paths(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_dir() {
+        return issue_source_watch_paths(&resolve_beads_redirect(path)?);
+    }
+    if is_sqlite_path(path) {
+        return Ok(IssueSource::Sqlite(path.to_path_buf()).watch_paths());
+    }
+    Ok(vec![path.to_path_buf()])
+}
+
+/// Watch the same source as `load_issues`, including a BEADS_DB file override.
+pub fn issue_watch_paths(repo_path: Option<&Path>) -> Result<Vec<PathBuf>> {
+    if let Some(path) = beads_db_env_file() {
+        return issue_path_watch_paths(&path);
+    }
+    issue_source_watch_paths(&get_beads_dir(repo_path)?)
 }
 
 fn parse_sqlite_time(raw: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -1435,6 +1701,10 @@ pub fn load_workspace_issues_with_summary(
                     error: None,
                 });
             }
+            // A failed live export cannot establish a complete workspace
+            // snapshot. Keep the previous TUI/export state instead of making
+            // every issue in this repository disappear during a refresh.
+            Err(error) if matches!(&error, BvrError::DoltExport { .. }) => return Err(error),
             Err(error) => {
                 warn(format!(
                     "workspace repo '{repo_name}' failed to load: {error}"
@@ -3082,8 +3352,11 @@ mod tests {
         )
         .expect("stray");
         assert!(is_bd_workspace(&beads));
-        let error = select_issue_source(&beads).expect_err("no compatibility export");
-        assert!(error.to_string().contains("bd export"), "{error}");
+        assert_eq!(
+            select_issue_source(&beads).expect("live source"),
+            IssueSource::Dolt(std::fs::canonicalize(&beads).expect("canonical beads"))
+        );
+        assert!(!beads.join("issues.jsonl").exists());
 
         std::fs::write(
             beads.join("issues.jsonl"),
@@ -3092,8 +3365,81 @@ mod tests {
         .expect("export");
         assert_eq!(
             select_issue_source(&beads).expect("select"),
-            IssueSource::Jsonl(beads.join("issues.jsonl"))
+            IssueSource::Dolt(std::fs::canonicalize(&beads).expect("canonical beads"))
         );
+    }
+
+    #[test]
+    fn bd_export_parser_accepts_empty_and_mixed_issue_memory_snapshots() {
+        assert!(parse_bd_export(&b" \n\n"[..]).expect("empty snapshot").is_empty());
+        let jsonl = concat!(
+            "\u{feff}",
+            "{\"_type\":\"memory\",\"key\":\"context\",\"value\":\"not an issue\"}\n",
+            "{\"_type\":\"issue\",\"id\":\"LIVE-1\",\"title\":\"Live\",",
+            "\"status\":\" OPEN \",\"issue_type\":\"task\"}\n",
+        );
+        let issues = parse_bd_export(jsonl.as_bytes()).expect("complete snapshot");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "LIVE-1");
+        assert_eq!(issues[0].status, "open");
+    }
+
+    #[test]
+    fn bd_export_parser_rejects_partial_invalid_and_unknown_records() {
+        let valid = r#"{"id":"LIVE-1","title":"Live","status":"open","issue_type":"task"}"#;
+        for invalid in [
+            "{unfinished",
+            r#"{"id":"BAD","title":"","status":"open","issue_type":"task"}"#,
+            r#"{"_type":"unknown","id":"BAD","title":"Unknown","status":"open","issue_type":"task"}"#,
+            r#"{"_type":null,"id":"BAD","title":"Unknown","status":"open","issue_type":"task"}"#,
+            "[]",
+            valid,
+        ] {
+            let jsonl = format!("{valid}\n{invalid}\n");
+            let error = parse_bd_export(jsonl.as_bytes()).expect_err("invalid second record");
+            assert!(
+                error.contains("line 2"),
+                "must reject the second record: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn bd_export_parser_bounds_lines_and_rejects_invalid_utf8() {
+        let oversized = vec![b'x'; MAX_LINE_BYTES + 1];
+        let error = parse_bd_export(oversized.as_slice()).expect_err("oversized line");
+        assert!(error.contains("exceeded"), "{error}");
+        assert!(parse_bd_export(&b"\xff\n"[..]).is_err());
+    }
+
+    #[test]
+    fn dolt_watch_initial_token_uses_the_loaded_snapshot_even_after_expiry() {
+        let directory = tempfile::tempdir().expect("cache identity");
+        let beads_dir = std::fs::canonicalize(directory.path()).expect("canonical path");
+        let issues = vec![Issue {
+            id: "LIVE-1".to_string(),
+            title: "Already exported".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            ..Default::default()
+        }];
+        let expected = crate::robot::compute_snapshot_hash(&issues);
+        let entry = Arc::new(Mutex::new(Some(BdExportSnapshot {
+            refresh_at: Instant::now() - BD_EXPORT_SUCCESS_TTL,
+            result: Ok(issues),
+        })));
+        BD_EXPORT_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("cache")
+            .insert(beads_dir.clone(), Arc::clone(&entry));
+
+        assert_eq!(cached_dolt_snapshot_hash(&beads_dir), Some(expected));
+        {
+            let mut snapshot = entry.lock().expect("snapshot");
+            snapshot.as_mut().expect("entry").result = Err("backend unavailable".to_string());
+        }
+        assert_eq!(cached_dolt_snapshot_hash(&beads_dir), None);
     }
 
     #[test]
