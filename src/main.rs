@@ -812,6 +812,21 @@ fn main() -> ExitCode {
         }
     }
 
+    // File tokens must predate the snapshot used by the initial export. A
+    // write during analysis or an export hook must remain visible to the
+    // first watch poll instead of becoming the baseline for stale output.
+    let initial_watch_tokens = if cli.watch_export {
+        match capture_initial_watch_export_tokens(&cli) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     let load_start = std::time::Instant::now();
     let mut issues = match load_issues(&cli) {
         Ok(issues) => issues,
@@ -2486,33 +2501,14 @@ fn main() -> ExitCode {
         }
 
         if cli.watch_export {
-            let initial_watched_paths = match resolve_watch_export_paths(&cli) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    return ExitCode::from(1);
+            let mut watched_mtimes = initial_watch_tokens;
+            for (path, token) in &mut watched_mtimes {
+                if path.is_dir() {
+                    // The initial load populated the live Dolt cache. Use
+                    // that snapshot even if export outlasted its cache TTL.
+                    *token = cached_dolt_watch_token(path);
                 }
-            };
-            let initial_watched_tokens = initial_watched_paths
-                .iter()
-                .map(|path| {
-                    let token = if path.is_dir() {
-                        // Use the snapshot that produced the bundle, even if
-                        // exporting it took longer than the live cache TTL.
-                        Ok(cached_dolt_watch_token(path))
-                    } else {
-                        watch_export_token_for_path(path)
-                    };
-                    token.map(|token| (path.clone(), token))
-                })
-                .collect::<bvr::Result<Vec<_>>>();
-            let mut watched_mtimes = match initial_watched_tokens {
-                Ok(entries) => entries,
-                Err(error) => {
-                    eprintln!("error: {error}");
-                    return ExitCode::from(1);
-                }
-            };
+            }
 
             let mut max_loops = std::env::var("BVR_WATCH_MAX_LOOPS")
                 .ok()
@@ -2643,6 +2639,11 @@ fn main() -> ExitCode {
                 };
                 let refreshed_issues = if let Some(repo_filter) = cli.repo.as_deref() {
                     filter_by_repo(refreshed_issues, repo_filter)
+                } else {
+                    refreshed_issues
+                };
+                let refreshed_issues = if let Some(label) = cli.label.as_deref() {
+                    bvr::analysis::label_intel::compute_label_subgraph(&refreshed_issues, label)
                 } else {
                     refreshed_issues
                 };
@@ -3415,6 +3416,25 @@ fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
     }
 }
 
+fn capture_initial_watch_export_tokens(
+    cli: &Cli,
+) -> bvr::Result<Vec<(PathBuf, Option<FileWatchToken>)>> {
+    resolve_watch_export_paths(cli)?
+        .into_iter()
+        .map(|path| {
+            // Reading a live backend here would perform a second load and
+            // could establish a different snapshot. Fill its token from the
+            // initial load's cache after the export instead.
+            let token = if path.is_dir() {
+                None
+            } else {
+                watch_export_token_for_path(&path)
+            };
+            Ok((path, token))
+        })
+        .collect()
+}
+
 fn cached_dolt_watch_token(path: &Path) -> Option<FileWatchToken> {
     loader::cached_dolt_snapshot_hash(path).map(|content_fingerprint| FileWatchToken {
         modified_millis: 0,
@@ -3423,13 +3443,21 @@ fn cached_dolt_watch_token(path: &Path) -> Option<FileWatchToken> {
     })
 }
 
-fn watch_export_token_for_path(path: &Path) -> bvr::Result<Option<FileWatchToken>> {
-    file_watch_token(path).map_err(|error| {
-        bvr::BvrError::InvalidArgument(format!(
-            "failed to read watch source {}: {error}",
-            path.display()
-        ))
-    })
+fn watch_export_token_for_path(path: &Path) -> Option<FileWatchToken> {
+    match file_watch_token(path) {
+        Ok(token) => token,
+        Err(error) => {
+            // A candidate fallback may be unreadable while the preferred
+            // source is healthy. The loader decides whether usable data is
+            // available; token sampling must not prevent that load or lose
+            // the other watched paths. A later readable token is a change.
+            eprintln!(
+                "warning: cannot read watch source {}: {error}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn reconcile_watch_export_paths(
@@ -3449,7 +3477,7 @@ fn reconcile_watch_export_paths(
             Some(existing) => existing,
             None => {
                 path_set_changed = true;
-                watch_export_token_for_path(&path)?
+                watch_export_token_for_path(&path)
             }
         };
         next_tokens.push((path, token));

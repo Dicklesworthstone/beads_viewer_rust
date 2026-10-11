@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -539,6 +539,119 @@ fn wait_for_watch_startup(child: &mut std::process::Child) -> String {
     panic!("watch process did not advertise watch mode");
 }
 
+fn run_watch_export_with_update(repo_dir: &Path, args: &[&str], update: impl FnOnce()) -> String {
+    let bvr_bin = std::env::var("CARGO_BIN_EXE_bvr").expect("CARGO_BIN_EXE_bvr env var");
+    let mut child = ProcessCommand::new(bvr_bin)
+        .current_dir(repo_dir)
+        .args([
+            "--export-pages",
+            "pages-out",
+            "--watch-export",
+            "--no-hooks",
+        ])
+        .args(args)
+        .env_remove("BEADS_DIR")
+        .env_remove("BEADS_DB")
+        .env_remove("BD_DB")
+        .env_remove("BV_DATA_SOURCE")
+        .env("BVR_WATCH_MAX_LOOPS", "20")
+        .env("BVR_WATCH_INTERVAL_MS", "100")
+        .env("BVR_WATCH_DEBOUNCE_MS", "20")
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn bounded watch export");
+    let stderr = child.stderr.take().expect("watch stderr");
+    let (startup_tx, startup_rx) = mpsc::channel();
+    let stderr_reader = thread::spawn(move || {
+        let mut captured = String::new();
+        for line in BufReader::new(stderr).lines() {
+            let line = line.expect("read watch stderr");
+            if line.starts_with("Watching ") {
+                let _ = startup_tx.send(());
+            }
+            captured.push_str(&line);
+            captured.push('\n');
+        }
+        captured
+    });
+
+    if startup_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        let stderr = stderr_reader.join().expect("watch stderr reader");
+        panic!("watch did not start within its deadline: {stderr}");
+    }
+    update();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().expect("poll watch process") {
+            break (status, false);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            break (child.wait().expect("reap timed out watch process"), true);
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let stderr = stderr_reader.join().expect("watch stderr reader");
+    assert!(!timed_out, "watch exceeded its deadline: {stderr}");
+    assert!(status.success(), "watch export failed: {stderr}");
+    stderr
+}
+
+fn watch_detail_snapshot(description: &str, comment: &str) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({
+            "id": "WATCH-1",
+            "title": "Stable issue",
+            "status": "open",
+            "priority": 1,
+            "issue_type": "task",
+            "description": description,
+            "updated_at": "2026-10-10T10:00:00Z",
+            "comments": [{
+                "id": 1,
+                "issue_id": "WATCH-1",
+                "author": "fixture",
+                "text": comment,
+                "created_at": "2026-10-10T10:00:00Z"
+            }]
+        })
+    )
+}
+
+fn assert_watch_bundle_details(repo_dir: &Path, description: &str, comment: &str) {
+    let issues: Value = serde_json::from_slice(
+        &fs::read(repo_dir.join("pages-out/data/issues.json")).expect("exported JSON snapshot"),
+    )
+    .expect("valid exported JSON");
+    assert_eq!(issues.as_array().expect("issue array").len(), 1);
+    assert_eq!(issues[0]["id"], "WATCH-1");
+    assert_eq!(issues[0]["description"], description);
+    assert_eq!(issues[0]["comments"][0]["text"], comment);
+    let database = Connection::open(repo_dir.join("pages-out/beads.sqlite3"))
+        .expect("open actual exported database");
+    let stored_description: String = database
+        .query_row(
+            "SELECT description FROM issues WHERE id = 'WATCH-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("exported issue description");
+    let stored_comment: String = database
+        .query_row(
+            "SELECT text FROM comments WHERE issue_id = 'WATCH-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("exported issue comment");
+    assert_eq!(stored_description, description);
+    assert_eq!(stored_comment, comment);
+}
+
 fn wait_for_preview_startup(child: &mut std::process::Child) -> (String, u16) {
     let stdout = child.stdout.as_mut().expect("preview stdout");
     let mut captured = String::new();
@@ -1068,6 +1181,264 @@ fn preview_pages_relative_path_uses_workspace_root_when_repo_path_discovers_work
     );
     assert!(stdout.contains(&format!("Serving bundle: {}", bundle_dir.display())));
     assert!(stdout.contains("Preview server running at http://127.0.0.1:"));
+}
+
+#[test]
+#[cfg(unix)]
+fn watch_export_detects_source_changes_during_initial_export() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::create_dir(root.join(".beads")).expect("create beads directory");
+    fs::write(
+        root.join(".beads/issues.jsonl"),
+        watch_detail_snapshot("Before export", "Before comment"),
+    )
+    .expect("initial source");
+    let updated = watch_detail_snapshot("During export", "During comment");
+    fs::write(root.join("updated.jsonl"), &updated).expect("updated source fixture");
+    write_hooks(
+        root,
+        r#"hooks:
+  pre-export:
+    - name: update-source-once
+      command: 'printf x >> hook-calls; if [ ! -f source-updated ]; then cp updated.jsonl .beads/issues.jsonl && printf done > source-updated; fi'
+  post-export:
+    - name: retain-first-snapshot
+      command: 'if [ ! -f initial-export.json ]; then cp "$BV_EXPORT_PATH/data/issues.json" initial-export.json; fi'
+"#,
+    );
+
+    let output = bvr_cmd(root)
+        .args([
+            "--db",
+            ".beads",
+            "--export-pages",
+            "pages-out",
+            "--watch-export",
+        ])
+        .env_remove("BEADS_DIR")
+        .env_remove("BEADS_DB")
+        .env_remove("BD_DB")
+        .env_remove("BV_DATA_SOURCE")
+        .env("BVR_WATCH_MAX_LOOPS", "8")
+        .env("BVR_WATCH_INTERVAL_MS", "100")
+        .env("BVR_WATCH_DEBOUNCE_MS", "20")
+        .timeout(Duration::from_secs(15))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let initial: Value = serde_json::from_slice(
+        &fs::read(root.join("initial-export.json")).expect("initial exported snapshot"),
+    )
+    .expect("valid initial snapshot");
+    assert_eq!(initial[0]["description"], "Before export");
+    assert_eq!(initial[0]["comments"][0]["text"], "Before comment");
+    assert_eq!(
+        fs::read_to_string(root.join(".beads/issues.jsonl")).expect("unchanged later source"),
+        updated,
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("watch: regenerated"),
+        "an edit during the initial export must trigger a later export: {stderr}"
+    );
+    assert_watch_bundle_details(root, "During export", "During comment");
+    assert_eq!(
+        fs::read_to_string(root.join("hook-calls")).expect("hook invocation count"),
+        "xx",
+        "the initial export and one changed snapshot should each run hooks once"
+    );
+}
+
+#[test]
+fn watch_export_preserves_label_and_repo_scope_after_refresh() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::create_dir(root.join(".beads")).expect("create beads directory");
+    let source = root.join(".beads/issues.jsonl");
+    let mut rows = vec![
+        serde_json::json!({
+            "id": "API-1", "title": "Selected issue", "status": "open",
+            "priority": 1, "issue_type": "task", "source_repo": "api",
+            "labels": ["publish"], "description": "Before refresh",
+            "dependencies": [{"issue_id": "API-1", "depends_on_id": "API-DEP", "type": "blocks"}]
+        }),
+        serde_json::json!({
+            "id": "API-DEP", "title": "Unlabeled dependency", "status": "open",
+            "priority": 1, "issue_type": "task", "source_repo": "api"
+        }),
+        serde_json::json!({
+            "id": "API-OTHER", "title": "Unrelated issue", "status": "open",
+            "priority": 1, "issue_type": "task", "source_repo": "api", "labels": ["internal"]
+        }),
+        serde_json::json!({
+            "id": "WEB-1", "title": "Other repository", "status": "open",
+            "priority": 1, "issue_type": "task", "source_repo": "web", "labels": ["publish"]
+        }),
+    ];
+    let encode = |rows: &[Value]| {
+        use std::fmt::Write as _;
+
+        let mut snapshot = String::new();
+        for row in rows {
+            writeln!(snapshot, "{row}").expect("serialize JSONL fixture");
+        }
+        snapshot
+    };
+    fs::write(&source, encode(&rows)).expect("initial scoped source");
+    let expected_ids = vec!["API-1".to_string(), "API-DEP".to_string()];
+    let stderr =
+        run_watch_export_with_update(root, &["--repo", "api", "--label", "publish"], || {
+            let initial: Value = serde_json::from_slice(
+                &fs::read(root.join("pages-out/data/issues.json")).expect("initial scoped export"),
+            )
+            .expect("initial issues JSON");
+            let mut initial_ids = initial
+                .as_array()
+                .expect("initial array")
+                .iter()
+                .map(|row| row["id"].as_str().expect("issue ID").to_string())
+                .collect::<Vec<_>>();
+            initial_ids.sort();
+            assert_eq!(initial_ids, expected_ids);
+            rows[0]["description"] = Value::String("After refresh".to_string());
+            fs::write(&source, encode(&rows)).expect("update matching issue after watch startup");
+        });
+    assert!(stderr.contains("watch: regenerated"), "{stderr}");
+    let final_issues: Value = serde_json::from_slice(
+        &fs::read(root.join("pages-out/data/issues.json")).expect("refreshed scoped export"),
+    )
+    .expect("final issues JSON");
+    let mut final_ids = final_issues
+        .as_array()
+        .expect("final array")
+        .iter()
+        .map(|row| row["id"].as_str().expect("issue ID").to_string())
+        .collect::<Vec<_>>();
+    final_ids.sort();
+    assert_eq!(final_ids, expected_ids, "refresh must preserve both scopes");
+    let database = Connection::open(root.join("pages-out/beads.sqlite3"))
+        .expect("open refreshed SQLite export");
+    let mut query = database
+        .prepare("SELECT id FROM issues ORDER BY id")
+        .expect("issue IDs query");
+    let ids = query
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("exported issue IDs")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read exported issue IDs");
+    assert_eq!(
+        ids, expected_ids,
+        "SQLite export must retain the same scope"
+    );
+    let description: String = database
+        .query_row(
+            "SELECT description FROM issues WHERE id = 'API-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("updated scoped issue");
+    assert_eq!(description, "After refresh");
+}
+
+#[test]
+fn watch_export_detects_preserved_mtime_jsonl_fallback_updates() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::create_dir(root.join(".beads")).expect("create beads directory");
+    let source = root.join(".beads/snapshot.jsonl");
+    let database_path = root.join(".beads/beads.db");
+    fs::write(
+        root.join(".beads/metadata.json"),
+        r#"{"database":"beads.db","jsonl_export":"snapshot.jsonl"}"#,
+    )
+    .expect("declared source metadata");
+    let initial = watch_detail_snapshot("Older detail", "Older comment");
+    let updated = watch_detail_snapshot("Newer detail", "Newer comment");
+    assert_eq!(
+        initial.len(),
+        updated.len(),
+        "only the content fingerprint may change"
+    );
+    fs::write(&source, &initial).expect("fallback source");
+    fs::write(&database_path, b"not a SQLite database").expect("bad preferred database");
+    let source_time = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let database_time = std::time::SystemTime::now() + Duration::from_secs(86_400);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&source)
+        .expect("open source timestamp")
+        .set_modified(source_time)
+        .expect("set older source timestamp");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&database_path)
+        .expect("open database timestamp")
+        .set_modified(database_time)
+        .expect("set preferred database timestamp");
+
+    let stderr = run_watch_export_with_update(root, &["--db", ".beads"], || {
+        assert_watch_bundle_details(root, "Older detail", "Older comment");
+        fs::write(&source, &updated).expect("rewrite effective fallback data");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&source)
+            .expect("restore source timestamp")
+            .set_modified(source_time)
+            .expect("preserve fallback mtime");
+    });
+    assert!(
+        stderr.contains("falling back to the JSONL export"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("watch: regenerated"), "{stderr}");
+    assert_watch_bundle_details(root, "Newer detail", "Newer comment");
+    assert_eq!(
+        fs::metadata(&source)
+            .expect("source metadata")
+            .modified()
+            .expect("source mtime"),
+        source_time
+    );
+    assert_eq!(
+        fs::read(&database_path).expect("database remains untouched"),
+        b"not a SQLite database"
+    );
+    assert!(
+        fs::metadata(&database_path)
+            .expect("database metadata")
+            .modified()
+            .expect("database mtime")
+            > source_time
+    );
+
+    let strict = bvr_cmd(root)
+        .args([
+            "--db",
+            ".beads",
+            "--export-pages",
+            "strict-out",
+            "--watch-export",
+        ])
+        .env_remove("BEADS_DIR")
+        .env_remove("BEADS_DB")
+        .env_remove("BD_DB")
+        .env("BV_DATA_SOURCE", "sqlite")
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .failure()
+        .code(1)
+        .get_output()
+        .clone();
+    assert!(
+        !String::from_utf8_lossy(&strict.stderr).contains("falling back"),
+        "explicit SQLite mode must reject the bad database"
+    );
+    assert!(
+        !root.join("strict-out").exists(),
+        "strict failure must not export JSONL data"
+    );
 }
 
 #[test]

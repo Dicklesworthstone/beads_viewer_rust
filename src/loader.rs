@@ -1298,9 +1298,26 @@ pub fn load_issues_from_path(path: &Path) -> Result<Vec<Issue>> {
     load_issues_from_file(path)
 }
 
-/// Watch paths for the store a `.beads` directory currently reads from.
+/// Watch the selected store and any JSONL fallback it can actually read.
 pub fn issue_source_watch_paths(beads_dir: &Path) -> Result<Vec<PathBuf>> {
-    Ok(select_issue_source(beads_dir)?.watch_paths())
+    let source = select_issue_source(beads_dir)?;
+    let mut paths = source.watch_paths();
+    if matches!(source, IssueSource::Sqlite(_))
+        && !std::env::var(DATA_SOURCE_ENV)
+            .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("sqlite"))
+    {
+        // Automatic SQLite loading can return JSONL after a database error.
+        // Its contents can change without becoming newer than the selected
+        // database, so watch both that fallback and DB/WAL recovery.
+        let metadata = read_beads_metadata(beads_dir).unwrap_or_default();
+        if let Ok(jsonl) = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
+            .map_or_else(|| find_jsonl_path(beads_dir), Ok)
+            && !paths.contains(&jsonl)
+        {
+            paths.push(jsonl);
+        }
+    }
+    Ok(paths)
 }
 
 /// Watch the same source as an explicit file/directory load, including redirects
@@ -3816,6 +3833,68 @@ mod tests {
         let issues = load_issues_from_beads_dir(beads).expect("fallback load");
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].id, "J-1");
+    }
+
+    #[test]
+    fn sqlite_watch_paths_include_declared_and_discovered_jsonl_fallbacks() {
+        for declared_jsonl in ["snapshot.jsonl", ""] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let beads = dir.path();
+            let database = beads.join("beads.db");
+            let jsonl = beads.join(if declared_jsonl.is_empty() {
+                "issues.jsonl"
+            } else {
+                declared_jsonl
+            });
+            std::fs::write(
+                beads.join("metadata.json"),
+                serde_json::json!({
+                    "database": "beads.db",
+                    "jsonl_export": declared_jsonl
+                })
+                .to_string(),
+            )
+            .expect("source metadata");
+            write_br_sqlite(&database);
+            std::fs::write(
+                &jsonl,
+                "{\"id\":\"J-1\",\"title\":\"Fallback\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+            )
+            .expect("fallback JSONL");
+            set_mtime(&jsonl, 1_000_000);
+            set_mtime(&database, 2_000_000);
+
+            assert_eq!(
+                select_issue_source(beads).expect("preferred source"),
+                IssueSource::Sqlite(database.clone())
+            );
+            assert_eq!(
+                issue_path_watch_paths(beads).expect("directory watch paths"),
+                vec![database.clone(), sqlite_wal_path(&database), jsonl]
+            );
+            assert_eq!(
+                issue_path_watch_paths(&database).expect("explicit SQLite file watch paths"),
+                vec![database.clone(), sqlite_wal_path(&database)],
+                "an explicit database file never reads the JSONL fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_watch_paths_allow_a_database_without_any_jsonl_export() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let database = dir.path().join("beads.db");
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            r#"{"database":"beads.db"}"#,
+        )
+        .expect("database-only metadata");
+        write_br_sqlite(&database);
+
+        assert_eq!(
+            issue_source_watch_paths(dir.path()).expect("database-only watch paths"),
+            vec![database.clone(), sqlite_wal_path(&database)]
+        );
     }
 
     #[test]
