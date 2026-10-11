@@ -267,6 +267,411 @@ fn sqlite_robot_loads_stored_tables_with_unrelated_views_and_virtual_tables() {
     assert_eq!(fs::read(&database).expect("database still present"), before);
 }
 
+mod sqlite_integrity {
+    use super::*;
+
+    fn command(root: &Path) -> Command {
+        let mut command = bvr();
+        command
+            .current_dir(root)
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .env_remove("BV_ROBOT")
+            .timeout(std::time::Duration::from_secs(10));
+        command
+    }
+
+    fn write_source(root: &Path) -> PathBuf {
+        let beads = root.join(".beads");
+        fs::create_dir_all(&beads).expect("tracker directory");
+        fs::write(
+            beads.join("metadata.json"),
+            r#"{"backend":"sqlite","database":"beads.db","jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("SQLite metadata");
+        let snapshot = beads.join("issues.jsonl");
+        fs::write(
+            &snapshot,
+            issue_line("SAVED-1", "Saved snapshot", "open", 1),
+        )
+        .expect("saved JSONL export");
+        let database = beads.join("beads.db");
+        let conn = rusqlite::Connection::open(&database).expect("fixture database");
+        conn.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT, priority INTEGER);
+             INSERT INTO issues VALUES ('PREREQ-1', 'Open prerequisite', 'open', 2);
+             INSERT INTO issues VALUES ('CHILD-1', 'Blocked urgent child', 'open', 0);
+             CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT, created_by TEXT);
+             INSERT INTO dependencies VALUES ('CHILD-1', 'PREREQ-1', 'blocks', 'fixture');
+             CREATE TABLE labels (issue_id TEXT, label TEXT);
+             INSERT INTO labels VALUES ('PREREQ-1', 'ready');
+             CREATE TABLE comments (id INTEGER, issue_id TEXT, text TEXT);
+             INSERT INTO comments VALUES (1, 'PREREQ-1', 'A valid comment');",
+        )
+        .expect("stored tracker rows");
+        drop(conn);
+
+        // Select SQLite deterministically without a filesystem timestamp race.
+        for (path, seconds) in [(&snapshot, 1_000_000), (&database, 2_000_000)] {
+            fs::File::open(path)
+                .expect("fixture file")
+                .set_times(fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                ))
+                .expect("fixture modification time");
+        }
+        database
+    }
+
+    fn assert_source_failure(command: &mut Command, source: &Path, detail: &str) {
+        let output = command.assert().failure().get_output().clone();
+        assert!(
+            output.stdout.is_empty(),
+            "a failed source must not publish a partial robot response: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(source.to_string_lossy().as_ref()),
+            "source path missing from diagnostic: {stderr}"
+        );
+        assert!(
+            stderr.contains(detail),
+            "expected {detail:?} in diagnostic: {stderr}"
+        );
+    }
+
+    #[test]
+    fn valid_sqlite_rows_keep_the_urgent_child_blocked() {
+        let dir = tempfile::tempdir().expect("SQLite fixture");
+        let database = write_source(dir.path());
+        let before = fs::read(&database).expect("database before read");
+        let output = command(dir.path())
+            .arg("--db")
+            .arg(&database)
+            .arg("--robot-next")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let next: Value = serde_json::from_slice(&output).expect("next recommendation");
+        assert_eq!(next["id"], "PREREQ-1");
+        let output = command(dir.path())
+            .arg("--db")
+            .arg(&database)
+            .arg("--robot-graph")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let graph: Value = serde_json::from_slice(&output).expect("graph response");
+        assert_eq!(graph["edges"], 1);
+        assert_eq!(fs::read(&database).expect("database after read"), before);
+    }
+
+    #[test]
+    fn malformed_sqlite_rows_cannot_publish_partial_robot_results() {
+        for (table, mutation) in [
+            (
+                "dependencies",
+                "UPDATE dependencies SET type = X'626c6f636b73'",
+            ),
+            (
+                "dependencies",
+                "UPDATE dependencies SET created_by = X'66697874757265'",
+            ),
+            (
+                "labels",
+                "INSERT INTO labels VALUES ('CHILD-1', X'757267656e74')",
+            ),
+            (
+                "comments",
+                "INSERT INTO comments VALUES (2, 'CHILD-1', X'636f6d6d656e74')",
+            ),
+            (
+                "issues",
+                "UPDATE issues SET title = '' WHERE id = 'PREREQ-1'",
+            ),
+            (
+                "issues",
+                "UPDATE issues SET priority = 4294967296 WHERE id = 'CHILD-1'",
+            ),
+            (
+                "issues",
+                "ALTER TABLE issues ADD COLUMN defer_until TEXT;
+                 UPDATE issues SET defer_until = 'not-a-date' WHERE id = 'PREREQ-1'",
+            ),
+            (
+                "issues",
+                "ALTER TABLE issues ADD COLUMN deleted_at TEXT;
+                 UPDATE issues SET deleted_at = 'not-a-date' WHERE id = 'PREREQ-1'",
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("SQLite fixture");
+            let database = write_source(dir.path());
+            rusqlite::Connection::open(&database)
+                .expect("fixture connection")
+                .execute_batch(mutation)
+                .expect("malformed stored data");
+            let before = fs::read(&database).expect("database before read");
+            let snapshot = dir.path().join(".beads/issues.jsonl");
+            let saved = fs::read(&snapshot).expect("snapshot before read");
+
+            for source in [&database, &dir.path().join(".beads")] {
+                assert_source_failure(
+                    command(dir.path())
+                        .env("BV_DATA_SOURCE", "sqlite")
+                        .arg("--db")
+                        .arg(source)
+                        .arg("--robot-next"),
+                    &database,
+                    table,
+                );
+            }
+            assert_eq!(fs::read(&database).expect("database after read"), before);
+            assert_eq!(fs::read(&snapshot).expect("snapshot after read"), saved);
+        }
+    }
+
+    #[test]
+    fn automatic_sqlite_failure_requires_explicit_robot_snapshot_recovery() {
+        for malformed_rows in [false, true] {
+            let dir = tempfile::tempdir().expect("SQLite fixture");
+            let database = write_source(dir.path());
+            if malformed_rows {
+                rusqlite::Connection::open(&database)
+                    .expect("fixture connection")
+                    .execute_batch("UPDATE dependencies SET type = X'626c6f636b73'")
+                    .expect("malformed blocking dependency");
+            } else {
+                fs::write(&database, "not a SQLite database").expect("corrupt fixture");
+            }
+            let before = fs::read(&database).expect("database before read");
+            let snapshot = dir.path().join(".beads/issues.jsonl");
+            let saved = fs::read(&snapshot).expect("snapshot before read");
+            for explicit_auto in [false, true] {
+                let mut cmd = command(dir.path());
+                if explicit_auto {
+                    cmd.env("BV_DATA_SOURCE", "auto");
+                }
+                cmd.arg("--robot-triage");
+                assert_source_failure(&mut cmd, &database, "BV_DATA_SOURCE=jsonl");
+            }
+
+            let output = command(dir.path())
+                .env("BV_DATA_SOURCE", "jsonl")
+                .arg("--robot-next")
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let next: Value = serde_json::from_slice(&output).expect("saved recommendation");
+            assert_eq!(next["id"], "SAVED-1");
+            assert_eq!(fs::read(&database).expect("database after read"), before);
+            assert_eq!(fs::read(&snapshot).expect("snapshot after read"), saved);
+        }
+    }
+
+    #[test]
+    fn workspace_sqlite_failures_cannot_omit_a_configured_repository() {
+        for missing_database in [false, true] {
+            let dir = tempfile::tempdir().expect("SQLite workspace");
+            let workspace = setup_workspace(dir.path(), &[("good", ""), ("bad", "")]);
+            let healthy = write_source(&dir.path().join("good"));
+            let failed = write_source(&dir.path().join("bad"));
+            let healthy_before = fs::read(&healthy).expect("healthy database before read");
+            if missing_database {
+                fs::write(
+                    dir.path().join("bad/.beads/metadata.json"),
+                    r#"{"database":"missing.db","jsonl_export":"issues.jsonl"}"#,
+                )
+                .expect("unavailable declared database");
+            } else {
+                fs::write(&failed, "not a SQLite database").expect("corrupt database");
+            }
+            let failed_before = fs::read(&failed).expect("failed database before read");
+            let saved =
+                fs::read(dir.path().join("bad/.beads/issues.jsonl")).expect("snapshot before read");
+
+            assert_source_failure(
+                command(dir.path())
+                    .env("BV_DATA_SOURCE", "sqlite")
+                    .arg("--workspace")
+                    .arg(&workspace)
+                    .arg("--robot-triage"),
+                &dir.path().join("bad/.beads"),
+                if missing_database {
+                    "declared database"
+                } else {
+                    "sqlite"
+                },
+            );
+            if !missing_database {
+                assert_source_failure(
+                    command(dir.path())
+                        .arg("--workspace")
+                        .arg(&workspace)
+                        .arg("--robot-triage"),
+                    &failed,
+                    "BV_DATA_SOURCE=jsonl",
+                );
+            }
+
+            let output = command(dir.path())
+                .env("BV_DATA_SOURCE", "jsonl")
+                .arg("--workspace")
+                .arg(&workspace)
+                .arg("--robot-triage")
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let recovered: Value = serde_json::from_slice(&output).expect("saved workspace");
+            assert_eq!(recovered["triage"]["quick_ref"]["total_open"], 2);
+            assert_eq!(
+                fs::read(&healthy).expect("healthy database after read"),
+                healthy_before
+            );
+            assert_eq!(
+                fs::read(&failed).expect("failed database after read"),
+                failed_before
+            );
+            assert_eq!(
+                fs::read(dir.path().join("bad/.beads/issues.jsonl")).expect("snapshot after read"),
+                saved
+            );
+        }
+    }
+
+    #[test]
+    fn healthy_sqlite_workspace_remains_complete() {
+        let dir = tempfile::tempdir().expect("SQLite workspace");
+        let workspace = setup_workspace(dir.path(), &[("api", ""), ("web", "")]);
+        write_source(&dir.path().join("api"));
+        write_source(&dir.path().join("web"));
+        let output = command(dir.path())
+            .env("BV_DATA_SOURCE", "sqlite")
+            .arg("--workspace")
+            .arg(&workspace)
+            .arg("--robot-triage")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let triage: Value = serde_json::from_slice(&output).expect("complete workspace");
+        assert_eq!(triage["triage"]["quick_ref"]["total_open"], 4);
+        let picks = triage["triage"]["quick_ref"]["top_picks"]
+            .as_array()
+            .expect("ready picks");
+        for prefix in ["api", "web"] {
+            assert!(
+                picks
+                    .iter()
+                    .any(|pick| pick["id"] == format!("{prefix}-PREREQ-1"))
+            );
+            assert!(
+                picks
+                    .iter()
+                    .all(|pick| pick["id"] != format!("{prefix}-CHILD-1"))
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_jsonl_workspace_selection_cannot_skip_a_missing_source() {
+        let dir = tempfile::tempdir().expect("workspace fixture");
+        write_source(&dir.path().join("good"));
+        let missing = dir.path().join("missing/.beads");
+        fs::create_dir_all(&missing).expect("unconfigured tracker directory");
+        let workspace = dir.path().join(".bv/workspace.yaml");
+        fs::create_dir_all(workspace.parent().expect("configuration directory"))
+            .expect("workspace configuration directory");
+        fs::write(
+            &workspace,
+            "repos:\n  - name: good\n    path: good\n    prefix: good-\n  - name: missing\n    path: missing\n    prefix: missing-\n",
+        )
+        .expect("workspace config");
+
+        // Optional unconfigured repositories remain tolerable in automatic
+        // mode; an explicit source choice must apply to every enabled repo.
+        let output = command(dir.path())
+            .arg("--workspace")
+            .arg(&workspace)
+            .arg("--robot-triage")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let automatic: Value = serde_json::from_slice(&output).expect("automatic workspace");
+        assert_eq!(automatic["triage"]["quick_ref"]["total_open"], 2);
+        assert_source_failure(
+            command(dir.path())
+                .env("BV_DATA_SOURCE", "jsonl")
+                .arg("--workspace")
+                .arg(&workspace)
+                .arg("--robot-triage"),
+            &missing,
+            "JSONL",
+        );
+    }
+
+    #[test]
+    fn automatic_export_fallback_warns_and_mandatory_failure_preserves_dashboard() {
+        let dir = tempfile::tempdir().expect("SQLite export fixture");
+        let database = write_source(dir.path());
+        fs::write(&database, "not a SQLite database").expect("corrupt fixture");
+        let before = fs::read(&database).expect("database before export");
+        let dashboard = dir.path().join("dashboard");
+        let output = command(dir.path())
+            .arg("--export-pages")
+            .arg(&dashboard)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("falling back to the JSONL export"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(database.to_string_lossy().as_ref()),
+            "{stderr}"
+        );
+        let exported = fs::read(dashboard.join("data/issues.json")).expect("exported snapshot");
+        let issues: Value = serde_json::from_slice(&exported).expect("exported issues");
+        assert_eq!(issues.as_array().expect("issues array").len(), 1);
+        assert_eq!(issues[0]["id"], "SAVED-1");
+        let index = fs::read(dashboard.join("index.html")).expect("dashboard HTML");
+
+        assert_source_failure(
+            command(dir.path())
+                .env("BV_DATA_SOURCE", "sqlite")
+                .arg("--export-pages")
+                .arg(&dashboard),
+            &database,
+            "sqlite",
+        );
+        assert_eq!(
+            fs::read(dashboard.join("data/issues.json")).expect("retained data"),
+            exported
+        );
+        assert_eq!(
+            fs::read(dashboard.join("index.html")).expect("retained HTML"),
+            index
+        );
+        assert_eq!(fs::read(&database).expect("database after export"), before);
+    }
+}
+
 // ===================================================================
 // WORKSPACE DISCOVERY E2E
 // ===================================================================

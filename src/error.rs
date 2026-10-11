@@ -13,6 +13,9 @@ pub enum BvrError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("sqlite read of {path}: {message}")]
+    SqliteSource { path: PathBuf, message: String },
+
     #[error("beads directory not found: {0}")]
     MissingBeadsDir(PathBuf),
 
@@ -64,6 +67,18 @@ mod tests {
             .expect_err("invalid SQL should fail");
         let err: BvrError = sqlite_err.into();
         assert!(err.to_string().contains("sqlite error"));
+    }
+
+    #[test]
+    fn sqlite_source_error_identifies_the_database_without_implying_a_fallback() {
+        let error = BvrError::SqliteSource {
+            path: PathBuf::from("/tmp/live/.beads/beads.db"),
+            message: "invalid dependency row".to_string(),
+        };
+        let message = error.to_string();
+        assert!(message.contains("/tmp/live/.beads/beads.db"));
+        assert!(message.contains("invalid dependency row"));
+        assert!(!message.contains("BV_DATA_SOURCE"));
     }
 
     #[test]

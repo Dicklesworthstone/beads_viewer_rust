@@ -364,7 +364,7 @@ bvr --preview-pages ./bv-pages
 
 `bvr` loads issues from `.beads` by default:
 
-- **br workspaces** declare their store in `.beads/metadata.json` (`database` and `jsonl_export`). `bvr` reads whichever is fresher: the SQLite database (read-only, including un-flushed writes in its `-wal` file) or the JSONL export (for example right after a `git pull`, before `br sync --import-only`). In automatic mode, an unreadable database produces a warning and falls back to the export. Set `BV_DATA_SOURCE=sqlite|jsonl` to require one source. Explicit SQLite metadata takes precedence over leftover Dolt directories.
+- **br workspaces** declare their store in `.beads/metadata.json` (`database` and `jsonl_export`). `bvr` reads whichever is fresher: the SQLite database (read-only, including un-flushed writes in its `-wal` file) or the JSONL export (for example right after a `git pull`, before `br sync --import-only`). In automatic mode, a failed SQLite read stops robot commands with an error; set `BV_DATA_SOURCE=jsonl` to explicitly use the saved export. Interactive views and Pages exports can still fall back automatically with a visible warning. Set `BV_DATA_SOURCE=sqlite|jsonl` to require one source in every mode. Explicit SQLite metadata takes precedence over leftover Dolt directories.
 - **Without metadata**, it reads the first non-empty file among `beads.jsonl`, `issues.jsonl`, and `beads.base.jsonl`.
 - **bd (Dolt) workspaces** (`.beads/dolt/`, `.beads/embeddeddolt/`, or `backend: dolt`) are read from live `bd export` output. Each export has a five-second process deadline; successful snapshots are shared for two seconds within the process, and failures back off for 30 seconds. Output size and JSONL records are checked before the snapshot is accepted. A failed export reports an error, including in robot mode, instead of silently loading stale or partial data. `bvr` does not create or replace `.beads/issues.jsonl`; `bd` itself may perform its normal backend startup or maintenance. Set `BV_DATA_SOURCE=jsonl` to read an existing `issues.jsonl` without invoking `bd`. Other JSONL files in a Dolt directory are never substituted. TUI background reload and `--watch-export` refresh live snapshots and detect description/comment edits even when timestamps do not change; a failed refresh preserves the last displayed or exported snapshot.
 - **`.beads/redirect`** chains are followed the same way `br where` follows them.
@@ -372,7 +372,9 @@ bvr --preview-pages ./bv-pages
 
 Scheduler deferrals (`defer_until`) are respected: a deferred bead is kept out of ready work and triage picks until the deferral passes, as in `br ready`.
 
-It can also aggregate repositories via `.bv/workspace.yaml`.
+SQLite loads use one read-only snapshot for issues, labels, dependencies, and comments. Malformed rows, invalid issue data, unsupported required table columns, and invalid nonempty timestamps reject the entire SQLite load. Optional tables and supported older schemas remain accepted. A blocking dependency cannot silently disappear because its row failed to decode.
+
+It can also aggregate repositories via `.bv/workspace.yaml`. A SQLite or live Dolt source failure aborts the workspace load instead of omitting that repository. An explicit `BV_DATA_SOURCE=sqlite|jsonl` choice is mandatory for every enabled repository; automatic discovery can still skip repositories without a configured, readable tracker. The automatic nonrobot SQLite fallback described above also applies within workspaces.
 
 ### Output formats
 

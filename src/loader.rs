@@ -756,6 +756,36 @@ pub const BEADS_DB_ENV: &str = "BEADS_DB";
 /// `jsonl`, `sqlite`, or `auto` (default: live Dolt or freshest br store).
 pub const DATA_SOURCE_ENV: &str = "BV_DATA_SOURCE";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataSourceMode {
+    Auto,
+    Jsonl,
+    Sqlite,
+}
+
+impl DataSourceMode {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Ok(Self::Auto),
+            "jsonl" => Ok(Self::Jsonl),
+            "sqlite" => Ok(Self::Sqlite),
+            mode => Err(BvrError::InvalidArgument(format!(
+                "{DATA_SOURCE_ENV} must be auto, jsonl, or sqlite (got {mode:?})"
+            ))),
+        }
+    }
+
+    fn from_environment() -> Result<Self> {
+        match std::env::var(DATA_SOURCE_ENV) {
+            Ok(raw) => Self::parse(&raw),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Auto),
+            Err(std::env::VarError::NotUnicode(_)) => Err(BvrError::InvalidArgument(format!(
+                "{DATA_SOURCE_ENV} must be auto, jsonl, or sqlite (value is not valid Unicode)"
+            ))),
+        }
+    }
+}
+
 /// Bounds for `.beads/redirect` resolution, matching br's routing limits so
 /// bvr and br agree on the target store.
 const MAX_REDIRECT_BYTES: u64 = 4096;
@@ -959,19 +989,13 @@ fn newest_mtime(paths: &[PathBuf]) -> Option<std::time::SystemTime> {
 
 /// Pick the store to read without launching a backend or writing any files.
 pub fn select_issue_source(beads_dir: &Path) -> Result<IssueSource> {
-    let mode = std::env::var(DATA_SOURCE_ENV)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if !matches!(mode.as_str(), "" | "auto" | "jsonl" | "sqlite") {
-        return Err(BvrError::InvalidArgument(format!(
-            "{DATA_SOURCE_ENV} must be auto, jsonl, or sqlite (got {mode:?})"
-        )));
-    }
+    select_issue_source_with_mode(beads_dir, DataSourceMode::from_environment()?)
+}
 
+fn select_issue_source_with_mode(beads_dir: &Path, mode: DataSourceMode) -> Result<IssueSource> {
     if is_bd_workspace(beads_dir) {
-        return match mode.as_str() {
-            "jsonl" => {
+        return match mode {
+            DataSourceMode::Jsonl => {
                 let path = beads_dir.join("issues.jsonl");
                 if path.is_file() {
                     Ok(IssueSource::Jsonl(path))
@@ -982,11 +1006,11 @@ pub fn select_issue_source(beads_dir: &Path) -> Result<IssueSource> {
                     )))
                 }
             }
-            "sqlite" => Err(BvrError::InvalidArgument(format!(
+            DataSourceMode::Sqlite => Err(BvrError::InvalidArgument(format!(
                 "{DATA_SOURCE_ENV}=sqlite cannot read a Dolt workspace: {}",
                 beads_dir.display()
             ))),
-            _ => Ok(IssueSource::Dolt(std::fs::canonicalize(beads_dir)?)),
+            DataSourceMode::Auto => Ok(IssueSource::Dolt(std::fs::canonicalize(beads_dir)?)),
         };
     }
 
@@ -994,10 +1018,10 @@ pub fn select_issue_source(beads_dir: &Path) -> Result<IssueSource> {
     let jsonl = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
         .map_or_else(|| find_jsonl_path(beads_dir), Ok);
     let database = resolve_metadata_path(beads_dir, &metadata.database);
-    if mode == "jsonl" {
+    if mode == DataSourceMode::Jsonl {
         return jsonl.map(IssueSource::Jsonl);
     }
-    if mode == "sqlite" {
+    if mode == DataSourceMode::Sqlite {
         return database.map(IssueSource::Sqlite).ok_or_else(|| {
             BvrError::InvalidArgument(format!(
                 "{DATA_SOURCE_ENV}=sqlite requires a declared database in {}",
@@ -1258,29 +1282,65 @@ fn parse_bd_export(mut reader: impl BufRead) -> BdSnapshotResult {
     Ok(issues)
 }
 
-/// Load issues from a `.beads` directory through its selected store. A
-/// failing SQLite read falls back to the JSONL export with a warning.
+/// Load issues from a `.beads` directory through its selected store.
+///
+/// Automatic SQLite reads can fall back to JSONL with a warning outside robot mode.
+/// Robot callers must explicitly select a saved JSONL snapshot after failure.
 pub fn load_issues_from_beads_dir(beads_dir: &Path) -> Result<Vec<Issue>> {
-    match select_issue_source(beads_dir)? {
+    load_issues_from_beads_dir_with_mode(beads_dir, DataSourceMode::from_environment()?)
+}
+
+fn load_issues_from_beads_dir_with_mode(
+    beads_dir: &Path,
+    mode: DataSourceMode,
+) -> Result<Vec<Issue>> {
+    match select_issue_source_with_mode(beads_dir, mode)? {
         IssueSource::Jsonl(path) => load_issues_from_file(&path),
         IssueSource::Dolt(path) => load_issues_from_bd(&path),
         IssueSource::Sqlite(db) => match load_issues_from_sqlite(&db) {
             Ok(issues) => Ok(issues),
-            Err(error) => {
-                if std::env::var(DATA_SOURCE_ENV)
-                    .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("sqlite"))
-                {
-                    return Err(error);
+            Err(BvrError::SqliteSource { path, message }) => {
+                if mode == DataSourceMode::Sqlite {
+                    return Err(BvrError::SqliteSource { path, message });
                 }
-                warn(format!(
-                    "could not read {} ({error}); falling back to the JSONL export",
-                    db.display()
-                ));
+                if is_robot_mode() {
+                    return Err(BvrError::SqliteSource {
+                        path,
+                        message: format!(
+                            "{message}; robot mode cannot substitute a saved JSONL snapshot \
+                             for the selected database; use {DATA_SOURCE_ENV}=jsonl \
+                             to explicitly read the saved export"
+                        ),
+                    });
+                }
+
                 let metadata = read_beads_metadata(beads_dir).unwrap_or_default();
                 let jsonl = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
-                    .map_or_else(|| find_jsonl_path(beads_dir), Ok)?;
-                load_issues_from_file(&jsonl)
+                    .map_or_else(|| find_jsonl_path(beads_dir), Ok);
+                let jsonl = match jsonl {
+                    Ok(jsonl) => jsonl,
+                    Err(fallback_error) => {
+                        return Err(BvrError::SqliteSource {
+                            path,
+                            message: format!(
+                                "{message}; no readable JSONL export: {fallback_error}"
+                            ),
+                        });
+                    }
+                };
+                warn(format!(
+                    "could not read {} ({message}); falling back to the JSONL export",
+                    path.display()
+                ));
+                load_issues_from_file(&jsonl).map_err(|fallback_error| BvrError::SqliteSource {
+                    path,
+                    message: format!(
+                        "{message}; JSONL fallback {} failed: {fallback_error}",
+                        jsonl.display()
+                    ),
+                })
             }
+            Err(error) => Err(error),
         },
     }
 }
@@ -1300,15 +1360,19 @@ pub fn load_issues_from_path(path: &Path) -> Result<Vec<Issue>> {
 
 /// Watch the selected store and any JSONL fallback it can actually read.
 pub fn issue_source_watch_paths(beads_dir: &Path) -> Result<Vec<PathBuf>> {
-    let source = select_issue_source(beads_dir)?;
+    issue_source_watch_paths_with_mode(beads_dir, DataSourceMode::from_environment()?)
+}
+
+fn issue_source_watch_paths_with_mode(
+    beads_dir: &Path,
+    mode: DataSourceMode,
+) -> Result<Vec<PathBuf>> {
+    let source = select_issue_source_with_mode(beads_dir, mode)?;
     let mut paths = source.watch_paths();
-    if matches!(source, IssueSource::Sqlite(_))
-        && !std::env::var(DATA_SOURCE_ENV)
-            .is_ok_and(|mode| mode.trim().eq_ignore_ascii_case("sqlite"))
-    {
-        // Automatic SQLite loading can return JSONL after a database error.
-        // Its contents can change without becoming newer than the selected
-        // database, so watch both that fallback and DB/WAL recovery.
+    if matches!(source, IssueSource::Sqlite(_)) && mode == DataSourceMode::Auto {
+        // Automatic selection can switch to JSONL after a sync makes it newer.
+        // Outside robot mode it can also fall back after a database error,
+        // so watch both the export and DB/WAL changes.
         let metadata = read_beads_metadata(beads_dir).unwrap_or_default();
         if let Ok(jsonl) = resolve_metadata_path(beads_dir, &metadata.jsonl_export)
             .map_or_else(|| find_jsonl_path(beads_dir), Ok)
@@ -1340,8 +1404,7 @@ pub fn issue_watch_paths(repo_path: Option<&Path>) -> Result<Vec<PathBuf>> {
     issue_source_watch_paths(&get_beads_dir(repo_path)?)
 }
 
-fn parse_sqlite_time(raw: Option<String>) -> Option<chrono::DateTime<chrono::Utc>> {
-    let raw = raw?;
+fn parse_sqlite_time(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
@@ -1357,6 +1420,36 @@ fn parse_sqlite_time(raw: Option<String>) -> Option<chrono::DateTime<chrono::Utc
     chrono::DateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f%:z")
         .ok()
         .map(|parsed| parsed.with_timezone(&chrono::Utc))
+}
+
+fn sqlite_time(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    field: &str,
+) -> rusqlite::Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let Some(raw) = row.get::<_, Option<String>>(index)? else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_sqlite_time(&raw).map(Some).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid {field} timestamp"),
+            )),
+        )
+    })
+}
+
+fn sqlite_source_error(path: &Path, message: String) -> BvrError {
+    BvrError::SqliteSource {
+        path: path.to_path_buf(),
+        message,
+    }
 }
 
 fn prepare_sqlite_read<'conn>(
@@ -1388,9 +1481,7 @@ pub fn load_issues_from_sqlite(path: &Path) -> Result<Vec<Issue>> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|error| {
-        BvrError::InvalidArgument(format!("sqlite read of {}: {error}", path.display()))
-    })?;
+    .map_err(|error| sqlite_source_error(path, error.to_string()))?;
     read_issues_from_sqlite_connection(&mut conn, path)
 }
 
@@ -1400,57 +1491,93 @@ fn read_issues_from_sqlite_connection(
 ) -> Result<Vec<Issue>> {
     use rusqlite::{OptionalExtension, config::DbConfig};
 
-    let sql_err = |error: rusqlite::Error| {
-        BvrError::InvalidArgument(format!("sqlite read of {}: {error}", path.display()))
+    let sql_err = |context: &str, error: rusqlite::Error| {
+        sqlite_source_error(path, format!("{context}: {error}"))
     };
     conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("connection", error))?;
     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("connection", error))?;
     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW, false)
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("connection", error))?;
 
     // Hold the read snapshot from schema validation through all related rows.
     // In WAL mode a writer may otherwise replace a checked table with a view,
     // or commit new relationships after we have read the old issue rows.
-    let conn = conn.transaction().map_err(sql_err)?;
+    let conn = conn
+        .transaction()
+        .map_err(|error| sql_err("read transaction", error))?;
+    let mut source_tables = HashSet::new();
     {
         let mut stmt = prepare_sqlite_read(
             &conn,
             "SELECT type, rootpage FROM main.sqlite_schema \
              WHERE name = ?1 COLLATE NOCASE AND type IN ('table', 'view')",
         )
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("schema", error))?;
         for table in ["issues", "labels", "dependencies", "comments"] {
             let object = stmt
                 .query_row([table], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
                 })
                 .optional()
-                .map_err(sql_err)?;
-            if let Some((kind, rootpage)) = object
-                && (kind != "table" || rootpage <= 0)
-            {
-                return Err(BvrError::InvalidArgument(format!(
-                    "sqlite read of {}: {table} must be a stored table; \
-                     views and virtual tables are not supported",
-                    path.display()
-                )));
+                .map_err(|error| sql_err(table, error))?;
+            if let Some((kind, rootpage)) = object {
+                if kind != "table" || rootpage <= 0 {
+                    return Err(sqlite_source_error(
+                        path,
+                        format!(
+                            "{table} must be a stored table; \
+                             views and virtual tables are not supported"
+                        ),
+                    ));
+                }
+                source_tables.insert(table);
             }
         }
     }
 
     // Validate every optional object before reading data. A present but invalid
     // schema is an error, rather than a silently incomplete issue snapshot.
-    let issue_cols = sqlite_columns(&conn, "issues").map_err(sql_err)?;
-    let label_cols = sqlite_columns(&conn, "labels").map_err(sql_err)?;
-    let dep_cols = sqlite_columns(&conn, "dependencies").map_err(sql_err)?;
-    let comment_cols = sqlite_columns(&conn, "comments").map_err(sql_err)?;
-    if !issue_cols.contains("id") || !issue_cols.contains("title") {
-        return Err(BvrError::InvalidArgument(format!(
-            "{} has no beads issues table",
-            path.display()
-        )));
+    let issue_cols = sqlite_columns(&conn, "issues").map_err(|error| sql_err("issues", error))?;
+    let label_cols = sqlite_columns(&conn, "labels").map_err(|error| sql_err("labels", error))?;
+    let dep_cols =
+        sqlite_columns(&conn, "dependencies").map_err(|error| sql_err("dependencies", error))?;
+    let comment_cols =
+        sqlite_columns(&conn, "comments").map_err(|error| sql_err("comments", error))?;
+    for (table, columns, required) in [
+        ("issues", &issue_cols, &["id", "title"][..]),
+        ("labels", &label_cols, &["issue_id", "label"][..]),
+        (
+            "dependencies",
+            &dep_cols,
+            &["issue_id", "depends_on_id"][..],
+        ),
+        ("comments", &comment_cols, &["issue_id"][..]),
+    ] {
+        if table != "issues" && !source_tables.contains(table) {
+            continue;
+        }
+        let missing: Vec<_> = required
+            .iter()
+            .filter(|column| !columns.contains(**column))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            return Err(sqlite_source_error(
+                path,
+                format!("{table} missing required columns: {}", missing.join(", ")),
+            ));
+        }
+    }
+    if source_tables.contains("comments")
+        && !comment_cols.contains("text")
+        && !comment_cols.contains("body")
+    {
+        return Err(sqlite_source_error(
+            path,
+            "comments missing required text or body column".to_string(),
+        ));
     }
     let col = |name: &str, fallback: &str| -> String {
         if issue_cols.contains(name) {
@@ -1459,11 +1586,12 @@ fn read_issues_from_sqlite_connection(
             fallback.to_string()
         }
     };
-    let due_col = if issue_cols.contains("due_at") {
-        "i.due_at".to_string()
+    let due_field = if issue_cols.contains("due_at") {
+        "due_at"
     } else {
-        col("due_date", "NULL")
+        "due_date"
     };
+    let due_col = col(due_field, "NULL");
     let mut filters = Vec::new();
     if issue_cols.contains("ephemeral") {
         filters.push("COALESCE(i.ephemeral, 0) = 0");
@@ -1497,8 +1625,10 @@ fn read_issues_from_sqlite_connection(
     );
 
     let mut issues = Vec::<Issue>::new();
+    let mut index = HashMap::new();
     {
-        let mut stmt = prepare_sqlite_read(&conn, &query).map_err(sql_err)?;
+        let mut stmt =
+            prepare_sqlite_read(&conn, &query).map_err(|error| sql_err("issues", error))?;
         let rows = stmt
             .query_map([], |row| {
                 let text = |idx: usize| -> rusqlite::Result<String> {
@@ -1512,69 +1642,65 @@ fn read_issues_from_sqlite_connection(
                     acceptance_criteria: text(4)?,
                     notes: text(5)?,
                     status: text(6)?,
-                    priority: row.get::<_, Option<i64>>(7)?.unwrap_or(2) as i32,
+                    priority: row.get::<_, Option<i32>>(7)?.unwrap_or(2),
                     issue_type: text(8)?,
                     assignee: text(9)?,
-                    estimated_minutes: row.get::<_, Option<i64>>(10)?.map(|v| v as i32),
-                    created_at: parse_sqlite_time(row.get(11)?),
-                    updated_at: parse_sqlite_time(row.get(12)?),
-                    due_date: parse_sqlite_time(row.get(13)?),
-                    defer_until: parse_sqlite_time(row.get(14)?),
-                    closed_at: parse_sqlite_time(row.get(15)?),
+                    estimated_minutes: row.get::<_, Option<i32>>(10)?,
+                    created_at: sqlite_time(row, 11, "created_at")?,
+                    updated_at: sqlite_time(row, 12, "updated_at")?,
+                    due_date: sqlite_time(row, 13, due_field)?,
+                    defer_until: sqlite_time(row, 14, "defer_until")?,
+                    closed_at: sqlite_time(row, 15, "closed_at")?,
                     external_ref: row
                         .get::<_, Option<String>>(16)?
                         .filter(|value| !value.trim().is_empty()),
                     source_repo: text(17)?,
                     ..Issue::default()
                 };
-                if row.get::<_, Option<String>>(18)?.is_some()
+                if sqlite_time(row, 18, "deleted_at")?.is_some()
                     && !issue.status.eq_ignore_ascii_case("tombstone")
                 {
                     issue.status = "tombstone".to_string();
                 }
                 Ok(issue)
             })
-            .map_err(sql_err)?;
+            .map_err(|error| sql_err("issues", error))?;
         for row in rows {
-            let mut issue = row.map_err(sql_err)?;
+            let mut issue = row.map_err(|error| sql_err("issues", error))?;
             issue.status = issue.normalized_status();
-            if let Err(error) = issue.validate() {
-                warn(format!(
-                    "skipping invalid issue {} in {}: {error}",
-                    issue.id,
-                    path.display()
+            issue.validate().map_err(|error| {
+                sqlite_source_error(path, format!("issues: issue {:?}: {error}", issue.id))
+            })?;
+            if index.insert(issue.id.clone(), issues.len()).is_some() {
+                return Err(sqlite_source_error(
+                    path,
+                    format!("issues: duplicate issue ID {:?}", issue.id),
                 ));
-                continue;
             }
             issues.push(issue);
         }
     }
 
-    let index: HashMap<String, usize> = issues
-        .iter()
-        .enumerate()
-        .map(|(idx, issue)| (issue.id.clone(), idx))
-        .collect();
-
-    if label_cols.contains("label") {
+    if source_tables.contains("labels") {
         let mut stmt = prepare_sqlite_read(
             &conn,
             "SELECT issue_id, label FROM main.labels ORDER BY issue_id, label",
         )
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("labels", error))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map_err(sql_err)?;
-        for (issue_id, label) in rows.filter_map(std::result::Result::ok) {
+            .map_err(|error| sql_err("labels", error))?;
+        for row in rows {
+            let (issue_id, label) = row.map_err(|error| sql_err("labels", error))?;
             if let Some(&idx) = index.get(&issue_id) {
                 issues[idx].labels.push(label);
             }
         }
     }
 
-    if dep_cols.contains("issue_id") && dep_cols.contains("depends_on_id") {
+    if source_tables.contains("dependencies") {
         let type_col = if dep_cols.contains("type") {
             "type"
         } else if dep_cols.contains("dependency_type") {
@@ -1599,7 +1725,7 @@ fn read_issues_from_sqlite_connection(
                  FROM main.dependencies ORDER BY issue_id, depends_on_id"
             ),
         )
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("dependencies", error))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(crate::model::Dependency {
@@ -1607,13 +1733,20 @@ fn read_issues_from_sqlite_connection(
                     depends_on_id: row.get(1)?,
                     dep_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     created_by: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    created_at: parse_sqlite_time(row.get(4)?),
+                    created_at: sqlite_time(row, 4, "created_at")?,
                 })
             })
-            .map_err(sql_err)?;
-        for dep in rows.filter_map(std::result::Result::ok) {
+            .map_err(|error| sql_err("dependencies", error))?;
+        for row in rows {
+            let dep = row.map_err(|error| sql_err("dependencies", error))?;
             if dep.depends_on_id.trim().is_empty() {
-                continue;
+                return Err(sqlite_source_error(
+                    path,
+                    format!(
+                        "dependencies: issue {:?} has an empty depends_on_id",
+                        dep.issue_id
+                    ),
+                ));
             }
             if let Some(&idx) = index.get(&dep.issue_id) {
                 issues[idx].dependencies.push(dep);
@@ -1621,13 +1754,11 @@ fn read_issues_from_sqlite_connection(
         }
     }
 
-    if comment_cols.contains("issue_id") {
+    if source_tables.contains("comments") {
         let text_col = if comment_cols.contains("text") {
             "text"
-        } else if comment_cols.contains("body") {
-            "body"
         } else {
-            "''"
+            "body"
         };
         let id_col = if comment_cols.contains("id") {
             "id"
@@ -1652,7 +1783,7 @@ fn read_issues_from_sqlite_connection(
                  ORDER BY issue_id, comment_created_at, comment_id"
             ),
         )
-        .map_err(sql_err)?;
+        .map_err(|error| sql_err("comments", error))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(crate::model::Comment {
@@ -1660,18 +1791,19 @@ fn read_issues_from_sqlite_connection(
                     issue_id: row.get(1)?,
                     author: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     text: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    created_at: parse_sqlite_time(row.get(4)?),
+                    created_at: sqlite_time(row, 4, "created_at")?,
                 })
             })
-            .map_err(sql_err)?;
-        for comment in rows.filter_map(std::result::Result::ok) {
+            .map_err(|error| sql_err("comments", error))?;
+        for row in rows {
+            let comment = row.map_err(|error| sql_err("comments", error))?;
             if let Some(&idx) = index.get(&comment.issue_id) {
                 issues[idx].comments.push(comment);
             }
         }
     }
 
-    Ok(deduplicate_issues(issues))
+    Ok(issues)
 }
 
 pub fn load_workspace_config(path: &Path) -> Result<WorkspaceConfig> {
@@ -1697,6 +1829,7 @@ pub fn load_workspace_issues(path: &Path) -> Result<Vec<Issue>> {
 
 pub fn find_workspace_issue_paths(path: &Path) -> Result<Vec<PathBuf>> {
     let config = load_workspace_config(path)?;
+    let mode = DataSourceMode::from_environment()?;
     let workspace_root = resolve_workspace_root(path);
     let mut paths = Vec::<PathBuf>::new();
 
@@ -1711,9 +1844,10 @@ pub fn find_workspace_issue_paths(path: &Path) -> Result<Vec<PathBuf>> {
         let beads_dir = repo_path.join(repo.effective_beads_path(Some(&config.defaults)));
 
         match resolve_beads_redirect(&beads_dir)
-            .and_then(|beads_dir| issue_source_watch_paths(&beads_dir))
+            .and_then(|beads_dir| issue_source_watch_paths_with_mode(&beads_dir, mode))
         {
             Ok(source_paths) => paths.extend(source_paths),
+            Err(error) if mode != DataSourceMode::Auto => return Err(error),
             Err(error) => warn(format!(
                 "workspace repo '{repo_name}' watch source unavailable: {error}"
             )),
@@ -1734,6 +1868,7 @@ pub fn load_workspace_issues_with_summary(
     path: &Path,
 ) -> Result<(Vec<Issue>, WorkspaceLoadSummary)> {
     let config = load_workspace_config(path)?;
+    let mode = DataSourceMode::from_environment()?;
     let workspace_root = resolve_workspace_root(path);
 
     let enabled_repos = config
@@ -1764,7 +1899,7 @@ pub fn load_workspace_issues_with_summary(
 
         let repo_result = (|| -> Result<Vec<Issue>> {
             let beads_dir = resolve_beads_redirect(&beads_dir)?;
-            let mut issues = load_issues_from_beads_dir(&beads_dir)?;
+            let mut issues = load_issues_from_beads_dir_with_mode(&beads_dir, mode)?;
             namespace_workspace_issues(&mut issues, &prefix, &repo_name, &known_prefixes);
             for issue in &mut issues {
                 issue.workspace_repo_path = Some(repo_path.clone());
@@ -1781,10 +1916,21 @@ pub fn load_workspace_issues_with_summary(
                     error: None,
                 });
             }
-            // A failed live export cannot establish a complete workspace
+            // A failed live source cannot establish a complete workspace
             // snapshot. Keep the previous TUI/export state instead of making
             // every issue in this repository disappear during a refresh.
-            Err(error) if matches!(&error, BvrError::DoltExport { .. }) => return Err(error),
+            // Explicit source modes likewise require every enabled repository
+            // to satisfy that selection; only automatic discovery tolerates
+            // an unconfigured or missing optional repository.
+            Err(error)
+                if mode != DataSourceMode::Auto
+                    || matches!(
+                        &error,
+                        BvrError::DoltExport { .. } | BvrError::SqliteSource { .. }
+                    ) =>
+            {
+                return Err(error);
+            }
             Err(error) => {
                 warn(format!(
                     "workspace repo '{repo_name}' failed to load: {error}"
@@ -2626,6 +2772,67 @@ mod tests {
     }
 
     #[test]
+    fn workspace_sqlite_failure_preserves_the_source_error_when_no_fallback_can_be_read() {
+        for unreadable_fallback in [false, true] {
+            let dir = tempfile::tempdir().expect("workspace fixture");
+            let root = dir.path();
+            let config = root.join(".bv/workspace.yaml");
+            let healthy = root.join("healthy/.beads");
+            let failing = root.join("failing/.beads");
+            std::fs::create_dir_all(config.parent().expect("config directory"))
+                .expect("workspace configuration directory");
+            std::fs::create_dir_all(&healthy).expect("healthy tracker");
+            std::fs::create_dir_all(&failing).expect("failing tracker");
+            std::fs::write(
+                &config,
+                "repos:\n  - name: healthy\n    path: healthy\n  - name: failing\n    path: failing\n",
+            )
+            .expect("workspace configuration");
+            std::fs::write(
+                healthy.join("issues.jsonl"),
+                "{\"id\":\"GOOD-1\",\"title\":\"Healthy issue\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+            )
+            .expect("healthy snapshot");
+            assert_eq!(
+                load_issues_from_beads_dir_with_mode(&healthy, DataSourceMode::Auto)
+                    .expect("healthy repository control")
+                    .len(),
+                1
+            );
+            std::fs::write(
+                failing.join("metadata.json"),
+                r#"{"database":"beads.db","jsonl_export":"snapshot.jsonl"}"#,
+            )
+            .expect("declared failing database");
+            let database = failing.join("beads.db");
+            std::fs::write(&database, b"not a SQLite database").expect("invalid database");
+            if unreadable_fallback {
+                let jsonl = failing.join("snapshot.jsonl");
+                std::fs::write(&jsonl, [0xff, b'\n']).expect("invalid UTF-8 snapshot");
+                set_mtime(&jsonl, 1_000_000);
+                set_mtime(&database, 2_000_000);
+            }
+
+            let error = load_workspace_issues_with_summary(&config)
+                .expect_err("a configured database failure must not omit its repository");
+            assert!(
+                matches!(&error, BvrError::SqliteSource { path, .. } if path == &database),
+                "the SQLite failure must survive fallback and workspace loading: {error}"
+            );
+            assert_eq!(
+                std::fs::read(&database).expect("database remains readable as bytes"),
+                b"not a SQLite database"
+            );
+            if unreadable_fallback {
+                assert_eq!(
+                    std::fs::read(failing.join("snapshot.jsonl")).expect("snapshot unchanged"),
+                    [0xff, b'\n']
+                );
+            }
+        }
+    }
+
+    #[test]
     fn load_workspace_issues_errors_when_all_repos_fail() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
@@ -3327,6 +3534,349 @@ mod tests {
         assert!(child.dependencies[0].is_blocking());
     }
 
+    fn assert_sqlite_source_rejected(path: &Path, fragments: &[&str]) {
+        let before = std::fs::read(path).expect("read original database");
+        let error = load_issues_from_sqlite(path).expect_err("reject incomplete SQLite snapshot");
+        assert!(
+            matches!(&error, BvrError::SqliteSource { path: source, .. } if source == path),
+            "{error}"
+        );
+        let message = error.to_string();
+        for fragment in fragments {
+            assert!(
+                message.contains(fragment),
+                "missing {fragment:?}: {message}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(path).expect("read database after rejection"),
+            before
+        );
+    }
+
+    #[test]
+    fn sqlite_rejects_malformed_relationship_rows_without_partial_snapshots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (case, table, mutation) in [
+            (
+                "label",
+                "labels",
+                "UPDATE labels SET label=X'6261636b656e64' WHERE label='backend'",
+            ),
+            (
+                "label_owner",
+                "labels",
+                "UPDATE labels SET issue_id=X'62642d31' WHERE label='backend'",
+            ),
+            (
+                "dependency_type",
+                "dependencies",
+                "UPDATE dependencies SET type=X'626c6f636b73'",
+            ),
+            (
+                "dependency_author",
+                "dependencies",
+                "UPDATE dependencies SET created_by=X'626f62'",
+            ),
+            (
+                "dependency_target",
+                "dependencies",
+                "UPDATE dependencies SET depends_on_id=X'62642d31'",
+            ),
+            (
+                "comment_text",
+                "comments",
+                "UPDATE comments SET text=X'6f6b'",
+            ),
+            (
+                "comment_author",
+                "comments",
+                "UPDATE comments SET author=X'626f62'",
+            ),
+            (
+                "comment_owner",
+                "comments",
+                "UPDATE comments SET issue_id=X'62642d31'",
+            ),
+        ] {
+            let db = dir.path().join(format!("{case}.db"));
+            write_br_sqlite(&db);
+            let control = load_issues_from_sqlite(&db).expect("ordinary text is valid");
+            assert_eq!(control[0].labels.len(), 2);
+            assert_eq!(control[0].comments.len(), 1);
+            assert!(control[1].dependencies[0].is_blocking());
+            let writer = rusqlite::Connection::open(&db).expect("open writer");
+            writer
+                .execute_batch(mutation)
+                .expect("store a BLOB in a non-STRICT table");
+            drop(writer);
+
+            assert_sqlite_source_rejected(&db, &[table]);
+        }
+    }
+
+    #[test]
+    fn sqlite_rejects_present_relationship_tables_missing_required_columns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (case, table, columns, missing) in [
+            ("label", "labels", "issue_id TEXT", "label"),
+            ("label_owner", "labels", "label TEXT", "issue_id"),
+            ("target", "dependencies", "issue_id TEXT", "depends_on_id"),
+            ("source", "dependencies", "depends_on_id TEXT", "issue_id"),
+            ("comment_owner", "comments", "text TEXT", "issue_id"),
+            ("comment_body", "comments", "issue_id TEXT", "text or body"),
+        ] {
+            let db = dir.path().join(format!("{case}.db"));
+            let writer = rusqlite::Connection::open(&db).expect("open writer");
+            writer
+                .execute_batch(&format!(
+                    "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT);
+                 INSERT INTO issues VALUES ('bd-1', 'Stored issue');
+                 CREATE TABLE {table} ({columns});"
+                ))
+                .expect("create present but incomplete table");
+            drop(writer);
+
+            assert_sqlite_source_rejected(&db, &[table, "missing required", missing]);
+        }
+    }
+
+    #[test]
+    fn sqlite_rejects_invalid_issue_rows_without_partial_snapshots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (case, assignment, diagnostic) in [
+            ("id", "id=''", "issue id cannot be empty"),
+            ("title", "title=''", "title cannot be empty"),
+            ("type", "issue_type=''", "issue_type cannot be empty"),
+            ("status", "status='unrecognized'", "unknown status"),
+            (
+                "time_order",
+                "created_at='2027-01-01T00:00:00Z'",
+                "updated_at cannot be earlier",
+            ),
+        ] {
+            let db = dir.path().join(format!("{case}.db"));
+            write_br_sqlite(&db);
+            let writer = rusqlite::Connection::open(&db).expect("open writer");
+            writer
+                .execute_batch(&format!("UPDATE issues SET {assignment} WHERE id='bd-1';"))
+                .expect("store invalid issue alongside valid rows");
+            drop(writer);
+
+            assert_sqlite_source_rejected(&db, &["issues", diagnostic]);
+        }
+    }
+
+    #[test]
+    fn sqlite_rejects_out_of_range_issue_numbers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for field in ["priority", "estimated_minutes"] {
+            for value in [
+                i64::from(i32::MIN) - 1,
+                i64::from(i32::MAX) + 1,
+                4_294_967_296,
+            ] {
+                let db = dir.path().join(format!("{field}-{value}.db"));
+                write_br_sqlite(&db);
+                let writer = rusqlite::Connection::open(&db).expect("open writer");
+                writer
+                    .execute(
+                        &format!("UPDATE issues SET {field}=?1 WHERE id='bd-1'"),
+                        [value],
+                    )
+                    .expect("store integer outside the model's i32 range");
+                drop(writer);
+
+                assert_sqlite_source_rejected(&db, &["issues", &value.to_string()]);
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_preserves_i32_limits_and_optional_numeric_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("number-boundaries.db");
+        let writer = rusqlite::Connection::open(&db).expect("open writer");
+        writer.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, priority INTEGER, estimated_minutes INTEGER);
+             INSERT INTO issues VALUES
+                ('min', 'Minimum i32', -2147483648, -2147483648),
+                ('max', 'Maximum i32', 2147483647, 2147483647),
+                ('unset', 'Optional values', NULL, NULL);"
+        ).expect("create integer boundary values");
+        drop(writer);
+
+        let issues = load_issues_from_sqlite(&db).expect("preserve representable model values");
+        for (id, priority, estimate) in [
+            ("min", i32::MIN, Some(i32::MIN)),
+            ("max", i32::MAX, Some(i32::MAX)),
+            ("unset", 2, None),
+        ] {
+            let issue = issues
+                .iter()
+                .find(|issue| issue.id == id)
+                .expect("loaded issue");
+            assert_eq!(issue.priority, priority);
+            assert_eq!(issue.estimated_minutes, estimate);
+        }
+    }
+
+    #[test]
+    fn sqlite_rejects_duplicate_issue_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("duplicate-ids.db");
+        let writer = rusqlite::Connection::open(&db).expect("open writer");
+        writer.execute_batch(
+            "CREATE TABLE issues (id TEXT, title TEXT);
+             INSERT INTO issues VALUES ('bd-1', 'First version'), ('bd-1', 'Ambiguous second version');"
+        ).expect("create duplicates in a variant schema without a unique constraint");
+        drop(writer);
+
+        assert_sqlite_source_rejected(&db, &["issues", "duplicate issue ID", "bd-1"]);
+    }
+
+    #[test]
+    fn sqlite_rejects_empty_dependency_targets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (case, target) in [("empty", ""), ("whitespace", " \t\n")] {
+            let db = dir.path().join(format!("{case}.db"));
+            write_br_sqlite(&db);
+            let writer = rusqlite::Connection::open(&db).expect("open writer");
+            writer
+                .execute("UPDATE dependencies SET depends_on_id=?1", [target])
+                .expect("store invalid dependency target");
+            drop(writer);
+
+            assert_sqlite_source_rejected(&db, &["dependencies", "bd-2", "empty depends_on_id"]);
+        }
+    }
+
+    #[test]
+    fn sqlite_rejects_malformed_nonempty_timestamps() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for (table, field) in [
+            ("issues", "created_at"),
+            ("issues", "updated_at"),
+            ("issues", "due_at"),
+            ("issues", "defer_until"),
+            ("issues", "closed_at"),
+            ("issues", "deleted_at"),
+            ("dependencies", "created_at"),
+            ("comments", "created_at"),
+        ] {
+            let db = dir.path().join(format!("{table}-{field}.db"));
+            write_br_sqlite(&db);
+            let writer = rusqlite::Connection::open(&db).expect("open writer");
+            writer
+                .execute_batch(&format!("UPDATE {table} SET {field}='not-a-timestamp';"))
+                .expect("store malformed nonempty timestamp");
+            drop(writer);
+
+            assert_sqlite_source_rejected(&db, &[table, &format!("invalid {field} timestamp")]);
+        }
+    }
+
+    #[test]
+    fn sqlite_preserves_supported_timestamps_and_empty_values() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("timestamp-variants.db");
+        let writer = rusqlite::Connection::open(&db).expect("open writer");
+        writer.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT,
+                due_date TEXT, defer_until TEXT, closed_at TEXT, deleted_at TEXT);
+             CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, created_at TEXT);
+             CREATE TABLE comments (issue_id TEXT, body TEXT, created_at TEXT);
+             INSERT INTO issues (id, title) VALUES ('root', 'Prerequisite');"
+        ).expect("create legacy timestamp and relation columns");
+        let cases = [
+            (None, None),
+            (Some(""), None),
+            (Some(" \t "), None),
+            (Some("2026-01-02T03:04:05Z"), Some("2026-01-02T03:04:05Z")),
+            (
+                Some("2026-01-02T03:04:05.123456+02:00"),
+                Some("2026-01-02T01:04:05.123456Z"),
+            ),
+            (Some("2026-01-02 03:04:05"), Some("2026-01-02T03:04:05Z")),
+            (Some("2026-01-02T03:04:05"), Some("2026-01-02T03:04:05Z")),
+            (
+                Some("2026-01-02 03:04:05.25+02:00"),
+                Some("2026-01-02T01:04:05.25Z"),
+            ),
+        ];
+        for (case, (raw, _)) in cases.iter().enumerate() {
+            let id = format!("time-{case}");
+            writer
+                .execute(
+                    "INSERT INTO issues VALUES (?1, 'Timestamp variant', ?2, ?2, ?2, ?2, ?2, ?2)",
+                    rusqlite::params![id, raw],
+                )
+                .expect("store timestamp variant");
+            writer
+                .execute(
+                    "INSERT INTO dependencies VALUES (?1, 'root', ?2)",
+                    rusqlite::params![id, raw],
+                )
+                .expect("store relationship timestamp variant");
+            writer
+                .execute(
+                    "INSERT INTO comments VALUES (?1, 'Variant comment', ?2)",
+                    rusqlite::params![id, raw],
+                )
+                .expect("store comment timestamp variant");
+        }
+        drop(writer);
+
+        let issues =
+            load_issues_from_sqlite(&db).expect("preserve all supported timestamp formats");
+        assert_eq!(issues.len(), cases.len() + 1);
+        for (case, (_, expected)) in cases.iter().enumerate() {
+            let id = format!("time-{case}");
+            let issue = issues
+                .iter()
+                .find(|issue| issue.id == id)
+                .expect("timestamp issue");
+            let expected =
+                expected.map(|value| crate::model::ts(value).expect("expected timestamp"));
+            assert_eq!(issue.created_at, expected);
+            assert_eq!(issue.updated_at, expected);
+            assert_eq!(issue.due_date, expected);
+            assert_eq!(issue.defer_until, expected);
+            assert_eq!(issue.closed_at, expected);
+            assert_eq!(issue.is_tombstone(), expected.is_some());
+            assert_eq!(issue.dependencies[0].created_at, expected);
+            assert!(issue.dependencies[0].is_blocking());
+            assert_eq!(issue.comments[0].created_at, expected);
+            assert_eq!(issue.comments[0].text, "Variant comment");
+        }
+    }
+
+    #[test]
+    fn sqlite_preserves_ephemeral_and_deleted_issue_rules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("excluded-issues.db");
+        write_br_sqlite(&db);
+        let writer = rusqlite::Connection::open(&db).expect("open writer");
+        writer.execute_batch(
+            "UPDATE issues SET title='', status='unrecognized', priority=4294967296,
+                defer_until='not-a-timestamp' WHERE id='bd-wisp';
+             UPDATE issues SET deleted_at='2026-01-03T00:00:00Z' WHERE id='bd-1';
+             INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES ('bd-wisp', 'bd-1', 'blocks');
+             INSERT INTO labels VALUES ('bd-wisp', 'temporary');
+             INSERT INTO comments (issue_id, author, text) VALUES ('bd-wisp', 'bob', 'Temporary comment');"
+        ).expect("retain intentionally excluded ephemeral data and deleted issues");
+        drop(writer);
+
+        let issues = load_issues_from_sqlite(&db).expect("apply intentional exclusion rules");
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].id, "bd-1");
+        assert!(issues[0].is_tombstone());
+        assert_eq!(issues[0].labels, ["api", "backend"]);
+        assert_eq!(issues[0].comments.len(), 1);
+        assert_eq!(issues[1].id, "bd-2");
+        assert_eq!(issues[1].dependencies.len(), 1);
+    }
+
     #[test]
     fn rejects_sqlite_without_issues_table() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3760,6 +4310,61 @@ mod tests {
             .expect("open for mtime")
             .set_modified(time)
             .expect("set mtime");
+    }
+
+    #[test]
+    fn source_modes_accept_documented_values_and_reject_mistyped_overrides() {
+        for (raw, expected) in [
+            ("", DataSourceMode::Auto),
+            ("  AUTO ", DataSourceMode::Auto),
+            ("jsonl", DataSourceMode::Jsonl),
+            (" SQLITE\n", DataSourceMode::Sqlite),
+        ] {
+            assert_eq!(
+                DataSourceMode::parse(raw).expect("valid source mode"),
+                expected
+            );
+        }
+        for raw in ["sqltie", "json", "dolt", "sqlite,jsonl"] {
+            let error = DataSourceMode::parse(raw).expect_err("unknown override must fail");
+            assert!(error.to_string().contains(DATA_SOURCE_ENV));
+            assert!(error.to_string().contains(raw));
+        }
+    }
+
+    #[test]
+    fn explicit_sqlite_selection_and_watch_reject_a_jsonl_only_repository() {
+        let dir = tempfile::tempdir().expect("source fixture");
+        let jsonl = dir.path().join("issues.jsonl");
+        std::fs::write(
+            &jsonl,
+            "{\"id\":\"JSONL-1\",\"title\":\"Saved issue\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+        )
+        .expect("saved snapshot");
+
+        let source = select_issue_source_with_mode(dir.path(), DataSourceMode::Auto)
+            .expect("automatic JSONL source");
+        assert_eq!(source, IssueSource::Jsonl(jsonl));
+        for result in [
+            select_issue_source_with_mode(dir.path(), DataSourceMode::Sqlite)
+                .map(|source| source.watch_paths()),
+            issue_source_watch_paths_with_mode(dir.path(), DataSourceMode::Sqlite),
+        ] {
+            let error = result.expect_err("explicit SQLite cannot substitute a JSONL source");
+            assert!(
+                error
+                    .to_string()
+                    .contains("sqlite requires a declared database"),
+                "{error}"
+            );
+        }
+        let error = load_issues_from_beads_dir_with_mode(dir.path(), DataSourceMode::Sqlite)
+            .expect_err("explicit SQLite load must honor the selection");
+        assert!(
+            error
+                .to_string()
+                .contains("sqlite requires a declared database")
+        );
     }
 
     #[test]
