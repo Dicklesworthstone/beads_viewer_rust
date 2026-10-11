@@ -645,7 +645,7 @@
                 <button id="btn-triage" title="Show/hide triage recommendations panel with prioritized work items (G)">📋</button>
                 <button id="btn-top" title="Show/hide top nodes panel with highest PageRank nodes (T)">⭐</button>
                 <button id="btn-recent" title="Show/hide recently viewed nodes (Y)">🕐</button>
-                <button id="btn-path" title="Enter path finder mode - click two nodes to find shortest path (P)">🛤️</button>
+                <button id="btn-path" aria-pressed="false" title="Enter path finder mode - click two nodes to find shortest path (P)">🛤️</button>
                 <button id="btn-theme" title="Switch to light mode (L)">☀️</button>
                 <button id="btn-help" title="Show keyboard shortcuts and help (?)">❓</button>
                 <button id="btn-fit" title="Fit all nodes in view (F)">Fit</button>
@@ -731,7 +731,7 @@
                 <div class="recent-title">Recently Viewed</div>
                 <div id="recent-list"></div>
             </div>
-            <div class="pathfinder-banner" id="pathfinder-banner">🔗 Path Finder: Click destination node (Esc to cancel)</div>
+            <div class="pathfinder-banner" id="pathfinder-banner" role="status">🔗 Path Finder: Click starting node (Esc to cancel)</div>
             <div class="edge-tooltip" id="edge-tooltip"></div>
             <div id="hover-panel">
                 <button class="hover-close" id="hover-close">×</button>
@@ -984,12 +984,13 @@ function highlightMatches(text, query) {
 
 // Stats calculation
 let actionable = 0, blocked = 0, onCriticalPath = 0, articulationCount = 0;
-const blockerCount = {};
-DATA.links.forEach(l => blockerCount[l.source] = (blockerCount[l.source] || 0) + 1);
+const nodesById = new Map(DATA.nodes.map(n => [n.id, n]));
+const normalizedStatus = n => String(n.status || '').trim().toLowerCase();
 DATA.nodes.forEach(n => {
-    n.blockerCount = blockerCount[n.id] || 0;
-    if ((n.status === 'open' || n.status === 'in_progress') && n.blockerCount === 0) actionable++;
-    if (n.status === 'blocked') blocked++;
+    // Readiness is computed by the exporter at generated_at, including inherited
+    // parent blockers and scheduler deferrals. Visual edges retain every type.
+    if (n.is_actionable) actionable++;
+    if (n.is_dependency_blocked) blocked++;
     if (n.slack === 0) onCriticalPath++;
     if (n.is_articulation) articulationCount++;
 });
@@ -1005,6 +1006,7 @@ const maxCP = Math.max(...DATA.nodes.map(n => n.critical_path || 0), 1);
 const maxInDeg = Math.max(...DATA.nodes.map(n => n.in_degree || 0), 1);
 
 let sizeMetric = 'pagerank', heatmapMode = false, hoveredNode = null, highlightedNodes = new Set();
+let highlightedPath = null;
 
 function getNodeSize(n) {
     const base = 5, scale = 16;
@@ -1187,10 +1189,10 @@ function handleNodeHover(node) {
     hoveredNode = node;
     container.style.cursor = node ? 'pointer' : 'grab';
     if (node) {
-        highlightedNodes = getConnectedNodes(node.id, 2);
+        if (!highlightedPath) highlightedNodes = getConnectedNodes(node.id, 2);
         showHoverPanel(node);
     } else {
-        highlightedNodes = new Set();
+        if (!highlightedPath) highlightedNodes = new Set();
         hideHoverPanel();
     }
     Graph.nodeColor(Graph.nodeColor()); // Trigger re-render
@@ -1381,7 +1383,12 @@ document.getElementById('hover-close').onclick = () => document.getElementById('
 
 let selectedNode = null;
 function selectNode(node) {
+    setPathFinder(false);
     selectedNode = node;
+    highlightedPath = null;
+    highlightedNodes = getConnectedNodes(node.id, 2);
+    Graph.nodeColor(Graph.nodeColor());
+    Graph.linkColor(Graph.linkColor());
     showHoverPanel(node);
     document.getElementById('detail-id').textContent = node.id;
     document.getElementById('detail-name').textContent = node.title;
@@ -1410,6 +1417,8 @@ function selectNode(node) {
 
 function clearSelection() {
     selectedNode = null;
+    setPathFinder(false);
+    highlightedPath = null;
     highlightedNodes = new Set();
     document.getElementById('node-detail').classList.remove('visible');
     document.getElementById('no-selection').style.display = 'block';
@@ -1544,6 +1553,7 @@ document.getElementById('ctx-deps').onclick = () => { if (contextNode) highlight
 document.getElementById('ctx-dependents').onclick = () => { if (contextNode) highlightDependencies(contextNode, 'dependents'); hideContextMenu(); };
 document.getElementById('ctx-connected').onclick = () => {
     if (contextNode) {
+        highlightedPath = null;
         highlightedNodes = getConnectedNodes(contextNode.id, 3);
         Graph.nodeColor(Graph.nodeColor());
         Graph.linkColor(Graph.linkColor());
@@ -1561,27 +1571,43 @@ document.getElementById('ctx-copy-description').onclick = () => {
     hideContextMenu();
     void copyContextField(value, 'Description');
 };
-document.getElementById('ctx-path').onclick = () => { showToast('Click another node to find path'); pathStartNode = contextNode; hideContextMenu(); };
+document.getElementById('ctx-path').onclick = () => {
+    if (contextNode) setPathFinder(true, contextNode);
+    hideContextMenu();
+};
 
+let pathFinderMode = false;
 let pathStartNode = null;
 function findPath(startId, endId) {
-    const queue = [[startId]];
-    const visited = new Set([startId]);
-    while (queue.length > 0) {
-        const path = queue.shift();
-        const current = path[path.length - 1];
-        if (current === endId) return path;
-        DATA.links.forEach(l => {
-            const src = typeof l.source === 'object' ? l.source.id : l.source;
-            const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-            if (src === current && !visited.has(tgt)) { visited.add(tgt); queue.push([...path, tgt]); }
-            if (tgt === current && !visited.has(src)) { visited.add(src); queue.push([...path, src]); }
-        });
+    const neighbors = new Map(DATA.nodes.map(n => [n.id, new Set()]));
+    DATA.links.forEach(link => {
+        const source = typeof link.source === 'object' ? link.source.id : link.source;
+        const target = typeof link.target === 'object' ? link.target.id : link.target;
+        if (!neighbors.has(source) || !neighbors.has(target)) return;
+        neighbors.get(source).add(target);
+        neighbors.get(target).add(source); // Paths show connections in either direction.
+    });
+    if (!neighbors.has(startId) || !neighbors.has(endId)) return null;
+    const queue = [startId];
+    const parents = new Map([[startId, null]]);
+    for (let index = 0; index < queue.length; index++) {
+        const current = queue[index];
+        if (current === endId) {
+            const path = [];
+            for (let id = endId; id !== null; id = parents.get(id)) path.push(id);
+            return path.reverse();
+        }
+        for (const neighbor of neighbors.get(current)) {
+            if (parents.has(neighbor)) continue;
+            parents.set(neighbor, current);
+            queue.push(neighbor);
+        }
     }
     return null;
 }
 
 function highlightPath(path) {
+    highlightedPath = path;
     highlightedNodes = new Set(path);
     Graph.nodeColor(Graph.nodeColor());
     Graph.linkColor(Graph.linkColor());
@@ -1590,17 +1616,27 @@ function highlightPath(path) {
 }
 
 function handleNodeClick(node) {
-    if (pathStartNode) {
-        const path = findPath(pathStartNode.id, node.id);
-        if (path) highlightPath(path);
-        else showToast('No path found');
-        pathStartNode = null;
-    } else {
+    if (!pathFinderMode) {
         selectNode(node);
+    } else if (!pathStartNode) {
+        selectNode(node);
+        setPathFinder(true, node);
+    } else {
+        const path = findPath(pathStartNode.id, node.id);
+        setPathFinder(false);
+        if (path) highlightPath(path);
+        else {
+            highlightedPath = null;
+            highlightedNodes = new Set();
+            Graph.nodeColor(Graph.nodeColor());
+            Graph.linkColor(Graph.linkColor());
+            showToast('No path found');
+        }
     }
 }
 
 function highlightDependencies(node, type) {
+    highlightedPath = null;
     const connected = new Set([node.id]);
     DATA.links.forEach(l => {
         const src = typeof l.source === 'object' ? l.source.id : l.source;
@@ -1616,21 +1652,27 @@ function highlightDependencies(node, type) {
 }
 
 // Filters
-let statusFilter = '', typeFilter = '';
+let statusFilter = '', typeFilter = '', priorityFilter = '', labelFilter = '';
 let currentVisibilityFilter = () => true;
 document.getElementById('filter-status').onchange = e => { statusFilter = e.target.value; applyFilters(); };
 document.getElementById('filter-type').onchange = e => { typeFilter = e.target.value; applyFilters(); };
 
 function applyFilters() {
-    const searchVal = document.getElementById('search-input').value.toLowerCase();
     currentVisibilityFilter = n => {
-        const matchSearch = !searchVal || n.id.toLowerCase().includes(searchVal) || n.title.toLowerCase().includes(searchVal);
-        const matchStatus = !statusFilter || n.status === statusFilter;
+        const matchStatus = !statusFilter || normalizedStatus(n) === statusFilter;
         const matchType = !typeFilter || n.type === typeFilter;
-        return matchSearch && matchStatus && matchType;
+        const matchPriority = !priorityFilter || n.priority === Number(priorityFilter);
+        const matchLabel = !labelFilter || (n.labels || []).includes(labelFilter);
+        return matchStatus && matchType && matchPriority && matchLabel;
     };
     Graph.nodeVisibility(currentVisibilityFilter);
+    const visibleEndpoint = endpoint => {
+        const node = typeof endpoint === 'object' ? endpoint : nodesById.get(endpoint);
+        return !!node && currentVisibilityFilter(node);
+    };
+    Graph.linkVisibility(link => visibleEndpoint(link.source) && visibleEndpoint(link.target));
     updateVisibleCount();
+    updateMinimap();
 }
 
 function updateVisibleCount() {
@@ -1658,15 +1700,19 @@ document.getElementById('btn-fit').onclick = () => Graph.zoomToFit(400, 50);
 document.getElementById('btn-reset').onclick = () => {
     document.getElementById('filter-status').value = '';
     document.getElementById('filter-type').value = '';
+    document.getElementById('filter-priority').value = '';
+    document.getElementById('filter-label').value = '';
+    clearTimeout(searchDebounce);
     document.getElementById('search-input').value = '';
+    document.getElementById('search-results').classList.remove('visible');
     document.getElementById('view-mode').value = 'force';
     document.getElementById('size-by').value = 'pagerank';
-    statusFilter = ''; typeFilter = ''; sizeMetric = 'pagerank'; heatmapMode = false;
+    statusFilter = ''; typeFilter = ''; priorityFilter = ''; labelFilter = '';
+    sizeMetric = 'pagerank'; heatmapMode = false;
+    document.getElementById('heatmap-metric').textContent = 'PageRank';
     highlightedNodes = new Set();
-    Graph.dagMode(null); Graph.nodeVisibility(() => true); Graph.nodeVal(n => getNodeSize(n));
-    Graph.nodeColor(n => STATUS_COLORS[n.status] || '#555577');
-    Graph.linkColor(l => l.critical ? '#ec489980' : '#44475a40');
-    clearSelection(); hideHoverPanel(); Graph.zoomToFit(400, 50); updateVisibleCount();
+    Graph.dagMode(null); Graph.nodeVal(n => getNodeSize(n));
+    clearSelection(); hideHoverPanel(); hideContextMenu(); applyFilters(); Graph.zoomToFit(400, 50);
     document.getElementById('heatmap-legend').classList.remove('heatmap-active');
     document.getElementById('top-nodes-panel').classList.remove('visible');
     document.getElementById('triage-panel').style.display = 'none';
@@ -1782,44 +1828,28 @@ document.getElementById('btn-recent').onclick = () => {
 };
 
 // Path finder mode
-let pathFinderMode = false;
-let pathFinderStart = null;
+function setPathFinder(active, start = null) {
+    pathFinderMode = active;
+    pathStartNode = active ? start : null;
+    if (active) {
+        highlightedPath = null;
+        highlightedNodes = start ? new Set([start.id]) : new Set();
+        Graph.nodeColor(Graph.nodeColor());
+        Graph.linkColor(Graph.linkColor());
+    }
+    const button = document.getElementById('btn-path');
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+    const banner = document.getElementById('pathfinder-banner');
+    banner.classList.toggle('visible', active);
+    banner.textContent = start
+        ? '🔗 Path Finder: Click destination node (Esc to cancel)'
+        : '🔗 Path Finder: Click starting node (Esc to cancel)';
+}
 function togglePathFinder() {
-    pathFinderMode = !pathFinderMode;
-    document.getElementById('btn-path').classList.toggle('active', pathFinderMode);
-    document.getElementById('pathfinder-banner').classList.toggle('visible', pathFinderMode);
-    if (!pathFinderMode) { pathFinderStart = null; }
-    else if (selectedNode) { pathFinderStart = selectedNode; showToast('Now click destination node'); }
+    setPathFinder(!pathFinderMode, selectedNode);
 }
 document.getElementById('btn-path').onclick = togglePathFinder;
-
-// BFS for shortest path
-function bfsPath(startId, endId) {
-    const links = DATA.links;
-    const adj = {};
-    links.forEach(l => {
-        const s = typeof l.source === 'object' ? l.source.id : l.source;
-        const t = typeof l.target === 'object' ? l.target.id : l.target;
-        if (!adj[s]) adj[s] = [];
-        if (!adj[t]) adj[t] = [];
-        adj[s].push(t);
-        adj[t].push(s); // Undirected for path finding
-    });
-    const queue = [[startId]];
-    const visited = new Set([startId]);
-    while (queue.length > 0) {
-        const path = queue.shift();
-        const node = path[path.length - 1];
-        if (node === endId) return path;
-        for (const neighbor of (adj[node] || [])) {
-            if (!visited.has(neighbor)) {
-                visited.add(neighbor);
-                queue.push([...path, neighbor]);
-            }
-        }
-    }
-    return null;
-}
 
 // Help overlay
 function toggleHelp() {
@@ -1830,7 +1860,6 @@ document.getElementById('help-close').onclick = toggleHelp;
 document.getElementById('help-overlay').onclick = e => { if (e.target.id === 'help-overlay') toggleHelp(); };
 
 // Priority filter
-let priorityFilter = '';
 document.getElementById('filter-priority').onchange = e => {
     priorityFilter = e.target.value;
     applyFilters();
@@ -1845,33 +1874,20 @@ const labelSelect = document.getElementById('filter-label');
     opt.value = l; opt.textContent = l;
     labelSelect.appendChild(opt);
 });
-let labelFilter = '';
 labelSelect.onchange = e => {
     labelFilter = e.target.value;
     applyFilters();
 };
 
-// Combined filter function
-function applyFilters() {
-    Graph.nodeVisibility(n => {
-        if (statusFilter && n.status !== statusFilter) return false;
-        if (typeFilter && n.type !== typeFilter) return false;
-        if (priorityFilter && n.priority !== parseInt(priorityFilter)) return false;
-        if (labelFilter && !(n.labels || []).includes(labelFilter)) return false;
-        return true;
-    });
-    updateVisibleCount();
-}
-
-// Override existing filter handlers to use combined function
-document.getElementById('filter-status').onchange = e => { statusFilter = e.target.value; applyFilters(); };
-document.getElementById('filter-type').onchange = e => { typeFilter = e.target.value; applyFilters(); };
-
 // Mini-map
 const minimapCanvas = document.getElementById('minimap-canvas');
 const minimapCtx = minimapCanvas.getContext('2d');
 function updateMinimap() {
-    const nodes = Graph.graphData().nodes;
+    const w = minimapCanvas.width = 160;
+    const h = minimapCanvas.height = 120;
+    minimapCtx.fillStyle = isDarkMode ? '#1a1a2e' : '#f0f2f5';
+    minimapCtx.fillRect(0, 0, w, h);
+    const nodes = Graph.graphData().nodes.filter(currentVisibilityFilter);
     if (nodes.length === 0) return;
     const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
     nodes.forEach(n => {
@@ -1883,13 +1899,9 @@ function updateMinimap() {
         }
     });
     const padding = 20;
-    const w = minimapCanvas.width = 160;
-    const h = minimapCanvas.height = 120;
     const scaleX = (w - padding * 2) / (bounds.maxX - bounds.minX || 1);
     const scaleY = (h - padding * 2) / (bounds.maxY - bounds.minY || 1);
     const scale = Math.min(scaleX, scaleY);
-    minimapCtx.fillStyle = isDarkMode ? '#1a1a2e' : '#f0f2f5';
-    minimapCtx.fillRect(0, 0, w, h);
     nodes.forEach(n => {
         if (n.x == null || n.y == null) return;
         const x = padding + (n.x - bounds.minX) * scale;
@@ -1924,7 +1936,7 @@ document.onkeydown = e => {
         case 'f': Graph.zoomToFit(400, 50); break;
         case 'r': document.getElementById('btn-reset').click(); break;
         case 'escape':
-            if (pathFinderMode) { pathFinderMode = false; pathFinderStart = null; document.getElementById('pathfinder-banner').classList.remove('visible'); document.getElementById('btn-path').classList.remove('active'); }
+            if (pathFinderMode) setPathFinder(false);
             else { clearSelection(); hideHoverPanel(); highlightedNodes = new Set(); Graph.nodeColor(Graph.nodeColor()); }
             break;
         case ' ': e.preventDefault(); document.getElementById('btn-fullscreen').click(); break;

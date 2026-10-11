@@ -1339,6 +1339,7 @@ fn main() -> ExitCode {
                 });
                 let html = match render_interactive_graph_html(
                     &issues,
+                    &analyzer.graph,
                     &analyzer.metrics,
                     &triage.result,
                     cli.graph_title.as_deref(),
@@ -6073,6 +6074,7 @@ fn metric_ranks(values: &HashMap<String, f64>) -> HashMap<String, usize> {
 /// slack critical path are flagged, and triage recommendations ride along.
 fn render_interactive_graph_html(
     issues: &[bvr::model::Issue],
+    graph: &bvr::analysis::graph::IssueGraph,
     metrics: &bvr::analysis::graph::GraphMetrics,
     triage: &bvr::analysis::triage::TriageResult,
     title: Option<&str>,
@@ -6080,6 +6082,10 @@ fn render_interactive_graph_html(
     if issues.is_empty() {
         return Err("no issues to export".to_string());
     }
+    let generated_at = Utc::now();
+    let actionable: HashSet<String> = graph.actionable_ids_at(generated_at).into_iter().collect();
+    let dependency_unblocked: HashSet<String> =
+        graph.dependency_unblocked_ids().into_iter().collect();
     let ids: HashSet<&str> = issues.iter().map(|issue| issue.id.as_str()).collect();
     let mut blocks: HashMap<&str, Vec<&str>> = HashMap::new();
     for issue in issues {
@@ -6131,6 +6137,9 @@ fn render_interactive_graph_html(
             "due_date": fmt_time(issue.due_date, "%Y-%m-%d"),
             "blocked_by": blocked_by,
             "blocks": blocks.get(id).cloned().unwrap_or_default(),
+            "is_actionable": actionable.contains(id),
+            "is_dependency_blocked": issue.is_open_like() && !dependency_unblocked.contains(id),
+            "open_blocker_count": graph.open_blockers(id).len(),
             "pagerank": float(&metrics.pagerank, id),
             "betweenness": float(&metrics.betweenness, id),
             "eigenvector": float(&metrics.eigenvector, id),
@@ -6169,7 +6178,7 @@ fn render_interactive_graph_html(
     let edge_count = links.len();
     let data_hash = compute_data_hash(issues);
     let payload = serde_json::json!({
-        "generated_at": Utc::now().to_rfc3339(),
+        "generated_at": generated_at.to_rfc3339(),
         "data_hash": data_hash,
         "version": format!("v{}", env!("CARGO_PKG_VERSION")),
         "nodes": nodes,
@@ -8178,10 +8187,32 @@ mod tests {
     fn interactive_graph_html_is_self_contained_and_injection_safe() {
         let mut issues = export_fixture();
         issues[0].title = "</script><script>alert(1)</script>".to_string();
+        issues.extend([
+            bvr::model::Issue {
+                id: "A-3".to_string(),
+                title: "Child of a blocked parent".to_string(),
+                status: "open".to_string(),
+                dependencies: vec![bvr::model::Dependency {
+                    issue_id: "A-3".to_string(),
+                    depends_on_id: "A-2".to_string(),
+                    dep_type: "parent-child".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            bvr::model::Issue {
+                id: "A-4".to_string(),
+                title: "Future work".to_string(),
+                status: "open".to_string(),
+                defer_until: Some("2999-01-01T00:00:00Z".parse().expect("future timestamp")),
+                ..Default::default()
+            },
+        ]);
         let analyzer = bvr::analysis::Analyzer::new(issues.clone());
         let triage = analyzer.triage(super::TriageOptions::default());
         let html = super::render_interactive_graph_html(
             &issues,
+            &analyzer.graph,
             &analyzer.metrics,
             &triage.result,
             Some("Deps <&> \"quoted\""),
@@ -8197,9 +8228,35 @@ mod tests {
         assert!(html.contains("\\u003c/script\\u003e"));
         assert!(html.contains("forceGraph") || html.contains("ForceGraph"));
         assert!(html.contains("\"source\":\"A-2\""));
+        let data_json = html
+            .lines()
+            .find_map(|line| line.strip_prefix("const DATA = ")?.strip_suffix(';'))
+            .expect("embedded graph data");
+        let data: serde_json::Value = serde_json::from_str(data_json).expect("valid graph JSON");
+        let nodes = data["nodes"].as_array().expect("node array");
+        for (id, actionable, dependency_blocked, direct_blockers) in [
+            ("A-1", true, false, 0),
+            ("A-2", false, true, 1),
+            ("A-3", false, true, 0),
+            ("A-4", false, false, 0),
+        ] {
+            let node = nodes.iter().find(|node| node["id"] == id).expect(id);
+            assert_eq!(node["is_actionable"], actionable, "readiness for {id}");
+            assert_eq!(
+                node["is_dependency_blocked"], dependency_blocked,
+                "inherited dependency state for {id}"
+            );
+            assert_eq!(node["open_blocker_count"], direct_blockers);
+        }
         assert!(
-            super::render_interactive_graph_html(&[], &analyzer.metrics, &triage.result, None)
-                .is_err()
+            super::render_interactive_graph_html(
+                &[],
+                &analyzer.graph,
+                &analyzer.metrics,
+                &triage.result,
+                None,
+            )
+            .is_err()
         );
     }
 

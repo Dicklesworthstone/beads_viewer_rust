@@ -12,6 +12,8 @@
 // BVR_VIEWER_REVISION optionally serves index.html/viewer.js/graph.js from a git revision
 // to demonstrate that these regressions fail before a fix, without changing files.
 // Exported SQLite/data files always come from BVR_BIN, including in revision mode.
+// Standalone graph tests always serve actual --export-graph output; revision mode
+// verifies that BVR_BIN embedded that revision's template instead of replacing it.
 // BVR_DOMPURIFY_REVISION serves only vendor/dompurify.min.js from a git revision
 // for sanitizer comparisons with current application code and exported data.
 
@@ -117,6 +119,7 @@ let securityExport;
 let bottleneckExport;
 let mutationExport;
 let dependencyExport;
+let standaloneExport;
 
 const securityDescriptions = [
   {
@@ -168,6 +171,63 @@ const dependencyIssues = [
   { id: htmlDependencyId, title: 'Literal HTML issue ID', dependencies: [{ depends_on_id: 'dep-anchor', type: 'blocks' }] },
   { id: 'end', title: 'Mermaid keyword issue ID', dependencies: [{ depends_on_id: 'dep-anchor', type: 'blocks' }] },
   { id: 'dep-anchor', title: 'Shared dependency anchor' },
+];
+
+const standaloneIssues = [
+  { id: 'done', title: 'Completed prerequisite', status: 'closed', priority: 3, labels: ['archive'] },
+  { id: 'gone', title: 'Removed prerequisite', status: ' TOMBSTONE ', priority: 3, labels: ['archive'] },
+  {
+    id: 'path-root', title: 'Ready root', priority: 0, labels: ['core'],
+    description: 'Ordinary **Markdown**, `code`, and [safe link](https://example.invalid/docs).',
+    dependencies: [
+      { depends_on_id: 'done', type: ' BLOCKS ' },
+      { depends_on_id: 'gone', type: 'conditional-blocks' },
+    ],
+  },
+  {
+    id: 'path-middle', title: 'Waiting middle', status: 'in_progress', priority: 1,
+    issue_type: 'feature', labels: ['core'],
+    dependencies: [
+      { depends_on_id: 'path-root', type: 'waits-for' },
+      { depends_on_id: 'path-root', type: 'blocks' },
+    ],
+  },
+  {
+    id: 'path-leaf', title: 'Waiting leaf', issue_type: 'bug', labels: ['ui'],
+    dependencies: [{ depends_on_id: 'path-middle', type: 'conditional-blocks' }],
+  },
+  {
+    id: 'info-only', title: 'Informational relationship', labels: ['ui'],
+    dependencies: [{ depends_on_id: 'path-root', type: 'related' }],
+  },
+  {
+    id: 'parent-only', title: 'Hierarchy relationship', priority: 3, labels: ['core'],
+    dependencies: [{ depends_on_id: 'path-root', type: 'parent-child' }],
+  },
+  { id: 'spare', title: 'Disconnected ready issue', labels: ['ui'] },
+  { id: 'parked-blocked', title: 'Manually parked issue', status: 'blocked', labels: ['parked'] },
+  { id: 'parked-deferred', title: 'Deferred issue', status: 'deferred', labels: ['parked'] },
+  {
+    id: '__proto__', title: 'Literal object-property issue ID', priority: 4, labels: ['edge'],
+    dependencies: [{ depends_on_id: 'gone', type: '' }],
+  },
+  {
+    id: 'working-resolved', title: 'Work with a completed prerequisite',
+    status: ' IN_PROGRESS ', priority: 1, labels: ['edge'],
+    dependencies: [{ depends_on_id: 'done', type: '' }],
+  },
+  {
+    id: 'unknown-ref', title: 'Reference outside the export', labels: ['edge'],
+    dependencies: [{ depends_on_id: 'missing-outside-export', type: 'blocks' }],
+  },
+  {
+    id: 'inherited-child', title: 'Child of a dependency-blocked parent', priority: 3,
+    labels: ['hierarchy'], dependencies: [{ depends_on_id: 'path-middle', type: 'parent-child' }],
+  },
+  {
+    id: 'future-deferred', title: 'Scheduled future work', priority: 4, labels: ['schedule'],
+    defer_until: '2999-01-01T00:00:00Z',
+  },
 ];
 
 
@@ -328,6 +388,58 @@ async function exportedDependencyFixture(t) {
   return 'dependency-fixture/';
 }
 
+async function exportedStandaloneFixture(t) {
+  if (!standaloneExport) {
+    const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'bvr-viewer-standalone-'));
+    const fixture = path.join(directory, 'issues.jsonl');
+    const rows = standaloneIssues.map(issue => ({
+      status: 'open', priority: 2, issue_type: 'task', description: '',
+      created_at: '2026-10-09T12:00:00Z', updated_at: '2026-10-09T12:00:00Z', ...issue,
+    }));
+    await writeFile(fixture, rows.map(issue => JSON.stringify(issue)).join('\n') + '\n');
+    const filename = path.join(directory, 'graph.html');
+    const binary = path.resolve(process.env.BVR_BIN || path.join(root, 'target/debug/bvr'));
+    const output = execFileSync(binary, ['--export-graph', filename, '--beads-file', fixture], {
+      cwd: root, encoding: 'utf8', timeout: 60000,
+    });
+    await writeFile(path.join(directory, 'export-stdout.txt'), output);
+    const html = await readFile(filename, 'utf8');
+    const template = process.env.BVR_VIEWER_REVISION
+      ? execFileSync('git', ['show', process.env.BVR_VIEWER_REVISION + ':viewer_assets/graph_export.html'],
+        { cwd: root, encoding: 'utf8' })
+      : await readFile(path.join(assets, 'graph_export.html'), 'utf8');
+    // Every static template segment, including the complete application script
+    // after DATA, must occur in order in the actual export. No source overlay is
+    // used here, including when checking a preserved baseline binary.
+    let cursor = 0;
+    for (const segment of template.split(/\{\{[A-Z_]+\}\}/g)) {
+      const index = html.indexOf(segment, cursor);
+      assert.ok(index >= cursor, 'rebuild BVR_BIN: standalone HTML must embed the selected template');
+      cursor = index + segment.length;
+    }
+    assert.equal(cursor, html.length, 'the real export ends with the selected template');
+    const embedded = html.match(/\nconst DATA = ([^\n]+);\n/);
+    assert.ok(embedded, 'the real standalone export contains its JSON payload');
+    const data = JSON.parse(embedded[1]);
+    assert.deepEqual(data.nodes.map(node => node.id).sort(), rows.map(issue => issue.id).sort());
+    for (const issue of rows) {
+      assert.equal(data.nodes.find(node => node.id === issue.id).description, issue.description,
+        'the standalone exporter preserves fixture descriptions');
+    }
+    await writeFile(path.join(directory, 'export-identity.json'), JSON.stringify({
+      binary, revision: process.env.BVR_VIEWER_REVISION || null,
+      templateSha256: createHash('sha256').update(template).digest('hex'),
+      htmlSha256: createHash('sha256').update(html).digest('hex'),
+      nodeCount: data.nodes.length, edgeCount: data.links.length,
+    }, null, 2));
+    standaloneExport = directory;
+  }
+  t.diagnostic('Real --export-graph dashboard: ' + path.join(standaloneExport, 'graph.html'));
+  return 'standalone-fixture/graph.html';
+}
+
 
 async function exportedMutationFixture(t) {
   if (!mutationExport) {
@@ -407,8 +519,10 @@ before(async () => {
     const bottleneckFixture = requestedPath.startsWith('/bottleneck-fixture/');
     const mutationFixture = requestedPath.startsWith('/mutation-fixture/');
     const dependencyFixture = requestedPath.startsWith('/dependency-fixture/');
-    const exportedFixture = dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
-    const pathname = dependencyFixture ? requestedPath.slice('/dependency-fixture'.length)
+    const standaloneFixture = requestedPath.startsWith('/standalone-fixture/');
+    const exportedFixture = standaloneFixture || dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
+    const pathname = standaloneFixture ? requestedPath.slice('/standalone-fixture'.length)
+      : dependencyFixture ? requestedPath.slice('/dependency-fixture'.length)
       : mutationFixture ? requestedPath.slice('/mutation-fixture'.length)
       : bottleneckFixture ? requestedPath.slice('/bottleneck-fixture'.length)
       : exportedFixture ? requestedPath.slice('/export-fixture'.length)
@@ -434,7 +548,7 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const servingRoot = dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
+    const servingRoot = standaloneFixture ? standaloneExport : dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
       : bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
     if (!servingRoot) {
       response.writeHead(404).end();
@@ -2024,3 +2138,284 @@ for (const mode of ['available', 'missing', 'throwing']) {
     }
   });
 }
+
+async function standaloneGraphState(page) {
+  return page.evaluate(() => {
+    const graph = Graph.graphData();
+    const endpoint = value => typeof value === 'object' ? value.id : value;
+    const visibility = Graph.nodeVisibility();
+    const visible = typeof visibility === 'function' ? visibility : () => visibility;
+    const linkVisibility = Graph.linkVisibility();
+    const visibleLink = typeof linkVisibility === 'function' ? linkVisibility : () => linkVisibility;
+    const color = Graph.linkColor();
+    return {
+      summary: Object.fromEntries(['nodes', 'edges', 'actionable', 'blocked']
+        .map(key => [key, Number(document.getElementById('stat-' + key).textContent)])),
+      blockers: graph.nodes.map(node => [node.id, node.open_blocker_count]).sort((a, b) => a[0].localeCompare(b[0])),
+      actionableIds: graph.nodes.filter(node => node.is_actionable).map(node => node.id).sort(),
+      dependencyBlockedIds: graph.nodes.filter(node => node.is_dependency_blocked).map(node => node.id).sort(),
+      links: graph.links.map(link => [endpoint(link.source), endpoint(link.target), link.type]),
+      visibleIds: graph.nodes.filter(visible).map(node => node.id).sort(),
+      visibleLinks: graph.links.filter(visibleLink).map(link => [endpoint(link.source), endpoint(link.target), link.type]),
+      visibleText: document.getElementById('stat-visible').textContent.trim(),
+      filters: Object.fromEntries(['status', 'type', 'priority', 'label']
+        .map(key => [key, document.getElementById('filter-' + key).value])),
+      path: {
+        active: document.getElementById('btn-path').classList.contains('active'),
+        pressed: document.getElementById('btn-path').getAttribute('aria-pressed'),
+        banner: document.getElementById('pathfinder-banner').classList.contains('visible'),
+        start: pathStartNode?.id || null,
+        selected: selectedNode?.id || null,
+        highlights: [...highlightedNodes].sort(),
+        highlightedLinks: graph.links
+          .filter(link => typeof color === 'function' && color(link) === '#fbbf24aa')
+          .map(link => [endpoint(link.source), endpoint(link.target)]),
+      },
+      toast: document.getElementById('toast').textContent,
+    };
+  });
+}
+
+async function openStandaloneGraph(t) {
+  const fixturePath = await exportedStandaloneFixture(t);
+  const browser = await chromium.launch({
+    headless: true,
+    args: executablePath ? [
+      '--no-sandbox', '--disable-dev-shm-usage', '--no-zygote',
+      '--use-gl=angle', '--use-angle=swiftshader',
+    ] : [],
+    ...(executablePath ? { executablePath } : {}),
+  });
+  let context;
+  let page;
+  const errors = [];
+  const dialogs = [];
+  const externalRequests = [];
+  t.after(async () => {
+    try {
+      let state;
+      try { state = page && !page.isClosed() ? await standaloneGraphState(page) : null; }
+      catch (error) { state = { error: error.message }; }
+      await writeFile(path.join(standaloneExport, t.name.replace(/[^a-z0-9]+/gi, '-') + '.json'),
+        JSON.stringify({ state, errors, dialogs, externalRequests }, null, 2));
+      assert.deepEqual(errors, [], 'standalone dashboard has no uncaught browser errors');
+      assert.deepEqual(dialogs, [], 'standalone dashboard opens no unexpected dialogs');
+      assert.deepEqual(externalRequests, [], 'standalone dashboard runs without external resources');
+    } finally {
+      if (context) await context.close();
+      await browser.close();
+    }
+  });
+  context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+  page = await context.newPage();
+  page.setDefaultTimeout(10000);
+  page.setDefaultNavigationTimeout(30000);
+  page.on('pageerror', error => errors.push({ name: error.name, message: error.message }));
+  page.on('dialog', async dialog => { dialogs.push(dialog.message()); await dialog.dismiss(); });
+  await page.route('**/*', request => {
+    if (new URL(request.request().url()).origin !== origin) {
+      externalRequests.push(request.request().url());
+      return request.abort();
+    }
+    return request.continue();
+  });
+  await page.goto(origin + '/' + fixturePath);
+  await page.waitForFunction(count => typeof Graph !== 'undefined'
+    && Graph.graphData().nodes.length === count
+    && document.querySelector('#stat-visible .stat-value')?.textContent === String(count),
+  standaloneIssues.length);
+  return page;
+}
+
+async function clickStandaloneNode(page, id, contextMenu = false) {
+  await page.evaluate(({ issueId, rightClick }) => {
+    const node = Graph.graphData().nodes.find(item => item.id === issueId);
+    if (!node) throw new Error('Exported graph is missing node ' + issueId);
+    if (rightClick) {
+      const bounds = document.getElementById('graph-container').getBoundingClientRect();
+      Graph.onNodeRightClick()(node, new MouseEvent('contextmenu', {
+        clientX: bounds.left + 100, clientY: bounds.top + 100, cancelable: true,
+      }));
+    } else {
+      // Drive the installed canvas callback with its real exported node. Tests
+      // never call findPath/setPathFinder directly or supply a fake graph.
+      Graph.onNodeClick()(node, new MouseEvent('click'));
+    }
+  }, { issueId: id, rightClick: contextMenu });
+}
+
+async function assertStandalonePath(page, expected) {
+  const state = await standaloneGraphState(page);
+  assert.deepEqual(state.path.highlights, [...expected].sort(), 'the actual renderer highlights the shortest path');
+  assert.equal(state.toast, 'Path: ' + expected.length + ' nodes');
+  assert.equal(state.path.active, false, 'completed path selection exits toolbar mode');
+  assert.equal(state.path.banner, false, 'completed path selection hides the prompt');
+  assert.equal(state.path.pressed, 'false');
+  assert.equal(state.path.start, null, 'completed path selection clears the pending endpoint');
+  for (let index = 1; index < expected.length; index++) {
+    const first = expected[index - 1];
+    const second = expected[index];
+    assert.ok(state.path.highlightedLinks.some(([source, target]) =>
+      source === first && target === second || source === second && target === first),
+    'the actual link-color callback highlights each path connection');
+  }
+}
+
+test('standalone: actual graph export counts unresolved blockers and actionable statuses', async t => {
+  const page = await openStandaloneGraph(t);
+  const state = await standaloneGraphState(page);
+  assert.deepEqual(state.summary, { nodes: 15, edges: 10, actionable: 7, blocked: 3 },
+    'core readiness includes inherited blockers and future deferrals while retaining every visual relationship');
+  assert.deepEqual(state.actionableIds,
+    ['__proto__', 'info-only', 'parent-only', 'path-root', 'spare', 'unknown-ref', 'working-resolved'],
+    'exported core readiness excludes both inherited-child and future-deferred');
+  assert.deepEqual(state.dependencyBlockedIds, ['inherited-child', 'path-leaf', 'path-middle'],
+    'inherited blockers count as dependency-blocked; scheduled deferral alone does not');
+  const expectedBlockers = standaloneIssues.map(issue => [issue.id,
+    ['path-middle', 'path-leaf'].includes(issue.id) ? 1 : 0]).sort((a, b) => a[0].localeCompare(b[0]));
+  assert.deepEqual(state.blockers, expectedBlockers, 'one prerequisite counts once across blocking relationship types');
+  assert.ok(state.links.some(link => link[0] === 'info-only' && link[2] === 'related'),
+    'nonblocking relationships remain in the displayed graph');
+  assert.ok(state.links.some(link => link[0] === 'parent-only' && link[2] === 'parent-child'),
+    'hierarchy relationships remain in the displayed graph');
+  assert.equal(state.links.filter(link => link[0] === 'path-middle' && link[1] === 'path-root').length, 2,
+    'readiness deduplication preserves distinct visual relationship types');
+  await clickStandaloneNode(page, 'path-root');
+  const description = page.locator('#docked-description-content');
+  await description.waitFor({ state: 'visible' });
+  assert.equal(await description.locator('strong').textContent(), 'Markdown');
+  assert.equal(await description.locator('code').textContent(), 'code');
+  assert.equal(await description.locator('a').getAttribute('href'), 'https://example.invalid/docs');
+});
+
+test('standalone: toolbar path finder uses selected nodes and retains the rendered path', async t => {
+  const page = await openStandaloneGraph(t);
+  await clickStandaloneNode(page, 'path-root');
+  await page.locator('#btn-path').click();
+  await clickStandaloneNode(page, 'path-leaf');
+  await assertStandalonePath(page, ['path-root', 'path-middle', 'path-leaf']);
+  await page.evaluate(() => Graph.onNodeHover()(null));
+  await assertStandalonePath(page, ['path-root', 'path-middle', 'path-leaf']);
+
+  await clickStandaloneNode(page, 'path-root');
+  await page.locator('#btn-path').click();
+  await clickStandaloneNode(page, '__proto__');
+  await assertStandalonePath(page, ['path-root', 'gone', '__proto__']);
+
+  await clickStandaloneNode(page, 'path-root');
+  await page.locator('#btn-path').click();
+  await clickStandaloneNode(page, 'path-root');
+  await assertStandalonePath(page, ['path-root']);
+
+  await clickStandaloneNode(page, 'path-root');
+  await page.locator('#btn-path').click();
+  await page.locator('#search-input').fill('Disconnected');
+  await page.locator('.search-result-item[data-id="spare"]').click();
+  let state = await standaloneGraphState(page);
+  assert.equal(state.path.selected, 'spare', 'search selects its actual result');
+  assert.equal(state.path.active, false, 'ordinary selection cancels the pending canvas path');
+  assert.equal(state.path.start, null);
+  await clickStandaloneNode(page, 'path-leaf');
+  state = await standaloneGraphState(page);
+  assert.equal(state.path.selected, 'path-leaf', 'the next canvas click does not complete a stale path');
+  assert.equal(state.path.active, false);
+});
+
+test('standalone: keyboard path finder selects both endpoints and handles cancellation and disconnection', async t => {
+  const page = await openStandaloneGraph(t);
+  await page.keyboard.press('p');
+  await clickStandaloneNode(page, 'path-root');
+  await clickStandaloneNode(page, 'path-leaf');
+  await assertStandalonePath(page, ['path-root', 'path-middle', 'path-leaf']);
+
+  await page.locator('#btn-reset').click();
+  await page.keyboard.press('p');
+  await clickStandaloneNode(page, 'path-root');
+  await page.keyboard.press('Escape');
+  await clickStandaloneNode(page, 'spare');
+  let state = await standaloneGraphState(page);
+  assert.equal(state.path.selected, 'spare', 'Escape returns subsequent clicks to ordinary selection');
+  assert.equal(state.path.active, false);
+  assert.equal(state.path.start, null);
+
+  await clickStandaloneNode(page, 'path-root');
+  await page.keyboard.press('p');
+  await clickStandaloneNode(page, 'spare');
+  state = await standaloneGraphState(page);
+  assert.equal(state.toast, 'No path found');
+  assert.deepEqual(state.path.highlights, [], 'disconnected endpoints leave no misleading path highlight');
+  assert.equal(state.path.active, false);
+  assert.equal(state.path.start, null);
+
+  await page.keyboard.press('p');
+  await page.keyboard.press('p');
+  assert.equal((await standaloneGraphState(page)).path.active, false, 'P toggles the same mode off');
+});
+
+test('standalone: context-menu paths share cancellation and completion with the toolbar', async t => {
+  const page = await openStandaloneGraph(t);
+  await clickStandaloneNode(page, 'path-root', true);
+  await page.locator('#ctx-path').click();
+  await page.keyboard.press('Escape');
+  await clickStandaloneNode(page, 'spare');
+  assert.equal((await standaloneGraphState(page)).path.selected, 'spare',
+    'Escape cancels a context-menu path before the next node is selected');
+
+  await clickStandaloneNode(page, 'path-root', true);
+  await page.locator('#ctx-path').click();
+  await clickStandaloneNode(page, 'path-leaf');
+  await assertStandalonePath(page, ['path-root', 'path-middle', 'path-leaf']);
+
+  await clickStandaloneNode(page, 'path-root', true);
+  await page.locator('#ctx-path').click();
+  await page.locator('#btn-path').click();
+  await clickStandaloneNode(page, 'spare');
+  const state = await standaloneGraphState(page);
+  assert.equal(state.path.selected, 'spare', 'toolbar toggle cancels the context-menu path');
+  assert.equal(state.path.active, false);
+  assert.equal(state.path.start, null);
+});
+
+test('standalone: composed filters report visible nodes and reset clears every pending control', async t => {
+  const page = await openStandaloneGraph(t);
+  const expectVisible = async ids => {
+    const state = await standaloneGraphState(page);
+    assert.deepEqual(state.visibleIds, [...ids].sort(), 'the actual graph visibility predicate matches the controls');
+    assert.equal(state.visibleText, ids.length + ' visible', 'displayed count matches the visible graph');
+    const visibleIds = new Set(ids);
+    assert.deepEqual(state.visibleLinks,
+      state.links.filter(([source, target]) => visibleIds.has(source) && visibleIds.has(target)),
+      'the installed link visibility predicate hides links and arrows to filtered-out nodes');
+  };
+  await clickStandaloneNode(page, 'path-root');
+  await page.locator('#btn-path').click();
+  await page.locator('#filter-label').selectOption('core');
+  await expectVisible(['path-root', 'path-middle', 'parent-only']);
+  await page.locator('#filter-priority').selectOption('1');
+  await expectVisible(['path-middle']);
+  await page.locator('#filter-status').selectOption('open');
+  await expectVisible([]);
+  await page.locator('#filter-status').selectOption('');
+  await page.locator('#filter-type').selectOption('bug');
+  await expectVisible([]);
+  await page.locator('#search-input').fill('Waiting');
+  await page.locator('#search-results').waitFor({ state: 'visible' });
+  await page.locator('#btn-reset').click();
+  await expectVisible(standaloneIssues.map(issue => issue.id));
+  const reset = await standaloneGraphState(page);
+  assert.deepEqual(reset.filters, { status: '', type: '', priority: '', label: '' });
+  assert.equal(reset.path.active, false);
+  assert.equal(reset.path.start, null);
+  assert.equal(reset.path.selected, null);
+  assert.equal(await page.locator('#search-input').inputValue(), '');
+  assert.equal(await page.locator('#search-results').isVisible(), false);
+
+  await page.locator('#filter-priority').selectOption('2');
+  await expectVisible(['path-leaf', 'info-only', 'spare', 'parked-blocked', 'parked-deferred', 'unknown-ref']);
+  await page.locator('#filter-status').selectOption('open');
+  await expectVisible(['path-leaf', 'info-only', 'spare', 'unknown-ref']);
+  await page.locator('#filter-label').selectOption('ui');
+  await expectVisible(['path-leaf', 'info-only', 'spare']);
+  await page.locator('#filter-type').selectOption('bug');
+  await expectVisible(['path-leaf']);
+});
