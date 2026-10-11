@@ -542,6 +542,16 @@ fn header_height(app: &BvrApp) -> u16 {
     ))
 }
 
+fn history_body_rect(area: Rect) -> Rect {
+    let header_rows = area.height.min(4);
+    Rect::new(
+        area.x,
+        area.y.saturating_add(header_rows),
+        area.width,
+        area.height.saturating_sub(header_rows),
+    )
+}
+
 fn splitter_hit_boxes(app: &BvrApp, width: u16, height: u16) -> Vec<SplitterHitBox> {
     let full = Rect::from_size(width, height);
     let rows = Flex::vertical()
@@ -551,10 +561,28 @@ fn splitter_hit_boxes(app: &BvrApp, width: u16, height: u16) -> Vec<SplitterHitB
             Constraint::Fixed(1),
         ])
         .split(full);
-    let body = rows[1];
     let bp = Breakpoint::from_width(width);
+    // Only these renderers use PaneSplitState. The other dashboards choose
+    // their own fixed columns or show one full-width view, so a generic
+    // two-pane hit box would resize an invisible split over live content.
+    let resizable = match app.mode {
+        ViewMode::Main | ViewMode::Graph => !matches!(bp, Breakpoint::Narrow),
+        ViewMode::Insights => app.insights_heatmap.is_some(),
+        ViewMode::History | ViewMode::TimeTravelDiff => true,
+        _ => false,
+    };
+    if !resizable {
+        return Vec::new();
+    }
+    let body = if matches!(app.mode, ViewMode::History) {
+        history_body_rect(rows[1])
+    } else {
+        rows[1]
+    };
+    if body.height < 3 || body.width < 2 {
+        return Vec::new();
+    }
     let split_state = pane_split_state();
-    let graph_single_pane = matches!(app.mode, ViewMode::Graph) && matches!(bp, Breakpoint::Narrow);
     let history_layout = if matches!(app.mode, ViewMode::History) {
         HistoryLayout::from_width(body.width)
     } else {
@@ -562,10 +590,6 @@ fn splitter_hit_boxes(app: &BvrApp, width: u16, height: u16) -> Vec<SplitterHitB
     };
     let history_multi_pane =
         matches!(app.mode, ViewMode::History) && history_layout.has_middle_pane();
-
-    if graph_single_pane {
-        return Vec::new();
-    }
 
     if history_multi_pane {
         if matches!(history_layout, HistoryLayout::Wide)
@@ -4548,21 +4572,17 @@ impl BvrApp {
     }
 
     fn adjust_active_pane_split(&mut self, delta_pct: f32) -> bool {
+        if splitter_hit_boxes(self, cached_view_width(), cached_view_height()).is_empty() {
+            return false;
+        }
         let mut state = pane_split_state();
-        let changed = if matches!(self.mode, ViewMode::History) {
+        let changed = if self.history_has_middle_pane() {
             state.adjust_history(
                 self.history_layout(),
                 self.history_view_mode,
                 self.focus,
                 delta_pct,
             )
-        } else if matches!(self.mode, ViewMode::Graph)
-            && matches!(
-                Breakpoint::from_width(cached_view_width()),
-                Breakpoint::Narrow
-            )
-        {
-            false
         } else {
             state.adjust_two_pane(Breakpoint::from_width(cached_view_width()), delta_pct)
         };
@@ -4852,6 +4872,7 @@ impl BvrApp {
             max_recommendations: self.analyzer.issues.len().max(50),
             ..TriageOptions::default()
         });
+        let ready_ids = self.ready_ids_for_filter();
 
         for recommendation in recommendations.result.recommendations {
             let Some(issue) = self
@@ -4863,7 +4884,7 @@ impl BvrApp {
                 continue;
             };
 
-            if !issue.is_open_like() || !self.issue_matches_filter(issue) {
+            if !issue.is_open_like() || !self.issue_matches_filter(issue, &ready_ids) {
                 continue;
             }
 
@@ -5062,6 +5083,20 @@ impl BvrApp {
     }
 
     fn handle_mouse(&mut self, event: MouseEvent) -> Cmd<Msg> {
+        // Mouse input belongs to the visible overlay, just like keyboard
+        // input. A wheel must not dismiss quit confirmation as an arbitrary
+        // key would; other overlays keep their existing Up/Down navigation.
+        if self.show_quit_confirm {
+            return Cmd::None;
+        }
+        if self.show_help || self.modal_overlay.is_some() {
+            return match event.kind {
+                MouseEventKind::ScrollUp => self.handle_key(KeyCode::Up, Modifiers::NONE),
+                MouseEventKind::ScrollDown => self.handle_key(KeyCode::Down, Modifiers::NONE),
+                _ => Cmd::None,
+            };
+        }
+
         if let Some(cmd) = self.handle_header_mouse_click(event) {
             return cmd;
         }
@@ -5550,12 +5585,16 @@ impl BvrApp {
         match code {
             KeyCode::Char(';') | KeyCode::F(2) => self.toggle_shortcuts_sidebar(),
             KeyCode::Char('j') | KeyCode::Down
-                if modifiers.contains(Modifiers::CTRL) && self.shortcuts_sidebar_visible() =>
+                if modifiers.contains(Modifiers::CTRL)
+                    && self.shortcuts_sidebar_visible()
+                    && (self.focus != FocusPane::Detail || code == KeyCode::Down) =>
             {
                 self.shortcuts_sidebar_scroll = self.shortcuts_sidebar_scroll.saturating_add(1);
             }
             KeyCode::Char('k') | KeyCode::Up
-                if modifiers.contains(Modifiers::CTRL) && self.shortcuts_sidebar_visible() =>
+                if modifiers.contains(Modifiers::CTRL)
+                    && self.shortcuts_sidebar_visible()
+                    && (self.focus != FocusPane::Detail || code == KeyCode::Up) =>
             {
                 self.shortcuts_sidebar_scroll = self.shortcuts_sidebar_scroll.saturating_sub(1);
             }
@@ -7571,16 +7610,28 @@ impl BvrApp {
         commits.get(slot).map(|commit| (*commit).clone())
     }
 
-    fn issue_matches_filter(&self, issue: &Issue) -> bool {
+    /// Compute readiness once for the whole filter pass, including inherited
+    /// blockers and scheduler deferrals, using the graph's canonical rules.
+    fn ready_ids_for_filter(&self) -> HashSet<String> {
+        if matches!(self.list_filter, ListFilter::Ready) {
+            self.analyzer
+                .graph
+                .actionable_ids_at(tui_now())
+                .into_iter()
+                .collect()
+        } else {
+            HashSet::new()
+        }
+    }
+
+    fn issue_matches_filter(&self, issue: &Issue, ready_ids: &HashSet<String>) -> bool {
         let base = match self.list_filter {
             ListFilter::All => true,
             ListFilter::Open => issue.is_open_like(),
             ListFilter::InProgress => issue.status.eq_ignore_ascii_case("in_progress"),
             ListFilter::Blocked => issue.status.eq_ignore_ascii_case("blocked"),
             ListFilter::Closed => issue.is_closed_like(),
-            ListFilter::Ready => {
-                issue.is_open_like() && self.analyzer.graph.open_blockers(&issue.id).is_empty()
-            }
+            ListFilter::Ready => ready_ids.contains(&issue.id),
         };
         if !base {
             return false;
@@ -7603,12 +7654,16 @@ impl BvrApp {
     }
 
     fn visible_issue_indices(&self) -> Vec<usize> {
+        let ready_ids = self.ready_ids_for_filter();
         let mut visible = self
             .analyzer
             .issues
             .iter()
             .enumerate()
-            .filter_map(|(index, issue)| self.issue_matches_filter(issue).then_some(index))
+            .filter_map(|(index, issue)| {
+                self.issue_matches_filter(issue, &ready_ids)
+                    .then_some(index)
+            })
             .collect::<Vec<_>>();
 
         {
@@ -10477,7 +10532,7 @@ impl BvrApp {
         self.status_msg = if !self.show_shortcuts_sidebar {
             String::new()
         } else if self.shortcuts_sidebar_visible() {
-            "Shortcuts sidebar: ; hide | ctrl+j/k scroll".to_string()
+            "Shortcuts sidebar: ; hide | ctrl+↑/↓ scroll".to_string()
         } else {
             format!(
                 "Shortcuts sidebar needs a terminal at least {} columns wide (; to turn off)",
@@ -10631,7 +10686,7 @@ impl BvrApp {
     }
 
     /// Go bv's shortcuts sidebar: a rounded box titled Shortcuts listing the
-    /// current view's key sections, scrollable with Ctrl+j/k.
+    /// current view's key sections, scrollable with Ctrl+Up/Down.
     fn render_shortcuts_sidebar(&self, frame: &mut Frame, area: Rect) {
         let block = Block::bordered()
             .border_type(ftui::widgets::borders::BorderType::Rounded)
@@ -10666,9 +10721,10 @@ impl BvrApp {
         let available = usize::from(inner.height).saturating_sub(1).max(1);
         let max_scroll = lines.len().saturating_sub(available);
         let offset = self.shortcuts_sidebar_scroll.min(max_scroll);
-        let footer = (offset * 100)
-            .checked_div(max_scroll)
-            .map_or_else(|| "; hide".to_string(), |pct| format!("j/k scroll {pct}%"));
+        let footer = (offset * 100).checked_div(max_scroll).map_or_else(
+            || "; hide".to_string(),
+            |pct| format!("ctrl+↑/↓ scroll {pct}%"),
+        );
         let mut shown: Vec<RichLine> = lines.into_iter().skip(offset).take(available).collect();
         while shown.len() < available {
             shown.push(RichLine::raw(""));
@@ -11308,19 +11364,13 @@ impl BvrApp {
     /// commits | details, with a timeline pane in wide bead mode, and
     /// commits | related beads | details in git mode.
     fn render_go_history(&self, frame: &mut Frame, area: Rect) {
-        let header_rows = area.height.min(4);
-        let header = Rect::new(area.x, area.y, area.width, header_rows);
+        let body = history_body_rect(area);
+        let header = Rect::new(area.x, area.y, area.width, body.y - area.y);
         Paragraph::new(RichText::from_lines(
             self.go_history_header_lines(usize::from(area.width)),
         ))
         .wrap(ftui::text::WrapMode::None)
         .render(header, frame);
-        let body = Rect::new(
-            area.x,
-            area.y.saturating_add(header_rows),
-            area.width,
-            area.height.saturating_sub(header_rows),
-        );
         if body.height < 3 {
             return;
         }
@@ -13637,7 +13687,7 @@ impl BvrApp {
             .iter()
             .filter(|issue| issue.normalized_status() == "blocked")
             .count();
-        let ready = self.analyzer.graph.actionable_ids().len();
+        let ready = self.analyzer.graph.actionable_ids_at(tui_now()).len();
         let stats_bg = tokens::status_stats_bg();
         spans.push(RichSpan::styled(" ", Style::new().bg(stats_bg)));
         for (glyph, color, count) in [
@@ -15858,9 +15908,10 @@ impl BvrApp {
         // label, and/or repo) so the tree only shows matching issues
         // (and their structural parents).
         let filter_active = self.has_active_filter();
+        let ready_ids = self.ready_ids_for_filter();
         let passes: Vec<bool> = issues
             .iter()
-            .map(|issue| self.issue_matches_filter(issue))
+            .map(|issue| self.issue_matches_filter(issue, &ready_ids))
             .collect();
 
         // Build a map from issue ID to index.
@@ -19051,7 +19102,7 @@ impl BvrApp {
                 self.analyzer.graph.node_count(),
                 self.analyzer.graph.edge_count(),
                 self.analyzer.metrics.cycles.len(),
-                self.analyzer.graph.actionable_ids().len()
+                self.analyzer.graph.actionable_ids_at(tui_now()).len()
             ),
             format!(
                 "Focus: node {focus_position}/{total_focusable} -> {} ({})",
@@ -24065,6 +24116,124 @@ mod tests {
     }
 
     #[test]
+    fn ready_filter_excludes_parked_and_deferred_issues() {
+        let now = super::tui_now();
+        let mut issues: Vec<Issue> = [
+            ("open", "open"),
+            ("working", " IN_PROGRESS "),
+            ("blocked", "blocked"),
+            ("deferred", "deferred"),
+            ("draft", "draft"),
+            ("pinned", "pinned"),
+            ("hooked", "hooked"),
+            ("review", "review"),
+            ("custom", "awaiting_review"),
+            ("closed", "closed"),
+            ("tombstone", "tombstone"),
+        ]
+        .into_iter()
+        .map(|(id, status)| Issue {
+            id: id.to_string(),
+            title: id.to_string(),
+            status: status.to_string(),
+            ..Issue::default()
+        })
+        .collect();
+        for (id, until) in [
+            ("future", now + chrono::Duration::seconds(1)),
+            ("due", now),
+            ("past", now - chrono::Duration::seconds(1)),
+        ] {
+            issues.push(Issue {
+                id: id.to_string(),
+                title: id.to_string(),
+                status: "open".to_string(),
+                defer_until: Some(until),
+                ..Issue::default()
+            });
+        }
+        let mut app = new_app_with_issues(ViewMode::Main, 0, issues);
+        app.update(key(KeyCode::Char('r')));
+
+        let mut ids: Vec<&str> = app
+            .visible_issue_indices()
+            .into_iter()
+            .map(|index| app.analyzer.issues[index].id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["due", "open", "past", "working"]);
+        let rendered = render_app(&app, 160, 30);
+        assert!(rendered.contains("READY"), "{rendered}");
+        assert!(rendered.contains("◉4 "), "{rendered}");
+    }
+
+    #[test]
+    fn ready_filter_inherits_parent_blockers_and_preserves_scope() {
+        let mut issues: Vec<Issue> = [
+            ("blocker", "review", "core", "viewer"),
+            ("parent", "open", "core", "viewer"),
+            ("child", "open", "core", "viewer"),
+            ("grandchild", "in_progress", "core", "viewer"),
+            ("closed-blocker", "closed", "core", "viewer"),
+            ("ready", "open", "core", "viewer"),
+            ("other-label", "open", "docs", "viewer"),
+            ("other-repo", "open", "core", "other"),
+        ]
+        .into_iter()
+        .map(|(id, status, label, repo)| Issue {
+            id: id.to_string(),
+            title: id.to_string(),
+            status: status.to_string(),
+            labels: vec![label.to_string()],
+            source_repo: repo.to_string(),
+            ..Issue::default()
+        })
+        .collect();
+        for (index, depends_on_id, dep_type) in [
+            (1, "blocker", "blocks"),
+            (2, "parent", "parent-child"),
+            (3, "child", "parent-child"),
+            (5, "closed-blocker", "blocks"),
+        ] {
+            let issue = &mut issues[index];
+            issue.dependencies.push(Dependency {
+                issue_id: issue.id.clone(),
+                depends_on_id: depends_on_id.to_string(),
+                dep_type: dep_type.to_string(),
+                ..Dependency::default()
+            });
+        }
+        let mut app = new_app_with_issues(ViewMode::Main, 0, issues);
+        app.update(key(KeyCode::Char('r')));
+        let mut ids: Vec<&str> = app
+            .visible_issue_indices()
+            .into_iter()
+            .map(|index| app.analyzer.issues[index].id.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["other-label", "other-repo", "ready"]);
+        assert!(render_app(&app, 160, 30).contains("◉3 "));
+
+        app.modal_label_filter = Some("CORE".to_string());
+        app.modal_repo_filter = Some("viewer".to_string());
+        let scoped_ids: Vec<&str> = app
+            .visible_issue_indices()
+            .into_iter()
+            .map(|index| app.analyzer.issues[index].id.as_str())
+            .collect();
+        assert_eq!(scoped_ids, ["ready"]);
+
+        app.mode = ViewMode::Tree;
+        app.build_tree_flat_nodes();
+        let tree_ids: Vec<&str> = app
+            .tree_flat_nodes
+            .iter()
+            .map(|node| app.analyzer.issues[node.issue_index].id.as_str())
+            .collect();
+        assert_eq!(tree_ids, ["ready"]);
+    }
+
+    #[test]
     fn list_navigation_respects_active_filter() {
         let mut app = new_app(ViewMode::Main, 0);
         app.update(key(KeyCode::Char('o')));
@@ -25817,11 +25986,14 @@ mod tests {
 
         app.mode = ViewMode::Board;
         let _ = render_app(&app, 100, 24);
+        app.update(Msg::KeyPress(KeyCode::Left, Modifiers::CTRL));
         assert_eq!(
             super::pane_split_state().two_pane_list_pct(Breakpoint::Medium),
             46.0
         );
 
+        app.mode = ViewMode::Main;
+        let _ = render_app(&app, 100, 24);
         for _ in 0..20 {
             app.update(Msg::KeyPress(KeyCode::Left, Modifiers::CTRL));
         }
@@ -25931,6 +26103,124 @@ mod tests {
             super::pane_split_state().two_pane_list_pct(Breakpoint::Medium),
             38.0
         );
+    }
+
+    #[test]
+    fn pane_split_full_width_views_ignore_hidden_resize_targets() {
+        for width in [60, 100, 160] {
+            for mode in ViewMode::navigation_order() {
+                let full_width = matches!(
+                    mode,
+                    ViewMode::Board
+                        | ViewMode::Insights
+                        | ViewMode::Actionable
+                        | ViewMode::Attention
+                        | ViewMode::Tree
+                        | ViewMode::LabelDashboard
+                        | ViewMode::FlowMatrix
+                        | ViewMode::Sprint
+                ) || (width < 80
+                    && matches!(mode, ViewMode::Main | ViewMode::Graph));
+                if !full_width {
+                    continue;
+                }
+                for focus in [FocusPane::List, FocusPane::Detail] {
+                    let mut app = new_app(mode, 0);
+                    app.initialize_view_data();
+                    app.focus = focus;
+                    let _ = render_app(&app, width, 30);
+                    let before = super::pane_split_state();
+                    assert!(
+                        super::splitter_hit_boxes(&app, width, 30).is_empty(),
+                        "{mode:?} at {width} columns must not expose a hidden splitter"
+                    );
+                    let old_divider_x = (f32::from(width)
+                        * before.two_pane_list_pct(Breakpoint::from_width(width))
+                        / 100.0) as u16;
+                    app.update(mouse(
+                        MouseEventKind::Down(MouseButton::Left),
+                        old_divider_x,
+                        5,
+                    ));
+                    assert_eq!(app.focus, focus, "{mode:?} at {width} columns");
+                    app.update(key_ctrl(KeyCode::Right));
+                    app.update(mouse(MouseEventKind::ScrollDown, old_divider_x, 5));
+                    assert_eq!(
+                        super::pane_split_state(),
+                        before,
+                        "{mode:?} at {width} columns changed an invisible split"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pane_split_hidden_divider_wheel_navigates_full_width_board() {
+        let mut app = new_app(ViewMode::Board, 0);
+        let _ = render_app(&app, 100, 30);
+        let before = super::pane_split_state();
+        assert_eq!(selected_issue_id(&app), "A");
+
+        app.update(mouse(MouseEventKind::ScrollDown, 42, 5));
+
+        assert_eq!(selected_issue_id(&app), "B");
+        assert_eq!(app.focus, FocusPane::List);
+        assert_eq!(super::pane_split_state(), before);
+    }
+
+    #[test]
+    fn pane_split_history_hit_boxes_follow_visible_panes() {
+        for (width, view_mode, divider_count) in [
+            (80, HistoryViewMode::Bead, 1),
+            (120, HistoryViewMode::Bead, 2),
+            (160, HistoryViewMode::Bead, 3),
+            (160, HistoryViewMode::Git, 2),
+        ] {
+            let mut app = history_app_with_git_cache(view_mode, 0);
+            let _ = render_app(&app, width, 30);
+            let hit_boxes = super::splitter_hit_boxes(&app, width, 30);
+            assert_eq!(hit_boxes.len(), divider_count);
+            for hit_box in hit_boxes {
+                assert_eq!(hit_box.rect.y, 4, "history's header is not a divider");
+                assert_eq!(hit_box.rect.height, 25, "history's footer is not a divider");
+                let before = super::pane_split_state();
+                app.update(mouse(MouseEventKind::ScrollUp, hit_box.rect.x, 1));
+                assert_eq!(super::pane_split_state(), before);
+                app.update(mouse(
+                    MouseEventKind::ScrollUp,
+                    hit_box.rect.x,
+                    hit_box.rect.y + 1,
+                ));
+                assert_ne!(super::pane_split_state(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn pane_split_graph_and_heatmap_keep_visible_resize_controls() {
+        for mode in [
+            ViewMode::Graph,
+            ViewMode::Insights,
+            ViewMode::TimeTravelDiff,
+        ] {
+            let mut app = new_app(mode, 0);
+            if mode == ViewMode::Insights {
+                app.insights_heatmap = Some(super::InsightsHeatmapState::default());
+            }
+            let _ = render_app(&app, 100, 30);
+            let hit_box = super::splitter_hit_boxes(&app, 100, 30)
+                .into_iter()
+                .next()
+                .expect("rendered two-pane view should remain resizable");
+            let before = super::pane_split_state();
+            app.update(mouse(
+                MouseEventKind::ScrollUp,
+                hit_box.rect.x,
+                hit_box.rect.y + 1,
+            ));
+            assert_ne!(super::pane_split_state(), before, "{mode:?}");
+        }
     }
 
     // -- Visual token tests --------------------------------------------------
@@ -28330,6 +28620,194 @@ mod tests {
     }
 
     #[test]
+    fn modal_mouse_clicks_preserve_underlying_view() {
+        let cases = [
+            ("help", true, false, None),
+            ("quit", false, true, None),
+            (
+                "tutorial",
+                false,
+                false,
+                Some(ModalOverlay::Tutorial(super::TutorialState::new())),
+            ),
+            (
+                "confirm",
+                false,
+                false,
+                Some(ModalOverlay::Confirm {
+                    title: "Confirm".to_string(),
+                    message: "Continue?".to_string(),
+                    resume_overlay: None,
+                }),
+            ),
+            (
+                "pages wizard",
+                false,
+                false,
+                Some(ModalOverlay::PagesWizard(super::PagesWizardState::new())),
+            ),
+            (
+                "recipe picker",
+                false,
+                false,
+                Some(ModalOverlay::RecipePicker {
+                    items: vec![("ready".to_string(), "Ready work".to_string())],
+                    cursor: 0,
+                }),
+            ),
+            (
+                "label picker",
+                false,
+                false,
+                Some(ModalOverlay::LabelPicker {
+                    items: vec![("core".to_string(), 1)],
+                    cursor: 0,
+                    filter: String::new(),
+                }),
+            ),
+            (
+                "repo picker",
+                false,
+                false,
+                Some(ModalOverlay::RepoPicker {
+                    items: vec!["viewer".to_string()],
+                    cursor: 0,
+                    filter: String::new(),
+                }),
+            ),
+            (
+                "alerts",
+                false,
+                false,
+                Some(ModalOverlay::Alerts {
+                    rows: Vec::new(),
+                    cursor: 0,
+                }),
+            ),
+        ];
+        for (name, help, quit, overlay) in cases {
+            let mut app = new_app(ViewMode::Main, 0);
+            app.focus = FocusPane::Detail;
+            app.analyzer.issues[0].external_ref =
+                Some("https://github.com/org/repo/issues/42".to_string());
+            let (link_x, link_y) = detail_link_click_point(&app, 100, 40)
+                .expect("normal detail view should have a clickable link");
+            let list = super::cached_main_list_area();
+            let split = super::splitter_hit_boxes(&app, 100, 40)[0];
+            let before_split = super::pane_split_state();
+            app.status_msg.clear();
+            app.show_help = help;
+            app.show_quit_confirm = quit;
+            app.modal_overlay = overlay.clone();
+            let _ = render_app(&app, 100, 40);
+
+            for (button, x, y) in [
+                (MouseButton::Left, list.x + 1, list.y + 2),
+                (MouseButton::Left, split.rect.x, split.rect.y + 1),
+                (MouseButton::Left, link_x, link_y),
+                (MouseButton::Right, link_x, link_y),
+            ] {
+                let cmd = app.update(mouse(MouseEventKind::Down(button), x, y));
+                assert!(matches!(cmd, Cmd::None), "{name}");
+                assert_eq!(selected_issue_id(&app), "A", "{name}");
+                assert_eq!(app.focus, FocusPane::Detail, "{name}");
+                assert_eq!(app.mode, ViewMode::Main, "{name}");
+                assert_eq!(super::pane_split_state(), before_split, "{name}");
+                assert_eq!(app.modal_overlay, overlay, "{name}");
+                assert_eq!(app.show_help, help, "{name}");
+                assert_eq!(app.show_quit_confirm, quit, "{name}");
+                assert!(app.modal_confirm_result.is_none(), "{name}");
+                assert!(app.status_msg.is_empty(), "{name}: {}", app.status_msg);
+            }
+        }
+    }
+
+    #[test]
+    fn modal_mouse_clicks_cannot_activate_header_tabs() {
+        for help in [true, false] {
+            let mut app = new_app(ViewMode::TimeTravelDiff, 0);
+            let (x, y) = header_tab_click_point(&app, 120, 30, ViewMode::Graph)
+                .expect("graph tab should be present in time-travel header");
+            app.show_help = help;
+            if !help {
+                app.open_tutorial();
+            }
+            let _ = render_app(&app, 120, 30);
+            app.update(mouse(MouseEventKind::Down(MouseButton::Left), x, y));
+            assert_eq!(app.mode, ViewMode::TimeTravelDiff);
+            assert_eq!(app.mode_back_stack, [] as [ViewMode; 0]);
+        }
+    }
+
+    #[test]
+    fn modal_mouse_wheel_navigates_overlay_without_resizing() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let _ = render_app(&app, 100, 30);
+        let split = super::splitter_hit_boxes(&app, 100, 30)[0];
+        let before_split = super::pane_split_state();
+        let x = split.rect.x;
+        let y = split.rect.y + 1;
+
+        app.show_help = true;
+        app.update(mouse(MouseEventKind::ScrollDown, x, y));
+        assert_eq!(app.help_scroll_offset, 1);
+        app.update(mouse(MouseEventKind::ScrollUp, x, y));
+        assert_eq!(app.help_scroll_offset, 0);
+        app.show_help = false;
+
+        app.open_tutorial();
+        app.update(mouse(MouseEventKind::ScrollDown, x, y));
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::Tutorial(super::TutorialState {
+                scroll: 1,
+                ..
+            }))
+        ));
+        app.modal_overlay = Some(ModalOverlay::RecipePicker {
+            items: vec![
+                ("first".to_string(), String::new()),
+                ("second".to_string(), String::new()),
+            ],
+            cursor: 0,
+        });
+        app.update(mouse(MouseEventKind::ScrollDown, x, y));
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::RecipePicker { cursor: 1, .. })
+        ));
+        app.modal_overlay = Some(ModalOverlay::Confirm {
+            title: "Confirm".to_string(),
+            message: "Continue?".to_string(),
+            resume_overlay: None,
+        });
+        app.update(mouse(MouseEventKind::ScrollDown, x, y));
+        assert!(matches!(
+            app.modal_overlay,
+            Some(ModalOverlay::Confirm { .. })
+        ));
+        assert!(app.modal_confirm_result.is_none());
+        assert_eq!(selected_issue_id(&app), "A");
+        assert_eq!(app.focus, FocusPane::List);
+        assert_eq!(super::pane_split_state(), before_split);
+    }
+
+    #[test]
+    fn modal_mouse_wheel_keeps_quit_confirmation_open() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let _ = render_app(&app, 100, 30);
+        app.update(key(KeyCode::Escape));
+        assert!(app.show_quit_confirm);
+
+        for kind in [MouseEventKind::ScrollUp, MouseEventKind::ScrollDown] {
+            let cmd = app.update(mouse(kind, 5, 5));
+            assert!(matches!(cmd, Cmd::None));
+            assert!(app.show_quit_confirm);
+        }
+        assert!(matches!(app.update(key(KeyCode::Char('y'))), Cmd::Quit));
+    }
+
+    #[test]
     fn current_detail_link_row_area_tracks_main_detail_scroll_offset() {
         let mut app = new_app(ViewMode::Main, 0);
         app.focus = FocusPane::Detail;
@@ -30276,6 +30754,73 @@ mod tests {
         );
         let text = render_app(&app, 50, 20);
         assert!(!text.contains("This sidebar"));
+    }
+
+    #[test]
+    fn shortcuts_sidebar_does_not_capture_detail_scroll() {
+        for mode in [
+            ViewMode::Main,
+            ViewMode::Board,
+            ViewMode::Graph,
+            ViewMode::Insights,
+            ViewMode::Tree,
+        ] {
+            let mut app = new_app(mode, 0);
+            app.initialize_view_data();
+            app.focus = FocusPane::Detail;
+            app.show_shortcuts_sidebar = true;
+            app.shortcuts_sidebar_scroll = 5;
+            let _ = render_app(&app, 160, 30);
+            assert!(app.shortcuts_sidebar_visible());
+
+            app.update(key_ctrl(KeyCode::Char('j')));
+            let offset = if mode == ViewMode::Board {
+                app.board_detail_scroll_offset
+            } else {
+                app.detail_scroll_offset
+            };
+            assert_eq!(offset, 3, "{mode:?}");
+            assert_eq!(app.shortcuts_sidebar_scroll, 5, "{mode:?}");
+
+            app.update(key_ctrl(KeyCode::Char('k')));
+            assert_eq!(app.board_detail_scroll_offset, 0, "{mode:?}");
+            assert_eq!(app.detail_scroll_offset, 0, "{mode:?}");
+            assert_eq!(app.shortcuts_sidebar_scroll, 5, "{mode:?}");
+
+            app.update(key_ctrl(KeyCode::Down));
+            assert_eq!(app.shortcuts_sidebar_scroll, 6, "{mode:?}");
+            app.update(key_ctrl(KeyCode::Up));
+            assert_eq!(app.shortcuts_sidebar_scroll, 5, "{mode:?}");
+            assert_eq!(app.board_detail_scroll_offset, 0, "{mode:?}");
+            assert_eq!(app.detail_scroll_offset, 0, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn shortcuts_sidebar_scroll_preserves_list_selection() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.show_shortcuts_sidebar = true;
+        let _ = render_app(&app, 160, 30);
+
+        for code in [KeyCode::Char('j'), KeyCode::Down] {
+            app.update(key_ctrl(code));
+        }
+        assert_eq!(app.shortcuts_sidebar_scroll, 2);
+        assert_eq!(selected_issue_id(&app), "A");
+        assert_eq!(app.detail_scroll_offset, 0);
+
+        for code in [KeyCode::Char('k'), KeyCode::Up] {
+            app.update(key_ctrl(code));
+        }
+        assert_eq!(app.shortcuts_sidebar_scroll, 0);
+        assert_eq!(selected_issue_id(&app), "A");
+
+        app.update(key(KeyCode::Char('?')));
+        app.update(key_ctrl(KeyCode::Char('j')));
+        assert!(app.show_help);
+        assert_eq!(app.help_scroll_offset, 1);
+        assert_eq!(app.shortcuts_sidebar_scroll, 0);
+        assert_eq!(app.detail_scroll_offset, 0);
     }
 
     #[test]
