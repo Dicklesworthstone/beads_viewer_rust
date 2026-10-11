@@ -64,7 +64,8 @@ pub enum BvrCommand {
     name = "bvr",
     about = "Rust port of beads_viewer (bv)",
     disable_help_subcommand = true,
-    disable_version_flag = true
+    disable_version_flag = true,
+    args_conflicts_with_subcommands = true
 )]
 pub struct Cli {
     /// Operational verbs (`bvr upgrade`). The robot/query surface stays
@@ -72,7 +73,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<BvrCommand>,
 
-    #[arg(short = 'V', long = "version", action = ArgAction::SetTrue)]
+    #[arg(short = 'V', long = "version", global = true, action = ArgAction::SetTrue)]
     pub version: bool,
 
     /// Check whether a newer bvr version is available.
@@ -84,9 +85,8 @@ pub struct Cli {
     #[arg(long, hide = true, action = ArgAction::SetTrue)]
     pub rollback: bool,
 
-    /// Legacy bv's prompt confirmation for --update/--rollback; accepted and
-    /// ignored (upgrade never prompts).
-    #[arg(long, short = 'y', hide = true, action = ArgAction::SetTrue)]
+    /// Confirm installation without prompting when running `upgrade`.
+    #[arg(long, short = 'y', global = true, action = ArgAction::SetTrue)]
     pub yes: bool,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Json)]
@@ -889,6 +889,10 @@ fn rewrite_flag_aliases(args: &[String], context: &str) -> Vec<String> {
         let arg = args[index].as_str();
         let next = args.get(index + 1).map(String::as_str);
         match arg {
+            "--" => {
+                out.extend(args[index..].iter().cloned());
+                break;
+            }
             "--json" | "--json=true" | "--json=false" | "--toon=false" => {
                 out.extend(["--format".to_string(), "json".to_string()]);
             }
@@ -990,6 +994,38 @@ fn has_primary_action(args: &[String]) -> bool {
     })
 }
 
+/// Normalize only a standalone update invocation. No accepted option takes
+/// a value, so an update-shaped value, a token after `--`, or a mixed command
+/// cannot become installation intent. Keep invalid combinations intact for
+/// clap to reject. Moving the standalone command first permits `--yes upgrade`
+/// while clap rejects other arguments before operational subcommands.
+fn rewrite_upgrade_invocation(args: &[String]) -> Option<Vec<String>> {
+    let mut command_index = None;
+    for (index, arg) in args.iter().enumerate() {
+        match arg.as_str() {
+            "upgrade" | "self-update" | "selfupdate" | "--update" | "--update-dry-run" => {
+                if command_index.replace(index).is_some() {
+                    return None;
+                }
+            }
+            "--dry-run" | "--yes" | "-y" | "--help" | "-h" | "--version" | "-V" => {}
+            _ => return None,
+        }
+    }
+    let command_index = command_index?;
+    let mut out = vec!["upgrade".to_string()];
+    if args[command_index] == "--update-dry-run" {
+        out.push("--dry-run".to_string());
+    }
+    out.extend(
+        args.iter()
+            .enumerate()
+            .filter(|(index, _)| *index != command_index)
+            .map(|(_, arg)| arg.clone()),
+    );
+    Some(out)
+}
+
 /// Map agent-style invocations onto the canonical flag surface. `args`
 /// excludes the program name.
 #[must_use]
@@ -997,22 +1033,8 @@ pub fn rewrite_agent_intent_args(args: &[String]) -> Vec<String> {
     if args.is_empty() {
         return Vec::new();
     }
-
-    // Legacy bv's self-update flags map onto `bvr upgrade`: `--update`
-    // installs, `--update-dry-run` (or `--update --dry-run`) only reports.
-    // `--yes` answered bv's confirmation prompt; upgrade never prompts.
-    if args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--update" | "--update-dry-run"))
-    {
-        let mut out = vec!["upgrade".to_string()];
-        if args
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "--update-dry-run" | "--dry-run"))
-        {
-            out.push("--dry-run".to_string());
-        }
-        return out;
+    if let Some(rewritten) = rewrite_upgrade_invocation(args) {
+        return rewritten;
     }
 
     // The command word is the first positional that is not a flag's value,
@@ -1020,6 +1042,9 @@ pub fn rewrite_agent_intent_args(args: &[String]) -> Vec<String> {
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
+        if arg == "--" {
+            return args.to_vec();
+        }
         if is_positional(arg) {
             let command = arg.trim().to_ascii_lowercase();
             let bare = command.strip_prefix("robot-").unwrap_or(&command);
@@ -1189,7 +1214,7 @@ fn rewrite_command(bare: &str, command: &str, rest: &[String]) -> Option<Vec<Str
             "drift",
             rest,
         )),
-        "self-update" | "selfupdate" => {
+        "self-update" | "selfupdate" if command == bare => {
             let mut out = vec!["upgrade".to_string()];
             out.extend(rest.iter().cloned());
             Some(out)
@@ -1218,8 +1243,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, OutputFormat, format_flag_was_explicit_in_args, resolve_optional_string_choice,
-        resolve_output_format_choice,
+        BvrCommand, Cli, OutputFormat, format_flag_was_explicit_in_args,
+        resolve_optional_string_choice, resolve_output_format_choice,
     };
 
     fn rw(args: &[&str]) -> Vec<String> {
@@ -1346,7 +1371,7 @@ mod tests {
     fn agent_intent_leaves_unknown_and_canonical_args_alone() {
         assert_eq!(rw(&["upgrade", "--dry-run"]), ["upgrade", "--dry-run"]);
         assert_eq!(rw(&["self-update"]), ["upgrade"]);
-        assert_eq!(rw(&["--update", "--yes"]), ["upgrade"]);
+        assert_eq!(rw(&["--update", "--yes"]), ["upgrade", "--yes"]);
         assert_eq!(rw(&["--update-dry-run"]), ["upgrade", "--dry-run"]);
         assert_eq!(rw(&["--update", "--dry-run"]), ["upgrade", "--dry-run"]);
         assert_eq!(
@@ -1372,6 +1397,125 @@ mod tests {
             let mut argv = vec!["bvr".to_string()];
             argv.extend(rw(&args));
             Cli::try_parse_from(&argv).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+        }
+    }
+
+    #[test]
+    fn upgrade_aliases_preserve_confirmation_and_dry_run_flags() {
+        for (args, dry_run, yes) in [
+            (vec!["upgrade"], false, false),
+            (vec!["self-update", "--yes"], false, true),
+            (vec!["selfupdate", "-y"], false, true),
+            (vec!["--update"], false, false),
+            (vec!["--update", "--yes"], false, true),
+            (vec!["-y", "--update"], false, true),
+            (vec!["--yes", "upgrade"], false, true),
+            (vec!["upgrade", "-y"], false, true),
+            (vec!["--update-dry-run"], true, false),
+            (vec!["--update", "--dry-run", "--yes"], true, true),
+            (vec!["--dry-run", "--update", "-y"], true, true),
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("bvr".to_string()).chain(rw(&args)))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            let Some(BvrCommand::Upgrade {
+                dry_run: actual_dry_run,
+            }) = cli.command
+            else {
+                panic!("{args:?} did not select upgrade");
+            };
+            assert_eq!(actual_dry_run, dry_run, "{args:?}");
+            assert_eq!(cli.yes, yes, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn upgrade_aliases_preserve_help_and_version_requests() {
+        for command in [
+            "upgrade",
+            "self-update",
+            "selfupdate",
+            "--update",
+            "--update-dry-run",
+        ] {
+            for help in ["--help", "-h"] {
+                let args = [command, "--yes", help];
+                let error =
+                    Cli::try_parse_from(std::iter::once("bvr".to_string()).chain(rw(&args)))
+                        .expect_err("help must exit through clap without dispatching upgrade");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp,
+                    "{args:?}"
+                );
+            }
+            for version in ["--version", "-V"] {
+                for args in [[command, "--yes", version], [version, command, "--yes"]] {
+                    let cli =
+                        Cli::try_parse_from(std::iter::once("bvr".to_string()).chain(rw(&args)))
+                            .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+                    assert!(cli.version, "{args:?} must retain the early version exit");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upgrade_rejects_mixed_commands_unknown_flags_and_terminated_arguments() {
+        for args in [
+            vec!["--robot-next", "--update", "--yes"],
+            vec!["--update", "--robot-next", "--yes"],
+            vec!["triage", "--update", "--yes"],
+            vec!["--check-update", "--update", "--yes"],
+            vec!["--update", "--unknown", "--yes"],
+            vec!["--update", "--dry-rnu", "--yes"],
+            vec!["--label", "--update", "--yes"],
+            vec!["--beads-file", "--update", "--yes"],
+            vec!["--robot-next", "upgrade", "--yes"],
+            vec!["--yes", "--robot-next", "upgrade"],
+            vec!["--check-update", "upgrade", "--yes"],
+            vec!["--beads-file", "issues.jsonl", "upgrade", "--yes"],
+            vec!["--label", "urgent", "self-update", "--yes"],
+            vec!["upgrade", "--robot-next", "--yes"],
+            vec!["upgrade", "--unknown", "--yes"],
+            vec!["--", "--update", "--yes"],
+            vec!["--", "upgrade", "--yes"],
+            vec!["--", "self-update", "--yes"],
+            vec!["upgrade", "--", "--yes"],
+            vec!["--update", "--", "--yes"],
+            vec!["robot-self-update", "--yes"],
+        ] {
+            let result = Cli::try_parse_from(std::iter::once("bvr".to_string()).chain(rw(&args)));
+            assert!(
+                result.is_err(),
+                "{args:?} must not select an installer: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn upgrade_words_remain_values_when_a_flag_consumes_them() {
+        for value in ["upgrade", "self-update", "selfupdate"] {
+            let args = ["--beads-file", value, "next", "--json"];
+            let cli = Cli::try_parse_from(std::iter::once("bvr".to_string()).chain(rw(&args)))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            assert_eq!(cli.beads_file, Some(value.into()));
+            assert!(cli.robot_next);
+            assert!(!cli.is_operational_command());
+        }
+
+        for args in [
+            vec!["--robot-search", "--search=--update"],
+            vec!["search", "--search-min-score", "--update", "query"],
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("bvr".to_string()).chain(rw(&args)))
+                .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+            assert!(cli.robot_search);
+            assert!(!cli.is_operational_command(), "{args:?}");
+            assert!(
+                cli.search.as_deref() == Some("--update")
+                    || cli.search_min_score.as_deref() == Some("--update"),
+                "{args:?} must preserve the literal flag value"
+            );
         }
     }
 

@@ -290,11 +290,14 @@ cargo install --path .
 
 ```bash
 bvr --check-update   # non-mutating: report whether a newer version exists
-bvr upgrade          # install the latest release via `cargo install beads_viewer_rust --locked`
+bvr upgrade          # show the install command and ask for confirmation
+bvr upgrade --yes    # explicitly authorize installation without prompting
 bvr upgrade --dry-run  # show what would be installed without changing anything
 ```
 
 `bvr upgrade` resolves the latest version from crates.io (falling back to GitHub releases/tags) and reinstalls through cargo, so it works for any cargo-based install above. It requires the Rust toolchain to be present — the same prerequisite as installing in the first place.
+
+Installation requires an explicit `y` or `yes` answer in an interactive terminal. For scripts or other non-interactive use, pass `--yes` (or `-y`); piped input cannot approve an upgrade. `--dry-run` never runs the installer. The legacy `--update` and `--update-dry-run` aliases follow the same rules, and update commands cannot be combined with robot, export, or other unrelated actions.
 
 ### Toolchain
 
@@ -539,6 +542,10 @@ bvr --robot-correlation-stats
 ```
 
 Use these when you want git-aware change tracking, baseline comparisons, or a feedback loop for commit-to-bead correlations.
+
+Interactive History loads Git data in the background, so you can navigate while it runs. Failed loads remain visible and can be retried by closing and reopening History with `H`. Git scans have a 30-second deadline, a 10-second limit for the commit log, a 5-second limit for each probe or diff, and bounded output. A failed or oversized scan reports an error instead of returning partial correlations. For a smaller robot scan, use `--robot-history --history-limit 100` or narrow the range with `--history-since`.
+
+Local backup snapshots under `.beads/.br_history` remain visible in commit file lists but do not create issue field changes or count as live issue metadata.
 
 ### Label, search, and file intelligence
 

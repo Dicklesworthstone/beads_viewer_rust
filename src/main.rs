@@ -13,9 +13,9 @@ use std::process::{Command, ExitCode};
 
 use bvr::analysis::alerts::AlertOptions;
 use bvr::analysis::git_history::{
-    HistoryBeadCompat, HistoryEventCompat, HistoryMilestonesCompat, HistoryStatsCompat,
-    build_workspace_id_aliases, compute_history_stats, correlate_histories_with_git_aliases,
-    finalize_history_entries, load_git_commits,
+    GitHistoryScan, HistoryBeadCompat, HistoryEventCompat, HistoryMilestonesCompat,
+    HistoryStatsCompat, build_workspace_id_aliases, compute_history_stats,
+    finalize_history_entries,
 };
 use bvr::analysis::graph::AnalysisConfig;
 use bvr::analysis::suggest::{SuggestOptions, SuggestionType};
@@ -3037,10 +3037,42 @@ fn upgrade_cargo_args(latest: &str) -> Vec<String> {
     ]
 }
 
+/// Ask immediately before running the installer. The streams and terminal
+/// status are explicit so denial, EOF, and I/O failures can be tested without
+/// a real terminal or an installer. Piped input never counts as confirmation.
+fn confirm_upgrade(
+    command: &str,
+    interactive: bool,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> Result<bool, String> {
+    if !interactive {
+        return Err(
+            "Upgrade requires confirmation from an interactive terminal.\n\
+             Use `bvr upgrade --yes` to confirm installation, or `bvr upgrade --dry-run` to inspect the command."
+                .to_string(),
+        );
+    }
+
+    write!(
+        output,
+        "Install the latest bvr release with:\n  {command}\nContinue? [y/N] "
+    )
+    .and_then(|()| output.flush())
+    .map_err(|error| format!("Could not display upgrade confirmation: {error}"))?;
+
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .map_err(|error| format!("Could not read upgrade confirmation: {error}"))?;
+    let answer = answer.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+}
+
 /// `bvr upgrade` (issue #23): check the latest release and install it through
 /// the supported distribution mechanism. `--check-update` remains the
 /// non-mutating counterpart.
-fn run_upgrade(dry_run: bool) -> EarlyCommandOutcome {
+fn run_upgrade(dry_run: bool, yes: bool) -> EarlyCommandOutcome {
     let current = env!("CARGO_PKG_VERSION");
     let latest = match fetch_latest_version() {
         Ok(latest) => latest,
@@ -3074,6 +3106,36 @@ fn run_upgrade(dry_run: bool) -> EarlyCommandOutcome {
                     exit_code: ExitCode::SUCCESS,
                     to_stderr: false,
                 };
+            }
+
+            if !yes {
+                let stdin = std::io::stdin();
+                let stderr = std::io::stderr();
+                let interactive = stdin.is_terminal() && stderr.is_terminal();
+                let confirmation = confirm_upgrade(
+                    &rendered,
+                    interactive,
+                    &mut stdin.lock(),
+                    &mut stderr.lock(),
+                );
+                match confirmation {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return EarlyCommandOutcome {
+                            message: "Upgrade cancelled; no installation was attempted."
+                                .to_string(),
+                            exit_code: ExitCode::from(1),
+                            to_stderr: true,
+                        };
+                    }
+                    Err(message) => {
+                        return EarlyCommandOutcome {
+                            message,
+                            exit_code: ExitCode::from(1),
+                            to_stderr: true,
+                        };
+                    }
+                }
             }
 
             println!("Upgrading bvr v{current} -> v{latest}");
@@ -3337,7 +3399,7 @@ fn load_background_mode_from_user_config() -> Option<bool> {
 
 fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
     if let Some(BvrCommand::Upgrade { dry_run }) = &cli.command {
-        return run_upgrade(*dry_run);
+        return run_upgrade(*dry_run, cli.yes);
     }
 
     if cli.rollback {
@@ -3349,24 +3411,7 @@ fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
     }
 
     if cli.check_update {
-        let current = env!("CARGO_PKG_VERSION");
-        let message = match fetch_latest_version() {
-            Ok(latest) => match compare_versions(current, &latest) {
-                Ordering::Less => format!(
-                    "Newer version available: v{latest} (you have v{current})\n  Update: bvr upgrade   (or: cargo install beads_viewer_rust --locked)"
-                ),
-                Ordering::Equal | Ordering::Greater => format!("Up to date (v{current})"),
-            },
-            Err(_) => format!(
-                "Could not check for updates (network unavailable).\nCurrent version: bvr v{current}"
-            ),
-        };
-
-        return EarlyCommandOutcome {
-            message,
-            exit_code: ExitCode::SUCCESS,
-            to_stderr: false,
-        };
+        return check_update_outcome(env!("CARGO_PKG_VERSION"), fetch_latest_version());
     }
 
     EarlyCommandOutcome {
@@ -3375,6 +3420,26 @@ fn handle_operational_commands(cli: &Cli) -> EarlyCommandOutcome {
             .to_string(),
         exit_code: ExitCode::from(2),
         to_stderr: true,
+    }
+}
+
+fn check_update_outcome(current: &str, latest: Result<String, String>) -> EarlyCommandOutcome {
+    let message = match latest {
+        Ok(latest) => match compare_versions(current, &latest) {
+            Ordering::Less => format!(
+                "Newer version available: v{latest} (you have v{current})\n  Update: bvr upgrade   (or: cargo install beads_viewer_rust --locked)"
+            ),
+            Ordering::Equal | Ordering::Greater => format!("Up to date (v{current})"),
+        },
+        Err(_) => format!(
+            "Could not check for updates (network unavailable).\nCurrent version: bvr v{current}"
+        ),
+    };
+
+    EarlyCommandOutcome {
+        message,
+        exit_code: ExitCode::SUCCESS,
+        to_stderr: false,
     }
 }
 
@@ -4177,28 +4242,8 @@ fn resolve_as_of(cli: &Cli) -> (Option<String>, Option<String>) {
     (Some(ref_name.clone()), commit)
 }
 
-fn latest_commit_sha(cli: &Cli) -> Option<String> {
-    let repo_root = resolve_repo_root(cli)?;
-
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(&repo_root)
-        .arg("rev-parse")
-        .arg("--verify")
-        .arg("HEAD")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if resolved.is_empty() {
-        None
-    } else {
-        Some(resolved)
-    }
+fn latest_commit_sha(cli: &Cli, scan: &mut GitHistoryScan) -> bvr::Result<Option<String>> {
+    scan.head_sha(&project_dir_for_load_target(cli)?)
 }
 
 /// Preserve the live loader's mixed-record tolerance and last-record-wins
@@ -4297,14 +4342,18 @@ fn build_robot_history_output(
 
     let mut commit_index = BTreeMap::<String, Vec<String>>::new();
     let mut method_distribution = BTreeMap::<String, usize>::new();
-    let mut latest_sha = latest_commit_sha(cli);
+    let mut latest_sha = None;
+    // One budget covers log loading and correlation across the workspace.
+    let mut history_scan = GitHistoryScan::default();
 
     if let Some(workspace_repos) = resolve_workspace_history_repos(cli, issues)? {
         let mut latest_commit = None::<(String, String)>;
         for workspace_repo in workspace_repos {
-            let repo_root = resolve_git_toplevel(&workspace_repo.repo_root)
+            let repo_root = history_scan
+                .repository_root(&workspace_repo.repo_root)?
                 .unwrap_or_else(|| workspace_repo.repo_root.clone());
-            let commits = load_git_commits(&repo_root, cli.history_limit, history_since)?;
+            let commits =
+                history_scan.load_commits(&repo_root, cli.history_limit, history_since)?;
             if let Some(commit) = commits.first() {
                 update_latest_history_commit_sha(
                     &mut latest_commit,
@@ -4312,38 +4361,39 @@ fn build_robot_history_output(
                     &commit.sha,
                 );
             }
-            correlate_histories_with_git_aliases(
+            history_scan.correlate_histories(
                 &repo_root,
                 &commits,
                 &mut histories_map,
                 &mut commit_index,
                 &mut method_distribution,
                 &workspace_repo.aliases,
-            );
+            )?;
         }
         if let Some((_, sha)) = latest_commit {
             latest_sha = Some(sha);
         }
     } else {
         let workspace_aliases = build_workspace_id_aliases(issues);
-        if let Some(repo_root) = resolve_repo_root(cli) {
-            let commits = load_git_commits(&repo_root, cli.history_limit, history_since)?;
+        if let Some(repo_root) = history_scan.repository_root(&project_dir_for_load_target(cli)?)? {
+            let commits =
+                history_scan.load_commits(&repo_root, cli.history_limit, history_since)?;
             if let Some(commit) = commits.first() {
                 latest_sha = Some(commit.sha.clone());
             }
-            correlate_histories_with_git_aliases(
+            history_scan.correlate_histories(
                 &repo_root,
                 &commits,
                 &mut histories_map,
                 &mut commit_index,
                 &mut method_distribution,
                 &workspace_aliases,
-            );
+            )?;
         }
     }
 
     if latest_sha.is_none() {
-        latest_sha = latest_commit_sha(cli);
+        latest_sha = latest_commit_sha(cli, &mut history_scan)?;
     }
 
     if cli.history_min_confidence > 0.0 {
@@ -8113,13 +8163,13 @@ mod tests {
 
     use super::{
         BackgroundModeSource, BvrCommand, Cli, IssueLoadTarget, actionable_ids_for_recipe_filters,
-        build_background_mode_config, compare_versions, compute_related_work_result,
-        discover_workspace_config_from_starts, feedback_project_dir, file_watch_token,
-        filter_by_repo, generate_daily_burndown_points, handle_operational_commands, load_issues,
-        load_issues_from_git_ref, parse_background_mode_bool, parse_crates_io_latest_version,
-        parse_github_highest_tag, parse_github_latest_release, parse_issues_from_jsonl_text,
-        parse_scope_git_header_line, project_dir_for_export_hooks, reconcile_watch_export_paths,
-        resolve_background_mode, resolve_cli_path_from_project_dir,
+        build_background_mode_config, check_update_outcome, compare_versions,
+        compute_related_work_result, confirm_upgrade, discover_workspace_config_from_starts,
+        feedback_project_dir, file_watch_token, filter_by_repo, generate_daily_burndown_points,
+        load_issues, load_issues_from_git_ref, parse_background_mode_bool,
+        parse_crates_io_latest_version, parse_github_highest_tag, parse_github_latest_release,
+        parse_issues_from_jsonl_text, parse_scope_git_header_line, project_dir_for_export_hooks,
+        reconcile_watch_export_paths, resolve_background_mode, resolve_cli_path_from_project_dir,
         resolve_cli_reference_file_path, resolve_git_toplevel, resolve_issue_load_target,
         resolve_reference_file_path, resolve_watch_export_paths, resolve_workspace_config_path,
         upgrade_cargo_args,
@@ -9101,17 +9151,21 @@ mod tests {
     #[test]
     fn operational_check_update_is_deterministic_and_successful() {
         let cli = Cli::parse_from(["bvr", "--check-update"]);
-        let outcome = handle_operational_commands(&cli);
-
-        assert_eq!(outcome.exit_code, ExitCode::SUCCESS);
-        assert!(!outcome.to_stderr);
-        assert!(
-            outcome.message.contains("Up to date (v")
-                || outcome.message.contains("Newer version available:")
-                || outcome
-                    .message
-                    .contains("Could not check for updates (network unavailable).")
-        );
+        assert!(cli.is_operational_command());
+        for (latest, expected) in [
+            (Ok("0.4.0".to_string()), "Up to date (v0.4.0)"),
+            (Ok("0.3.0".to_string()), "Up to date (v0.4.0)"),
+            (Ok("0.5.0".to_string()), "Newer version available: v0.5.0"),
+            (
+                Err("offline test fixture".to_string()),
+                "Could not check for updates (network unavailable).",
+            ),
+        ] {
+            let outcome = check_update_outcome("0.4.0", latest);
+            assert_eq!(outcome.exit_code, ExitCode::SUCCESS);
+            assert!(!outcome.to_stderr);
+            assert!(outcome.message.contains(expected), "{}", outcome.message);
+        }
     }
 
     #[test]
@@ -9147,6 +9201,98 @@ mod tests {
                 "--locked"
             ]
         );
+    }
+
+    #[test]
+    fn upgrade_confirmation_accepts_only_explicit_affirmative_answers() {
+        let command = "cargo install beads_viewer_rust --version 0.9.3 --locked";
+        for answer in ["y\n", "Y\n", "yes\r\n", " YES \n"] {
+            let mut input = std::io::Cursor::new(answer);
+            let mut prompt = Vec::new();
+            assert!(
+                confirm_upgrade(command, true, &mut input, &mut prompt)
+                    .expect("read affirmative answer"),
+                "{answer:?}"
+            );
+            let prompt = String::from_utf8(prompt).expect("UTF-8 prompt");
+            assert!(prompt.contains(command), "{prompt}");
+            assert!(prompt.ends_with("Continue? [y/N] "), "{prompt}");
+        }
+
+        for answer in [
+            "",
+            "\n",
+            "n\n",
+            "no\n",
+            "no\nyes\n",
+            "okay\n",
+            "yesterday\n",
+        ] {
+            assert!(
+                !confirm_upgrade(
+                    command,
+                    true,
+                    &mut std::io::Cursor::new(answer),
+                    &mut Vec::new(),
+                )
+                .expect("read declined answer"),
+                "{answer:?} must not authorize installation"
+            );
+        }
+    }
+
+    #[test]
+    fn upgrade_confirmation_does_not_read_nonterminal_input() {
+        let mut input = std::io::Cursor::new("yes\n");
+        let mut prompt = Vec::new();
+        let error = confirm_upgrade("cargo install", false, &mut input, &mut prompt)
+            .expect_err("piped confirmation must be refused");
+        assert!(error.contains("interactive terminal"), "{error}");
+        assert!(error.contains("upgrade --yes"), "{error}");
+        assert_eq!(input.position(), 0);
+        assert_eq!(prompt, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn upgrade_confirmation_fails_closed_on_input_or_output_errors() {
+        struct BrokenIo;
+
+        impl std::io::Read for BrokenIo {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("broken input"))
+            }
+        }
+
+        impl std::io::Write for BrokenIo {
+            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("broken output"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let error = confirm_upgrade(
+            "cargo install",
+            true,
+            &mut std::io::BufReader::new(BrokenIo),
+            &mut Vec::new(),
+        )
+        .expect_err("input failure must not authorize installation");
+        assert!(
+            error.contains("Could not read upgrade confirmation"),
+            "{error}"
+        );
+
+        let mut input = std::io::Cursor::new("yes\n");
+        let error = confirm_upgrade("cargo install", true, &mut input, &mut BrokenIo)
+            .expect_err("an invisible prompt must not authorize installation");
+        assert!(
+            error.contains("Could not display upgrade confirmation"),
+            "{error}"
+        );
+        assert_eq!(input.position(), 0);
     }
 
     #[test]

@@ -388,3 +388,133 @@ fn robot_triage_from_nested_dir_discovers_parent_beads_dir() {
     assert_eq!(output["triage"]["quick_ref"]["total_actionable"], 1);
     assert_eq!(output["triage"]["quick_ref"]["top_picks"][0]["id"], "A");
 }
+
+#[cfg(unix)]
+fn history_failure_fixture() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("history failure fixture");
+    run_git(temp.path(), &["init"], None);
+    fs::create_dir_all(temp.path().join(".beads")).expect("beads directory");
+    for (status, date) in [
+        ("open", "2024-01-01T00:00:00Z"),
+        ("closed", "2024-02-01T00:00:00Z"),
+    ] {
+        let snapshot = serde_json::json!({
+            "id": "HIST-FAIL", "title": "History failure regression", "status": status,
+            "priority": 1, "issue_type": "task",
+        });
+        fs::write(
+            temp.path().join(".beads/issues.jsonl"),
+            format!("{snapshot}\n"),
+        )
+        .expect("snapshot");
+        run_git(temp.path(), &["add", ".beads/issues.jsonl"], None);
+        run_git(
+            temp.path(),
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "sync snapshots",
+            ],
+            Some(date),
+        );
+    }
+    temp
+}
+
+#[cfg(unix)]
+fn history_command_with_fake_git(repo: &Path, tools: &Path, script: &str) -> Command {
+    use std::os::unix::fs::PermissionsExt;
+    let original_path = std::env::var_os("PATH").expect("PATH");
+    let real_git = std::env::split_paths(&original_path)
+        .map(|directory| directory.join("git"))
+        .find(|path| path.is_file())
+        .expect("real Git executable")
+        .canonicalize()
+        .expect("absolute real Git executable");
+    let fake_git = tools.join("git");
+    fs::write(&fake_git, format!("#!/bin/sh\n{script}\n")).expect("fake Git");
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).expect("executable fake Git");
+    let path = std::env::join_paths(
+        std::iter::once(tools.to_path_buf()).chain(std::env::split_paths(&original_path)),
+    )
+    .expect("child-only PATH");
+    let bvr_bin = std::env::var("CARGO_BIN_EXE_bvr").expect("CARGO_BIN_EXE_bvr");
+    let mut command = Command::new(bvr_bin);
+    command
+        .current_dir(repo)
+        .args(["--robot-history", "--history-limit", "20"])
+        .env("PATH", path)
+        .env("HISTORY_REAL_GIT", real_git)
+        .env("HISTORY_GIT_MARKER", tools.join("first-diff-read"))
+        .timeout(std::time::Duration::from_secs(12));
+    command
+}
+
+#[cfg(unix)]
+#[test]
+fn robot_history_failing_diff_exits_without_partial_json() {
+    let repo = history_failure_fixture();
+    let tools = tempfile::tempdir().expect("fake Git directory");
+    let script = r#"
+for arg do
+    if [ "$arg" = show ]; then
+        if [ -e "$HISTORY_GIT_MARKER" ]; then
+            printf '%s\n' 'deliberate second-diff failure' >&2
+            exit 73
+        fi
+        : > "$HISTORY_GIT_MARKER"
+    fi
+done
+exec "$HISTORY_REAL_GIT" "$@"
+"#;
+    let assertion = history_command_with_fake_git(repo.path(), tools.path(), script)
+        .assert()
+        .failure();
+    let output = assertion.get_output();
+    assert!(
+        tools.path().join("first-diff-read").is_file(),
+        "a preceding diff was actually read"
+    );
+    assert_eq!(
+        output.stdout, b"",
+        "an incomplete history must not be emitted as JSON"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deliberate second-diff failure"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("git show"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn robot_history_stalled_repository_probe_has_bounded_failure() {
+    let repo = history_failure_fixture();
+    let tools = tempfile::tempdir().expect("fake Git directory");
+    // exec replaces the fake Git itself, so its normal child kill also stops
+    // the sleep. The fixture is finite even if an older binary lacks a timeout.
+    let script = r#"
+for arg do
+    if [ "$arg" = rev-parse ]; then
+        exec sleep 8
+    fi
+done
+exec "$HISTORY_REAL_GIT" "$@"
+"#;
+    let started = std::time::Instant::now();
+    let assertion = history_command_with_fake_git(repo.path(), tools.path(), script)
+        .assert()
+        .failure();
+    let output = assertion.get_output();
+    assert_eq!(
+        output.stdout, b"",
+        "a timed-out history must not be emitted as JSON"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("git rev-parse"), "{stderr}");
+    assert!(stderr.contains("timed out"), "{stderr}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(8));
+}

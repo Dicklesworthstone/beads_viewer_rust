@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use crate::analysis::Analyzer;
 use crate::analysis::git_history::{
-    GitCommitRecord, HistoryBeadCompat, HistoryCommitCompat, HistoryMilestonesCompat,
-    build_workspace_id_aliases, correlate_histories_with_git_aliases, finalize_history_entries,
-    load_git_commits,
+    GitCommitRecord, GitHistoryCancellation, GitHistoryScan, HistoryBeadCompat,
+    HistoryCommitCompat, HistoryMilestonesCompat, build_workspace_id_aliases,
+    finalize_history_entries,
 };
 use crate::analysis::history::IssueHistory;
 use crate::analysis::triage::TriageOptions;
@@ -2975,6 +2975,81 @@ struct HistoryGitCache {
     commit_bead_confidence: BTreeMap<String, Vec<(String, f64)>>,
 }
 
+impl HistoryGitCache {
+    fn load(
+        repo_root: &std::path::Path,
+        issues: &[Issue],
+        scan: &mut GitHistoryScan,
+    ) -> Result<Self> {
+        let resolved_root = scan.repository_root(repo_root)?;
+        let repo_root = resolved_root.as_deref().unwrap_or(repo_root);
+        let commits = scan.load_commits(repo_root, 500, None)?;
+        let mut histories = issues
+            .iter()
+            .map(|issue| {
+                (
+                    issue.id.clone(),
+                    HistoryBeadCompat {
+                        bead_id: issue.id.clone(),
+                        title: issue.title.clone(),
+                        status: issue.status.clone(),
+                        events: Vec::new(),
+                        milestones: HistoryMilestonesCompat::default(),
+                        commits: None,
+                        cycle_time: None,
+                        last_author: String::new(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut commit_index = BTreeMap::new();
+        let mut method_distribution = BTreeMap::new();
+        scan.correlate_histories(
+            repo_root,
+            &commits,
+            &mut histories,
+            &mut commit_index,
+            &mut method_distribution,
+            &build_workspace_id_aliases(issues),
+        )?;
+        finalize_history_entries(&mut histories);
+
+        let mut commit_bead_confidence = BTreeMap::<String, Vec<(String, f64)>>::new();
+        for history in histories.values() {
+            for commit in history.commits.as_deref().unwrap_or_default() {
+                commit_bead_confidence
+                    .entry(commit.sha.clone())
+                    .or_default()
+                    .push((history.bead_id.clone(), commit.confidence));
+            }
+        }
+        for pairs in commit_bead_confidence.values_mut() {
+            pairs.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        Ok(Self {
+            commits,
+            histories,
+            commit_bead_confidence,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct HistoryLoadState {
+    generation: u64,
+    requested: bool,
+    cancellation: Option<GitHistoryCancellation>,
+    error: Option<String>,
+}
+
+impl Drop for HistoryLoadState {
+    fn drop(&mut self) {
+        if let Some(cancellation) = &self.cancellation {
+            cancellation.cancel();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Modal overlays
 // ---------------------------------------------------------------------------
@@ -3123,6 +3198,10 @@ struct TreeFlatNode {
 enum Msg {
     KeyPress(KeyCode, Modifiers),
     Mouse(MouseEvent),
+    HistoryLoaded {
+        generation: u64,
+        result: std::result::Result<HistoryGitCache, String>,
+    },
     #[cfg(not(test))]
     Tick,
     #[cfg(not(test))]
@@ -3173,6 +3252,7 @@ struct BvrApp {
     history_related_bead_cursor: usize,
     history_bead_commit_cursor: usize,
     history_git_cache: Option<HistoryGitCache>,
+    history_load: HistoryLoadState,
     history_search_active: bool,
     history_search_query: String,
     history_search_match_cursor: usize,
@@ -3275,18 +3355,18 @@ impl Model for BvrApp {
     type Message = Msg;
 
     fn init(&mut self) -> Cmd<Self::Message> {
+        if self.mode == ViewMode::History {
+            self.ensure_git_history_loaded();
+        }
         #[cfg(not(test))]
-        {
-            self.background_tick_command()
-        }
+        let cmd = self.background_tick_command();
         #[cfg(test)]
-        {
-            Cmd::None
-        }
+        let cmd = Cmd::None;
+        self.finish_command(cmd)
     }
 
     fn update(&mut self, msg: Self::Message) -> Cmd<Self::Message> {
-        match msg {
+        let cmd = match msg {
             Msg::KeyPress(code, modifiers) => {
                 let mode_before = self.mode;
                 let cmd = self.handle_key(code, modifiers);
@@ -3301,27 +3381,23 @@ impl Model for BvrApp {
                     selected: self.selected,
                     filter: self.list_filter,
                 });
-                #[cfg(not(test))]
-                {
-                    return self.wrap_quit_with_background_cancel(cmd);
-                }
-                #[cfg(test)]
-                {
-                    return cmd;
-                }
+                cmd
             }
-            Msg::Mouse(event) => return self.handle_mouse(event),
+            Msg::Mouse(event) => self.handle_mouse(event),
+            Msg::HistoryLoaded { generation, result } => {
+                self.handle_history_load_result(generation, result);
+                Cmd::None
+            }
             #[cfg(not(test))]
-            Msg::Tick => return self.handle_background_tick(),
+            Msg::Tick => self.handle_background_tick(),
             #[cfg(not(test))]
             Msg::BackgroundReloaded(result) => {
                 self.handle_background_reload_result(result);
-                return Cmd::None;
+                Cmd::None
             }
-            Msg::Noop => {}
-        }
-
-        Cmd::None
+            Msg::Noop => Cmd::None,
+        };
+        self.finish_command(cmd)
     }
 
     fn view(&self, frame: &mut Frame) {
@@ -4638,14 +4714,23 @@ impl BvrApp {
         true
     }
 
-    #[cfg(not(test))]
-    fn wrap_quit_with_background_cancel(&self, cmd: Cmd<Msg>) -> Cmd<Msg> {
-        if matches!(cmd, Cmd::Quit)
-            && let Some(runtime) = self.background_runtime.as_ref()
-        {
-            runtime.cancel_requested.store(true, Ordering::Relaxed);
+    fn finish_command(&mut self, cmd: Cmd<Msg>) -> Cmd<Msg> {
+        if matches!(cmd, Cmd::Quit) {
+            self.cancel_history_load();
+            #[cfg(not(test))]
+            if let Some(runtime) = self.background_runtime.as_ref() {
+                runtime.cancel_requested.store(true, Ordering::Relaxed);
+            }
+            return cmd;
         }
-        cmd
+        let history_cmd = self.history_load_command();
+        if matches!(history_cmd, Cmd::None) {
+            cmd
+        } else if matches!(cmd, Cmd::None) {
+            history_cmd
+        } else {
+            Cmd::batch(vec![cmd, history_cmd])
+        }
     }
 
     #[cfg(not(test))]
@@ -4792,7 +4877,7 @@ impl BvrApp {
                 self.slow_metrics_rx = None;
             }
         }
-        self.history_git_cache = None;
+        self.invalidate_git_history();
         self.detail_dep_cursor = 0;
         self.board_detail_scroll_offset = 0;
         self.detail_scroll_offset = 0;
@@ -6665,6 +6750,7 @@ impl BvrApp {
         self.history_file_tree_filter = None;
         self.history_file_tree_focus = false;
         self.history_status_msg.clear();
+        self.history_load.error = None;
         self.focus = FocusPane::List;
         self.ensure_git_history_loaded();
     }
@@ -7199,73 +7285,102 @@ impl BvrApp {
     }
 
     fn ensure_git_history_loaded(&mut self) {
-        if self.history_git_cache.is_some() {
-            return;
+        if self.history_git_cache.is_none()
+            && self.history_load.cancellation.is_none()
+            && self.history_load.error.is_none()
+        {
+            self.history_load.requested = true;
         }
+    }
 
-        let repo_root = self
+    fn history_load_command(&mut self) -> Cmd<Msg> {
+        if !self.history_load.requested || self.history_load.cancellation.is_some() {
+            return Cmd::None;
+        }
+        self.history_load.requested = false;
+        let repo_root = match self
             .repo_root
             .clone()
-            .or_else(|| std::env::current_dir().ok());
-        let Some(repo_root) = repo_root else {
-            return;
-        };
-
-        let commits = load_git_commits(&repo_root, 500, None).unwrap_or_default();
-        let mut histories = self
-            .analyzer
-            .issues
-            .iter()
-            .map(|issue| {
-                (
-                    issue.id.clone(),
-                    HistoryBeadCompat {
-                        bead_id: issue.id.clone(),
-                        title: issue.title.clone(),
-                        status: issue.status.clone(),
-                        events: Vec::new(),
-                        milestones: HistoryMilestonesCompat::default(),
-                        commits: None,
-                        cycle_time: None,
-                        last_author: String::new(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-
-        let mut commit_index = BTreeMap::<String, Vec<String>>::new();
-        let mut method_distribution = BTreeMap::<String, usize>::new();
-        let workspace_aliases = build_workspace_id_aliases(&self.analyzer.issues);
-
-        correlate_histories_with_git_aliases(
-            &repo_root,
-            &commits,
-            &mut histories,
-            &mut commit_index,
-            &mut method_distribution,
-            &workspace_aliases,
-        );
-
-        finalize_history_entries(&mut histories);
-
-        let mut commit_bead_confidence = BTreeMap::<String, Vec<(String, f64)>>::new();
-        for history in histories.values() {
-            for commit in history.commits.as_deref().unwrap_or_default() {
-                commit_bead_confidence
-                    .entry(commit.sha.clone())
-                    .or_default()
-                    .push((history.bead_id.clone(), commit.confidence));
+            .map_or_else(std::env::current_dir, Ok)
+        {
+            Ok(root) => root,
+            Err(error) => {
+                self.history_load.error = Some(error.to_string());
+                return Cmd::None;
             }
-        }
-        for pairs in commit_bead_confidence.values_mut() {
-            pairs.sort_by(|left, right| left.0.cmp(&right.0));
-        }
+        };
+        let mut scan = GitHistoryScan::default();
+        self.history_load.generation = self.history_load.generation.wrapping_add(1);
+        self.history_load.cancellation = Some(scan.cancellation_token());
+        let generation = self.history_load.generation;
+        let issues = self.analyzer.issues.clone();
+        Cmd::task_named("git-history-load", move || Msg::HistoryLoaded {
+            generation,
+            result: HistoryGitCache::load(&repo_root, &issues, &mut scan)
+                .map_err(|error| error.to_string()),
+        })
+    }
 
-        self.history_git_cache = Some(HistoryGitCache {
-            commits,
-            histories,
-            commit_bead_confidence,
-        });
+    fn handle_history_load_result(
+        &mut self,
+        generation: u64,
+        result: std::result::Result<HistoryGitCache, String>,
+    ) {
+        // Reloading issues or quitting invalidates an outstanding worker.
+        // Its late result must never replace a newer issue snapshot.
+        if generation != self.history_load.generation || self.history_load.cancellation.is_none() {
+            return;
+        }
+        self.history_load.cancellation = None;
+        match result {
+            Ok(cache) => {
+                self.history_git_cache = Some(cache);
+                if self.mode == ViewMode::History {
+                    if self.history_view_mode == HistoryViewMode::Bead {
+                        let visible = self.history_visible_issue_indices();
+                        if !visible.contains(&self.selected)
+                            && let Some(&first) = visible.first()
+                        {
+                            self.set_selected_index(first);
+                        }
+                    } else {
+                        self.history_event_cursor = self.history_event_cursor.min(
+                            self.history_git_visible_commit_indices()
+                                .len()
+                                .saturating_sub(1),
+                        );
+                    }
+                }
+            }
+            Err(error) => self.history_load.error = Some(error),
+        }
+    }
+
+    fn cancel_history_load(&mut self) {
+        if let Some(cancellation) = self.history_load.cancellation.take() {
+            cancellation.cancel();
+        }
+        self.history_load.requested = false;
+        self.history_load.generation = self.history_load.generation.wrapping_add(1);
+    }
+
+    fn invalidate_git_history(&mut self) {
+        self.cancel_history_load();
+        self.history_git_cache = None;
+        self.history_load.error = None;
+        if self.mode == ViewMode::History {
+            self.ensure_git_history_loaded();
+        }
+    }
+
+    fn history_load_message(&self) -> String {
+        if let Some(error) = &self.history_load.error {
+            format!("Git history failed: {error}. Close and reopen history (H) to retry.")
+        } else if self.history_load.requested || self.history_load.cancellation.is_some() {
+            "Loading Git history… Navigation remains available.".to_string()
+        } else {
+            "Git history not loaded".to_string()
+        }
     }
 
     fn history_git_visible_commit_indices(&self) -> Vec<usize> {
@@ -11804,7 +11919,7 @@ impl BvrApp {
         let mut lines = Vec::from(Self::go_history_pane_header("COMMITS", width));
         let Some(cache) = self.history_git_cache.as_ref() else {
             lines.push(RichLine::from_spans([RichSpan::styled(
-                "Git history not loaded",
+                self.history_load_message(),
                 tokens::muted_text(),
             )]));
             return lines;
@@ -11878,12 +11993,17 @@ impl BvrApp {
         };
         let commits = self.history_filtered_bead_commits(&issue.id);
         if commits.is_empty() {
+            let message = if self.history_git_cache.is_none()
+                && (self.history_load.requested
+                    || self.history_load.cancellation.is_some()
+                    || self.history_load.error.is_some())
+            {
+                self.history_load_message()
+            } else {
+                format!("No commits correlated with {}", issue.id)
+            };
             lines.push(RichLine::from_spans([RichSpan::styled(
-                truncate_with_ellipsis(
-                    &format!("No commits correlated with {}", issue.id),
-                    width,
-                    "…",
-                ),
+                truncate_with_ellipsis(&message, width, "…"),
                 tokens::muted_text(),
             )]));
             return lines;
@@ -12190,7 +12310,7 @@ impl BvrApp {
             let message = if self.history_git_cache.is_some() {
                 format!("No commits correlated with {}", issue.id)
             } else {
-                "Git history not loaded".to_string()
+                self.history_load_message()
             };
             body.push(RichLine::from_spans([RichSpan::styled(
                 message,
@@ -15043,6 +15163,9 @@ impl BvrApp {
             let query = self.history_search_query.trim();
             let visible = self.history_git_visible_commit_indices();
             let cache = self.history_git_cache.as_ref();
+            if cache.is_none() {
+                return format!("Git commits: {}", self.history_load_message());
+            }
 
             if visible.is_empty() {
                 if query.is_empty() {
@@ -15237,6 +15360,9 @@ impl BvrApp {
         };
         let commits = self.history_filtered_bead_commits(&issue.id);
         if commits.is_empty() {
+            if self.history_git_cache.is_none() {
+                return self.history_load_message();
+            }
             return format!("No commits correlated with {}.", issue.id);
         }
 
@@ -20747,6 +20873,7 @@ fn new_app_with_background(
         history_related_bead_cursor: 0,
         history_bead_commit_cursor: 0,
         history_git_cache: None,
+        history_load: HistoryLoadState::default(),
         history_search_active: false,
         history_search_query: String::new(),
         history_search_match_cursor: 0,
@@ -21339,7 +21466,15 @@ pub fn render_debug_view(
     // run. Tests keep the repository's live git log out of their renders.
     #[cfg(not(test))]
     if matches!(mode, ViewMode::History) {
-        app.ensure_git_history_loaded();
+        let repo_root = app
+            .repo_root
+            .clone()
+            .map_or_else(std::env::current_dir, Ok)?;
+        app.history_git_cache = Some(HistoryGitCache::load(
+            &repo_root,
+            &app.analyzer.issues,
+            &mut GitHistoryScan::default(),
+        )?);
     }
     let mut pool = ftui::GraphemePool::default();
     let mut frame = Frame::new(width, height, &mut pool);
@@ -22011,6 +22146,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -23811,6 +23947,215 @@ mod tests {
         assert_ne!(app.history_confidence_index, initial_index);
     }
 
+    fn history_task(cmd: Cmd<Msg>) -> Box<dyn FnOnce() -> Msg + Send> {
+        match cmd {
+            Cmd::Task(_, task) => task,
+            other => panic!("history must run as a background task, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_load_is_deferred_and_navigation_remains_available() {
+        let repo = tempfile::tempdir().expect("history repo");
+        let mut app = new_app(ViewMode::Main, 0);
+        app.repo_root = Some(repo.path().to_path_buf());
+        let task = history_task(app.update(key(KeyCode::Char('H'))));
+        assert!(app.history_git_cache.is_none());
+        assert!(render_app(&app, 160, 40).contains("Loading Git history"));
+
+        let selected_before = selected_issue_id(&app);
+        assert!(matches!(app.update(key(KeyCode::Char('j'))), Cmd::None));
+        assert_ne!(selected_issue_id(&app), selected_before);
+        let selected_after = selected_issue_id(&app);
+        assert!(matches!(app.update(key(KeyCode::Char('v'))), Cmd::None));
+        assert_eq!(app.history_view_mode, HistoryViewMode::Git);
+        assert!(app.history_git_cache.is_none());
+
+        // Create the repository after requesting history: the task must read
+        // Git when the runtime executes it, never during the key handler.
+        std::fs::create_dir(repo.path().join(".beads")).expect("beads directory");
+        std::fs::write(
+            repo.path().join(".beads/issues.jsonl"),
+            "{\"id\":\"A\",\"title\":\"Root\",\"status\":\"open\"}\n",
+        )
+        .expect("bead record");
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["add", ".beads/issues.jsonl"],
+            vec![
+                "-c",
+                "user.name=History Test",
+                "-c",
+                "user.email=history@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "--quiet",
+                "-m",
+                "Record the initial bead",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(repo.path())
+                .output()
+                .expect("fixture git");
+            assert!(output.status.success(), "{output:?}");
+        }
+
+        app.update(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, ViewMode::Main);
+        let reply = task();
+        assert!(
+            matches!(&reply, Msg::HistoryLoaded { result: Ok(cache), .. }
+            if cache.commits.len() == 1 && cache.histories["A"].commits.as_ref().is_some_and(|commits| commits.len() == 1))
+        );
+        assert!(matches!(app.update(reply), Cmd::None));
+        assert!(app.history_git_cache.is_some());
+        assert_eq!(app.mode, ViewMode::Main);
+        assert_eq!(app.focus, FocusPane::List);
+        assert_eq!(selected_issue_id(&app), selected_after);
+    }
+
+    #[test]
+    fn history_load_failure_is_visible_and_reentry_retries() {
+        let repo = tempfile::tempdir().expect("history repo");
+        let mut app = new_app(ViewMode::Main, 0);
+        app.repo_root = Some(repo.path().join("missing"));
+        let task = history_task(app.update(key(KeyCode::Char('H'))));
+        app.update(task());
+        assert!(app.history_git_cache.is_none());
+        assert!(app.history_load.error.is_some());
+        assert!(render_app(&app, 160, 40).contains("Git history failed"));
+        assert!(
+            app.history_load_message()
+                .contains("reopen history (H) to retry")
+        );
+        // Navigation cannot turn a failed request into endless automatic retries.
+        assert!(matches!(app.update(key(KeyCode::Char('v'))), Cmd::None));
+        assert!(app.history_load.error.is_some());
+
+        app.update(key(KeyCode::Char('q')));
+        app.repo_root = Some(repo.path().to_path_buf());
+        let retry = history_task(app.update(key(KeyCode::Char('H'))));
+        assert!(app.history_load.error.is_none());
+        app.update(retry());
+        assert!(app.history_load.error.is_none());
+        assert!(
+            app.history_git_cache
+                .as_ref()
+                .is_some_and(|cache| cache.commits.is_empty())
+        );
+        assert!(matches!(app.update(key(KeyCode::Char('v'))), Cmd::None));
+        assert!(
+            app.history_list_text()
+                .contains("No git commits correlated")
+        );
+    }
+
+    #[test]
+    fn history_load_preserves_search_selection_and_detail_focus() {
+        let repo = tempfile::tempdir().expect("history repo");
+        let issues = ["A", "B"]
+            .into_iter()
+            .map(|id| Issue {
+                id: id.into(),
+                title: format!("Root {id}"),
+                status: "open".into(),
+                ..Issue::default()
+            })
+            .collect();
+        let mut app = new_app_with_issues(ViewMode::Main, 0, issues);
+        app.repo_root = Some(repo.path().to_path_buf());
+        let task = history_task(app.update(key(KeyCode::Char('H'))));
+        let _ = render_app(&app, 160, 40);
+        app.update(key(KeyCode::Char('/')));
+        for ch in "root".chars() {
+            app.update(key(KeyCode::Char(ch)));
+        }
+        app.update(key(KeyCode::Enter));
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(selected_issue_id(&app), "B");
+        app.update(key(KeyCode::Tab));
+        if app.focus != FocusPane::Detail {
+            app.update(key(KeyCode::Tab));
+        }
+        assert_eq!(app.focus, FocusPane::Detail);
+        assert!(app.history_git_cache.is_none());
+
+        app.update(task());
+        assert!(app.history_git_cache.is_some());
+        assert_eq!(app.history_search_query, "root");
+        assert_eq!(selected_issue_id(&app), "B");
+        assert_eq!(app.focus, FocusPane::Detail);
+    }
+
+    #[test]
+    fn history_load_rejects_stale_results_after_issue_reload() {
+        let repo = tempfile::tempdir().expect("history repo");
+        let mut app = new_app(ViewMode::History, 0);
+        app.repo_root = Some(repo.path().to_path_buf());
+        let first = history_task(app.init());
+        let old_result = first();
+        assert!(matches!(
+            &old_result,
+            Msg::HistoryLoaded { result: Ok(_), .. }
+        ));
+
+        app.analyzer = Analyzer::new(vec![Issue {
+            id: "NEW".into(),
+            title: "Reloaded issue".into(),
+            status: "open".into(),
+            ..Issue::default()
+        }]);
+        app.invalidate_git_history();
+        let next = history_task(app.update(Msg::Noop));
+        app.update(old_result);
+        assert!(app.history_git_cache.is_none());
+        assert!(app.history_load.cancellation.is_some());
+        app.update(next());
+        let cache = app.history_git_cache.as_ref().expect("new history");
+        assert_eq!(
+            cache
+                .histories
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["NEW"]
+        );
+        assert!(app.history_load.cancellation.is_none());
+    }
+
+    #[test]
+    fn history_load_is_cancelled_on_quit_and_drop() {
+        for quit in [true, false] {
+            let repo = tempfile::tempdir().expect("history repo");
+            let mut app = new_app(ViewMode::History, 0);
+            app.repo_root = Some(repo.path().to_path_buf());
+            let task = history_task(app.init());
+            if quit {
+                assert!(matches!(
+                    app.update(Msg::KeyPress(KeyCode::Char('c'), Modifiers::CTRL)),
+                    Cmd::Quit
+                ));
+                let reply = task();
+                assert!(
+                    matches!(&reply, Msg::HistoryLoaded { result: Err(error), .. } if error.contains("cancelled"))
+                );
+                app.update(reply);
+                assert!(app.history_git_cache.is_none());
+                assert!(app.history_load.error.is_none());
+            } else {
+                drop(app);
+                assert!(
+                    matches!(task(), Msg::HistoryLoaded { result: Err(error), .. } if error.contains("cancelled"))
+                );
+            }
+        }
+    }
+
     #[test]
     fn history_git_mode_c_cycles_confidence_and_clamps_cursor() {
         let mut app = history_app_with_git_cache(HistoryViewMode::Git, 0);
@@ -24021,6 +24366,7 @@ mod tests {
     #[test]
     fn history_git_search_zero_results_show_explicit_message() {
         let mut app = new_app(ViewMode::Main, 0);
+        inject_deterministic_git_cache(&mut app);
         app.update(key(KeyCode::Char('H')));
         app.update(key(KeyCode::Char('v')));
         assert!(matches!(app.mode, ViewMode::History));
@@ -24273,6 +24619,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -24387,6 +24734,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -24495,6 +24843,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -24621,6 +24970,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -24731,6 +25081,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -24842,6 +25193,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -24954,6 +25306,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -25061,6 +25414,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -25183,6 +25537,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -25329,6 +25684,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -25580,6 +25936,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
@@ -25694,6 +26051,7 @@ mod tests {
             history_related_bead_cursor: 0,
             history_bead_commit_cursor: 0,
             history_git_cache: None,
+            history_load: super::HistoryLoadState::default(),
             history_search_active: false,
             history_search_query: String::new(),
             history_search_match_cursor: 0,
