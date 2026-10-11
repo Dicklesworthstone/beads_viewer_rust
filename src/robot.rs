@@ -1045,6 +1045,10 @@ fn schema_prop_dt() -> Value {
     serde_json::json!({"type": "string", "format": "date-time"})
 }
 
+fn schema_prop_count() -> Value {
+    serde_json::json!({"type": "integer", "minimum": 0})
+}
+
 fn simple_command_schema(title: &str, description: &str, properties: Value) -> Value {
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1066,6 +1070,184 @@ fn versioned_properties(mut properties: Value) -> Value {
 
 fn versioned_simple_command_schema(title: &str, description: &str, properties: Value) -> Value {
     simple_command_schema(title, description, versioned_properties(properties))
+}
+
+fn triage_recommendation_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "id": schema_prop("string"),
+            "title": schema_prop("string"),
+            "type": schema_prop("string"),
+            "status": schema_prop("string"),
+            "priority": schema_prop("integer"),
+            "labels": {"type": "array", "items": schema_prop("string")},
+            "score": schema_prop("number"),
+            "impact_score": schema_prop("number"),
+            "confidence": schema_prop("number"),
+            "action": schema_prop("string"),
+            "reasons": {"type": "array", "items": schema_prop("string")},
+            "unblocks": schema_prop_count(),
+            "unblocks_ids": {"type": "array", "items": schema_prop("string")},
+            "blocked_by": {"type": "array", "items": schema_prop("string")},
+            "assignee": schema_prop("string"),
+            "defer_until": schema_prop_dt(),
+            "claimable": {"type": "boolean", "description": "True only for open, unassigned, ready work that is neither an epic nor a parent with open children, and has no configured not-ready label"},
+            "claim_command": schema_prop("string"),
+            "show_command": schema_prop("string"),
+            "breakdown": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": schema_prop("string"),
+                        "weight": schema_prop("number"),
+                        "raw": schema_prop("number"),
+                        "normalized": schema_prop("number"),
+                        "weighted": schema_prop("number"),
+                        "explanation": schema_prop("string"),
+                    },
+                    "required": ["name", "weight", "raw", "normalized", "weighted"],
+                },
+            },
+        },
+        "required": ["id", "title", "type", "status", "priority", "labels", "score", "impact_score", "confidence", "action", "reasons", "unblocks", "assignee", "claimable", "claim_command", "show_command"],
+    })
+}
+
+fn triage_project_health_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "counts": {
+                "type": "object",
+                "properties": {
+                    "total": schema_prop_count(),
+                    "open": {"type": "integer", "minimum": 0, "description": "Strict count of normalized status open"},
+                    "closed": schema_prop_count(),
+                    "actionable": {"type": "integer", "minimum": 0, "description": "Ready open or in-progress work, including already claimed work"},
+                    "blocked": {"type": "integer", "minimum": 0, "description": "Strict count of normalized status blocked"},
+                    "not_closed": {"type": "integer", "minimum": 0, "description": "All non-closed issues"},
+                    "dependency_blocked": {"type": "integer", "minimum": 0, "description": "All non-closed, non-actionable issues (not_closed - actionable), including parked statuses and deferrals as well as dependencies"},
+                    "by_status": {"type": "object", "additionalProperties": schema_prop_count()},
+                    "by_priority": {"type": "object", "additionalProperties": schema_prop_count()},
+                    "by_type": {"type": "object", "additionalProperties": schema_prop_count()},
+                },
+                "required": ["total", "open", "closed", "actionable", "blocked", "not_closed", "dependency_blocked", "by_status", "by_priority", "by_type"],
+            },
+            "graph": {
+                "type": "object",
+                "properties": {
+                    "node_count": schema_prop_count(),
+                    "edge_count": schema_prop_count(),
+                    "density": schema_prop("number"),
+                    "has_cycles": schema_prop("boolean"),
+                    "cycle_count": schema_prop_count(),
+                    "phase2_ready": schema_prop("boolean"),
+                },
+                "required": ["node_count", "edge_count", "density", "has_cycles", "cycle_count", "phase2_ready"],
+            },
+            "velocity": {
+                "type": "object",
+                "properties": {
+                    "closed_last_7_days": schema_prop_count(),
+                    "closed_last_30_days": schema_prop_count(),
+                    "avg_days_to_close": schema_prop("number"),
+                    "weekly": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"week_start": schema_prop_dt(), "closed": schema_prop_count()},
+                            "required": ["week_start", "closed"],
+                        },
+                    },
+                },
+                "required": ["closed_last_7_days", "closed_last_30_days", "avg_days_to_close", "weekly"],
+            },
+        },
+        "required": ["counts", "graph", "velocity"],
+    })
+}
+
+fn triage_schema_definitions() -> Value {
+    serde_json::json!({
+        "quick_pick": {
+            "type": "object",
+            "properties": {
+                "id": schema_prop("string"),
+                "title": schema_prop("string"),
+                "score": schema_prop("number"),
+                "reasons": {"type": "array", "items": schema_prop("string")},
+                "unblocks": schema_prop_count(),
+            },
+            "required": ["id", "title", "score", "reasons", "unblocks"],
+        },
+        "quick_ref": {
+            "type": "object",
+            "properties": {
+                "total_open": {"type": "integer", "minimum": 0, "description": "All non-closed issues; alias of not_closed_count"},
+                "total_actionable": {"type": "integer", "minimum": 0, "description": "Alias of actionable_count"},
+                "open_count": {"type": "integer", "minimum": 0, "description": "Strict count of issues with normalized status open"},
+                "actionable_count": {"type": "integer", "minimum": 0, "description": "Open or in-progress issues ready now after dependency, inherited blocker, and scheduler deferral gates; may include already claimed work"},
+                "blocked_count": {"type": "integer", "minimum": 0, "description": "Strict count of issues with normalized status blocked"},
+                "in_progress_count": {"type": "integer", "minimum": 0, "description": "Strict count of issues with normalized status in_progress"},
+                "not_closed_count": {"type": "integer", "minimum": 0, "description": "All non-closed issues; equals actionable_count + not_actionable_count"},
+                "not_actionable_count": {"type": "integer", "minimum": 0, "description": "Non-closed issues excluded by readiness gates, including blockers, parked statuses, and active deferrals"},
+                "top_picks": {"type": "array", "items": {"$ref": "#/$defs/quick_pick"}},
+            },
+            "required": ["total_open", "total_actionable", "open_count", "actionable_count", "blocked_count", "in_progress_count", "not_closed_count", "not_actionable_count", "top_picks"],
+        },
+        "recommendation": triage_recommendation_schema(),
+        "brief_recommendation": {
+            "type": "object",
+            "properties": {
+                "id": schema_prop("string"),
+                "title": schema_prop("string"),
+                "status": schema_prop("string"),
+                "assignee": schema_prop("string"),
+                "score": schema_prop("number"),
+                "unblocks": {"type": "array", "items": schema_prop("string")},
+                "blocked_by": {"type": "array", "items": schema_prop("string")},
+                "claimable": schema_prop("boolean"),
+                "claim_command": schema_prop("string"),
+                "show_command": schema_prop("string"),
+            },
+            "required": ["id", "title", "status", "score", "claimable", "claim_command", "show_command"],
+        },
+        "blocker": {
+            "type": "object",
+            "properties": {
+                "id": schema_prop("string"),
+                "title": schema_prop("string"),
+                "status": schema_prop("string"),
+                "unblocks": schema_prop_count(),
+            },
+            "required": ["id", "title", "status", "unblocks"],
+        },
+        "project_health": triage_project_health_schema(),
+    })
+}
+
+fn burndown_at_risk_schema() -> Value {
+    serde_json::json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": schema_prop("string"),
+                "title": schema_prop("string"),
+                "status": schema_prop("string"),
+                "priority": schema_prop("integer"),
+                "signals": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["blocked_too_long", "no_activity", "critical_blocked", "blockers_not_closing"]},
+                },
+                "since": schema_prop_dt(),
+                "detail": schema_prop("string"),
+            },
+            "required": ["id", "status", "priority", "signals", "detail"],
+        },
+    })
 }
 
 #[must_use]
@@ -1102,11 +1284,15 @@ pub fn generate_robot_schemas() -> RobotSchemas {
     commands.insert("robot-triage".to_string(), serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Robot Triage Output",
-        "description": "Unified triage recommendations with quick picks, blockers, and project health",
+        "description": "Full triage recommendations, or the compact root-level payload selected by --brief. Claimability is stricter than actionable readiness.",
         "type": "object",
         "properties": {
             "generated_at": schema_prop_dt(),
             "data_hash": schema_prop("string"),
+            "output_format": {"type": "string", "enum": ["json", "toon"]},
+            "version": schema_prop("string"),
+            "as_of": schema_prop("string"),
+            "as_of_commit": schema_prop("string"),
             "triage": {
                 "type": "object",
                 "properties": {
@@ -1114,60 +1300,70 @@ pub fn generate_robot_schemas() -> RobotSchemas {
                         "type": "object",
                         "properties": {
                             "version": schema_prop("string"),
-                            "generated_at": schema_prop("string"),
+                            "generated_at": schema_prop_dt(),
                             "phase2_ready": schema_prop("boolean"),
-                            "issue_count": schema_prop("integer"),
-                        }
+                            "issue_count": schema_prop_count(),
+                            "compute_time_ms": schema_prop_count(),
+                        },
+                        "required": ["version", "generated_at", "phase2_ready", "issue_count", "compute_time_ms"],
                     },
-                    "quick_ref": {
+                    "quick_ref": {"$ref": "#/$defs/quick_ref"},
+                    "recommendations": {"type": "array", "items": {"$ref": "#/$defs/recommendation"}},
+                    "quick_wins": {"type": "array", "items": {"$ref": "#/$defs/recommendation"}},
+                    "blockers_to_clear": {"type": "array", "items": {"$ref": "#/$defs/blocker"}},
+                    "recommendations_by_track": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "track_id": schema_prop("string"),
+                                "top_pick": {"anyOf": [{"$ref": "#/$defs/recommendation"}, {"type": "null"}]},
+                                "item_ids": {"type": "array", "items": schema_prop("string")},
+                            },
+                            "required": ["track_id", "top_pick", "item_ids"],
+                        },
+                    },
+                    "recommendations_by_label": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": schema_prop("string"),
+                                "top_pick": {"anyOf": [{"$ref": "#/$defs/recommendation"}, {"type": "null"}]},
+                                "item_ids": {"type": "array", "items": schema_prop("string")},
+                            },
+                            "required": ["label", "top_pick", "item_ids"],
+                        },
+                    },
+                    "project_health": {"$ref": "#/$defs/project_health"},
+                    "commands": {
                         "type": "object",
                         "properties": {
-                            "open_count": {"type": "integer", "description": "Strict count of issues with status == open"},
-                            "actionable_count": {"type": "integer", "description": "Non-closed issues ready to work on now"},
-                            "blocked_count": {"type": "integer", "description": "Strict count of issues with status == blocked"},
-                            "in_progress_count": {"type": "integer", "description": "Strict count of issues with status == in_progress"},
-                            "not_closed_count": {"type": "integer", "description": "All non-closed issues; equals actionable_count + not_actionable_count"},
-                            "not_actionable_count": {"type": "integer", "description": "Non-closed issues that are not actionable (open blockers, parked status, deferral)"},
-                            "top_picks": {
-                                "type": "array",
-                                "items": {"$ref": "#/$defs/recommendation"}
-                            }
-                        }
+                            "claim_top": schema_prop("string"),
+                            "show_top": schema_prop("string"),
+                            "list_ready": schema_prop("string"),
+                            "list_blocked": schema_prop("string"),
+                            "refresh_triage": schema_prop("string"),
+                        },
+                        "required": ["list_ready", "list_blocked", "refresh_triage"],
                     },
-                    "recommendations": {"type": "array", "items": {"$ref": "#/$defs/recommendation"}},
-                    "quick_wins": {"type": "array"},
-                    "blockers_to_clear": {"type": "array"},
-                    "project_health": {"type": "object"},
-                    "commands": {"type": "object"},
-                }
+                },
+                "required": ["meta", "quick_ref", "recommendations", "quick_wins", "blockers_to_clear", "recommendations_by_track", "recommendations_by_label", "project_health", "commands"],
             },
+            "brief": {"const": true},
+            "quick_ref": {"$ref": "#/$defs/quick_ref"},
+            "recommendations": {"type": "array", "items": {"$ref": "#/$defs/brief_recommendation"}},
+            "quick_wins": {"type": "array", "items": schema_prop("string")},
+            "blockers_to_clear": {"type": "array", "items": schema_prop("string")},
+            "feedback": {"type": "object"},
             "usage_hints": {"type": "array", "items": schema_prop("string")},
         },
-        "$defs": {
-            "recommendation": {
-                "type": "object",
-                "properties": {
-                    "id": schema_prop("string"),
-                    "title": schema_prop("string"),
-                    "type": schema_prop("string"),
-                    "status": schema_prop("string"),
-                    "priority": schema_prop("integer"),
-                    "labels": {"type": "array", "items": schema_prop("string")},
-                    "score": schema_prop("number"),
-                    "impact_score": schema_prop("number"),
-                    "confidence": schema_prop("number"),
-                    "action": schema_prop("string"),
-                    "reasons": {"type": "array", "items": schema_prop("string")},
-                    "unblocks": schema_prop("integer"),
-                    "unblocks_ids": {"type": "array", "items": schema_prop("string")},
-                    "blocked_by": {"type": "array", "items": schema_prop("string")},
-                    "assignee": schema_prop("string"),
-                    "claim_command": schema_prop("string"),
-                    "show_command": schema_prop("string"),
-                },
-                "required": ["id", "title", "score", "action"],
-            }
-        }
+        "required": ["generated_at", "data_hash", "output_format", "version"],
+        "oneOf": [
+            {"required": ["triage", "usage_hints"], "not": {"required": ["brief"]}},
+            {"required": ["brief", "quick_ref", "recommendations"], "not": {"required": ["triage"]}},
+        ],
+        "$defs": triage_schema_definitions(),
     }));
 
     commands.insert(
@@ -1180,15 +1376,37 @@ pub fn generate_robot_schemas() -> RobotSchemas {
             "properties": {
                 "generated_at": schema_prop_dt(),
                 "data_hash": schema_prop("string"),
+                "output_format": {"type": "string", "enum": ["json", "toon"]},
+                "version": schema_prop("string"),
+                "as_of": schema_prop("string"),
+                "as_of_commit": schema_prop("string"),
                 "id": schema_prop("string"),
                 "title": schema_prop("string"),
                 "score": schema_prop("number"),
                 "reasons": {"type": "array", "items": schema_prop("string")},
-                "unblocks": schema_prop("integer"),
+                "unblocks": schema_prop_count(),
                 "claim_command": schema_prop("string"),
                 "show_command": schema_prop("string"),
+                "message": schema_prop("string"),
             },
-            "required": ["generated_at", "data_hash", "id", "title", "score"],
+            "required": ["generated_at", "data_hash", "output_format", "version"],
+            "oneOf": [
+                {
+                    "description": "A claimable pick is available. reasons is omitted if empty.",
+                    "required": ["id", "title", "score", "unblocks", "claim_command", "show_command"],
+                    "not": {"required": ["message"]},
+                },
+                {
+                    "description": "No claimable pick is available; pick fields are omitted, not null.",
+                    "required": ["message"],
+                    "not": {"anyOf": [
+                        {"required": ["id"]}, {"required": ["title"]},
+                        {"required": ["score"]}, {"required": ["reasons"]},
+                        {"required": ["unblocks"]}, {"required": ["claim_command"]},
+                        {"required": ["show_command"]},
+                    ]},
+                },
+            ],
         }),
     );
 
@@ -1445,9 +1663,47 @@ pub fn generate_robot_schemas() -> RobotSchemas {
                 "output_format": schema_prop("string"),
                 "version": schema_prop("string"),
                 "sprint_id": schema_prop("string"),
-                "burndown": {"type": "array"},
-                "scope_changes": {"type": "array"},
-                "at_risk": {"type": "array"},
+                "sprint_name": schema_prop("string"),
+                "start_date": schema_prop_dt(),
+                "end_date": schema_prop_dt(),
+                "total_days": schema_prop_count(),
+                "elapsed_days": schema_prop_count(),
+                "remaining_days": schema_prop_count(),
+                "total_issues": schema_prop_count(),
+                "completed_issues": schema_prop_count(),
+                "remaining_issues": schema_prop_count(),
+                "ideal_burn_rate": schema_prop("number"),
+                "actual_burn_rate": schema_prop("number"),
+                "projected_complete": schema_prop_dt(),
+                "on_track": schema_prop("boolean"),
+                "daily_points": {"type": "array", "items": {"$ref": "#/$defs/burndown_point"}},
+                "ideal_line": {"type": "array", "items": {"$ref": "#/$defs/burndown_point"}},
+                "scope_changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": schema_prop_dt(),
+                            "issue_id": schema_prop("string"),
+                            "issue_title": schema_prop("string"),
+                            "action": {"type": "string", "enum": ["added", "removed"]},
+                        },
+                        "required": ["date", "issue_id", "issue_title", "action"],
+                    },
+                },
+                "at_risk": burndown_at_risk_schema(),
+            },
+            "required": ["generated_at", "data_hash", "output_format", "version", "sprint_id", "sprint_name", "total_days", "elapsed_days", "remaining_days", "total_issues", "completed_issues", "remaining_issues", "ideal_burn_rate", "actual_burn_rate", "on_track", "daily_points", "ideal_line", "at_risk"],
+            "$defs": {
+                "burndown_point": {
+                    "type": "object",
+                    "properties": {
+                        "date": schema_prop_dt(),
+                        "remaining": schema_prop("integer"),
+                        "completed": schema_prop("integer"),
+                    },
+                    "required": ["date", "remaining", "completed"],
+                },
             },
         }),
     );
@@ -1504,34 +1760,16 @@ pub fn generate_robot_schemas() -> RobotSchemas {
         }),
     );
 
-    commands.insert(
-        "robot-triage-by-track".to_string(),
-        simple_command_schema(
-            "Robot Triage By Track Output",
-            "Triage grouped by parallel execution track",
-            serde_json::json!({
-                "generated_at": schema_prop_dt(),
-                "data_hash": schema_prop("string"),
-                "triage": {"type": "object"},
-                "feedback": {"type": "object"},
-                "usage_hints": {"type": "array"},
-            }),
-        ),
-    );
-    commands.insert(
-        "robot-triage-by-label".to_string(),
-        simple_command_schema(
-            "Robot Triage By Label Output",
-            "Triage grouped by label/domain",
-            serde_json::json!({
-                "generated_at": schema_prop_dt(),
-                "data_hash": schema_prop("string"),
-                "triage": {"type": "object"},
-                "feedback": {"type": "object"},
-                "usage_hints": {"type": "array"},
-            }),
-        ),
-    );
+    // These flags share the same full/brief serializers. Keep self-contained
+    // copies (including local $defs) so their advertised contracts cannot drift.
+    for (command, title) in [
+        ("robot-triage-by-track", "Robot Triage By Track Output"),
+        ("robot-triage-by-label", "Robot Triage By Label Output"),
+    ] {
+        let mut schema = commands["robot-triage"].clone();
+        schema["title"] = Value::String(title.to_string());
+        commands.insert(command.to_string(), schema);
+    }
     commands.insert(
         "robot-schema".to_string(),
         simple_command_schema(
