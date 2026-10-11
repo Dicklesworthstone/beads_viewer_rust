@@ -913,6 +913,546 @@ fn workspace_duplicate_repo_alias_returns_error() {
 // HISTORY E2E
 // ===================================================================
 
+mod historical_snapshot_integrity {
+    use super::*;
+
+    fn command(root: &Path) -> Command {
+        let mut command = bvr();
+        command
+            .current_dir(root)
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .timeout(std::time::Duration::from_secs(10));
+        command
+    }
+
+    fn initialize(root: &Path) {
+        run_git(root, &["init"], None);
+        fs::create_dir_all(root.join(".beads")).expect("historical tracker directory");
+    }
+
+    fn commit(root: &Path, message: &str) {
+        run_git(root, &["add", "."], None);
+        run_git(root, &["commit", "-m", message], None);
+    }
+
+    fn damage_loose_object(path: &Path, content: &[u8]) {
+        let mut permissions = fs::metadata(path)
+            .expect("owned fixture object")
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(false);
+        fs::set_permissions(path, permissions).expect("make owned fixture object writable");
+        fs::write(path, content).expect("damage isolated fixture object");
+    }
+
+    fn json(root: &Path, args: &[&str]) -> Value {
+        let output = command(root)
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice(&output).expect("one complete robot JSON value")
+    }
+
+    fn assert_revision_rejected(
+        root: &Path,
+        revision: &str,
+        expected: &[&str],
+        source: Option<&Path>,
+    ) {
+        for args in [
+            ["--robot-triage", "--as-of", revision],
+            ["--robot-diff", "--diff-since", revision],
+        ] {
+            let mut command = command(root);
+            command.args(args);
+            if let Some(source) = source {
+                command.arg("--db").arg(source);
+            }
+            let output = command.assert().failure().get_output().clone();
+            assert!(
+                output.stdout.is_empty(),
+                "{args:?} must not publish a fabricated or partial snapshot"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(revision), "missing revision: {stderr}");
+            for fragment in expected {
+                assert!(stderr.contains(fragment), "missing {fragment:?}: {stderr}");
+            }
+        }
+    }
+
+    fn assert_rejected(root: &Path, expected: &[&str], source: Option<&Path>) {
+        assert_revision_rejected(root, "HEAD~1", expected, source);
+    }
+
+    #[test]
+    fn revision_metadata_selects_the_authoritative_snapshot_for_as_of_and_diff() {
+        let directory = tempfile::tempdir().expect("history fixture");
+        let root = directory.path();
+        initialize(root);
+        fs::write(
+            root.join(".beads/metadata.json"),
+            r#"{"jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("old metadata");
+        fs::write(
+            root.join(".beads/beads.jsonl"),
+            issue_line("STALE-1", "Unrelated export", "open", 1),
+        )
+        .expect("stale alternative");
+        fs::write(
+            root.join(".beads/issues.jsonl"),
+            issue_line("AUTH-1", "Historical title", "open", 1),
+        )
+        .expect("historical authoritative snapshot");
+        commit(root, "historical export declaration");
+
+        fs::create_dir(root.join("archive")).expect("new export directory");
+        fs::write(
+            root.join(".beads/metadata.json"),
+            r#"{"jsonl_export":"../archive/current issues.jsonl"}"#,
+        )
+        .expect("current metadata");
+        fs::write(
+            root.join("archive/current issues.jsonl"),
+            issue_line("AUTH-1", "Current title", "open", 1),
+        )
+        .expect("current authoritative snapshot");
+        commit(root, "move authoritative export");
+
+        for (revision, title) in [("HEAD~1", "Historical title"), ("HEAD", "Current title")] {
+            let output = json(root, &["--robot-triage", "--as-of", revision]);
+            let recommendations = output["triage"]["recommendations"]
+                .as_array()
+                .expect("recommendations");
+            assert_eq!(recommendations.len(), 1);
+            assert_eq!(recommendations[0]["id"], "AUTH-1");
+            assert_eq!(recommendations[0]["title"], title);
+        }
+        let diff = json(root, &["--robot-diff", "--diff-since", "HEAD~1"]);
+        assert_eq!(diff["diff"]["summary"]["issues_added"], 0);
+        assert_eq!(diff["diff"]["summary"]["issues_removed"], 0);
+        assert_eq!(diff["diff"]["summary"]["issues_modified"], 1);
+        let modified = &diff["diff"]["modified_issues"][0];
+        assert_eq!(modified["issue_id"], "AUTH-1");
+        assert!(
+            modified["changes"]
+                .as_array()
+                .expect("changes")
+                .iter()
+                .any(|change| {
+                    change["field"] == "title"
+                        && change["old_value"] == "Historical title"
+                        && change["new_value"] == "Current title"
+                })
+        );
+    }
+
+    #[test]
+    fn authoritative_empty_snapshots_do_not_resurrect_stale_alternatives() {
+        for empty in ["", "\u{feff}\n \t\n"] {
+            let directory = tempfile::tempdir().expect("empty history fixture");
+            let root = directory.path();
+            initialize(root);
+            fs::write(
+                root.join(".beads/metadata.json"),
+                r#"{"jsonl_export":"issues.jsonl"}"#,
+            )
+            .expect("metadata");
+            fs::write(root.join(".beads/issues.jsonl"), empty)
+                .expect("empty authoritative snapshot");
+            fs::write(
+                root.join(".beads/beads.jsonl"),
+                issue_line("STALE-1", "Stale issue", "open", 1),
+            )
+            .expect("nonempty alternative");
+            commit(root, "empty authoritative baseline");
+            fs::write(
+                root.join(".beads/issues.jsonl"),
+                issue_line("NEW-1", "First issue", "open", 1),
+            )
+            .expect("new issue");
+            commit(root, "create first authoritative issue");
+
+            // --db <directory> must use the same historical authority as
+            // automatic repository discovery.
+            for source in [None, Some(root.join(".beads"))] {
+                let mut command = command(root);
+                command.args(["--robot-triage", "--as-of", "HEAD~1"]);
+                if let Some(source) = source {
+                    command.arg("--db").arg(source);
+                }
+                let output = command.assert().success().get_output().stdout.clone();
+                let value: Value =
+                    serde_json::from_slice(&output).expect("empty historical triage");
+                assert_eq!(value["triage"]["quick_ref"]["total_open"], 0);
+            }
+            let diff = json(root, &["--robot-diff", "--diff-since", "HEAD~1"]);
+            assert_eq!(diff["diff"]["summary"]["issues_added"], 1);
+            assert_eq!(diff["diff"]["new_issues"][0]["id"], "NEW-1");
+            assert_eq!(diff["diff"]["summary"]["issues_removed"], 0);
+        }
+    }
+
+    #[test]
+    fn corrupt_snapshots_are_rejected_for_git_and_file_baselines() {
+        let valid = issue_line("SAFE-1", "Current issue", "open", 1);
+        let conflicts = format!("<<<<<<< HEAD\n{valid}\n=======\n{valid}\n>>>>>>> incoming\n");
+        let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+            (
+                "lfs",
+                b"version https://git-lfs.github.com/spec/v1\noid sha256:0123\nsize 123\n".to_vec(),
+                "Git LFS pointer",
+            ),
+            ("conflict", conflicts.into_bytes(), "merge conflict marker"),
+            ("nul", format!("{valid}\n\0\n").into_bytes(), "NUL"),
+            (
+                "utf8",
+                b"{\"id\":\"BAD-1\",\"title\":\"invalid \xff\",\"status\":\"open\"}\n".to_vec(),
+                "UTF-8",
+            ),
+            (
+                "malformed",
+                b"this is not JSONL\n".to_vec(),
+                "no valid issue records",
+            ),
+            (
+                "invalid-issue",
+                b"{\"title\":\"missing ID\"}\n".to_vec(),
+                "no valid issue records",
+            ),
+            (
+                "custom-only",
+                issue_line("CUSTOM-1", "Unrecognized", "reference", 1).into_bytes(),
+                "no valid issue records",
+            ),
+        ];
+        for (name, bytes, diagnostic) in cases {
+            let directory = tempfile::tempdir().expect("corrupt history fixture");
+            let root = directory.path();
+            initialize(root);
+            let issues = root.join(".beads/issues.jsonl");
+            fs::write(&issues, &bytes).expect("corrupt historical snapshot");
+            fs::write(
+                root.join(".beads/metadata.json"),
+                r#"{"jsonl_export":"issues.jsonl"}"#,
+            )
+            .expect("metadata");
+            commit(root, name);
+            fs::write(&issues, &valid).expect("valid current snapshot");
+            commit(root, "repair current snapshot");
+
+            assert_rejected(root, &[".beads/issues.jsonl", diagnostic], None);
+            assert_rejected(root, &[".beads/issues.jsonl", diagnostic], Some(&issues));
+
+            let baseline = root.join("baseline.jsonl");
+            fs::write(&baseline, &bytes).expect("corrupt file baseline");
+            let output = command(root)
+                .args(["--robot-diff", "--diff-since"])
+                .arg(&baseline)
+                .assert()
+                .failure()
+                .get_output()
+                .clone();
+            assert!(
+                output.stdout.is_empty(),
+                "corrupt {name} file must not publish a diff"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("baseline.jsonl") && stderr.contains(diagnostic),
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_unreadable_metadata_authority_cannot_fall_back() {
+        for (metadata, diagnostic) in [
+            ("{not json", "metadata.json"),
+            (r#"{"jsonl_export":"missing.jsonl"}"#, "missing.jsonl"),
+            (
+                r#"{"jsonl_export":"../../outside.jsonl"}"#,
+                "escapes the historical repository",
+            ),
+            (r#"{"jsonl_export":"directory"}"#, "complete Git blob"),
+        ] {
+            let directory = tempfile::tempdir().expect("metadata fixture");
+            let root = directory.path();
+            initialize(root);
+            fs::write(root.join(".beads/metadata.json"), metadata).expect("historical metadata");
+            fs::write(
+                root.join(".beads/beads.jsonl"),
+                issue_line("STALE-1", "Stale alternative", "open", 1),
+            )
+            .expect("stale alternative");
+            fs::create_dir(root.join(".beads/directory")).expect("non-blob declaration");
+            fs::write(root.join(".beads/directory/entry"), "tracked tree entry")
+                .expect("tree contents");
+            commit(root, "invalid historical authority");
+            fs::write(
+                root.join(".beads/metadata.json"),
+                r#"{"jsonl_export":"issues.jsonl"}"#,
+            )
+            .expect("current metadata");
+            fs::write(
+                root.join(".beads/issues.jsonl"),
+                issue_line("CURRENT-1", "Current issue", "open", 1),
+            )
+            .expect("current issue");
+            commit(root, "repair authority");
+            assert_rejected(root, &[diagnostic], None);
+        }
+    }
+
+    #[test]
+    fn damaged_committed_objects_are_not_classified_as_absent_history() {
+        for path in [".beads/metadata.json", ".beads/issues.jsonl"] {
+            let directory = tempfile::tempdir().expect("damaged Git object fixture");
+            let root = directory.path();
+            initialize(root);
+            fs::write(
+                root.join(".beads/metadata.json"),
+                r#"{"jsonl_export":"issues.jsonl"}"#,
+            )
+            .expect("metadata");
+            fs::write(
+                root.join(".beads/issues.jsonl"),
+                issue_line("OLD-1", "Historical issue", "open", 1),
+            )
+            .expect("historical issue");
+            fs::write(
+                root.join(".beads/beads.jsonl"),
+                issue_line("STALE-1", "Stale fallback", "open", 1),
+            )
+            .expect("stale fallback");
+            commit(root, "historical objects");
+            fs::write(
+                root.join(".beads/issues.jsonl"),
+                issue_line("CURRENT-1", "Current issue", "open", 1),
+            )
+            .expect("current issue");
+            commit(root, "current objects");
+
+            let output = ProcessCommand::new("git")
+                .current_dir(root)
+                .args(["rev-parse", &format!("HEAD~1:{path}")])
+                .output()
+                .expect("historical object ID");
+            assert!(output.status.success());
+            let oid = String::from_utf8(output.stdout).expect("object ID");
+            let (prefix, suffix) = oid.trim().split_at(2);
+            let object = root.join(".git/objects").join(prefix).join(suffix);
+            assert!(object.is_file(), "fixture should use a loose object");
+            damage_loose_object(&object, b"damaged object data");
+
+            assert_rejected(root, &[path, "unreadable"], None);
+        }
+    }
+
+    #[test]
+    fn explicit_directory_history_resolves_the_same_redirect_as_live_loading() {
+        let directory = tempfile::tempdir().expect("redirected history fixture");
+        let root = directory.path();
+        initialize(root);
+        let target = root.join("shared/.beads");
+        fs::create_dir_all(&target).expect("redirect target");
+        fs::write(root.join(".beads/redirect"), "../shared/.beads\n").expect("redirect");
+        fs::write(
+            root.join(".beads/beads.jsonl"),
+            issue_line("STALE-1", "Local stale export", "open", 1),
+        )
+        .expect("stale local export");
+        fs::write(
+            target.join("metadata.json"),
+            r#"{"jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("target metadata");
+        fs::write(
+            target.join("issues.jsonl"),
+            issue_line("AUTH-1", "Historical target", "open", 1),
+        )
+        .expect("historical target");
+        commit(root, "redirected baseline");
+        fs::write(
+            target.join("issues.jsonl"),
+            issue_line("AUTH-1", "Current target", "open", 1),
+        )
+        .expect("current target");
+        commit(root, "update redirected target");
+
+        let output = command(root)
+            .arg("--db")
+            .arg(root.join(".beads"))
+            .args(["--robot-triage", "--as-of", "HEAD~1"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let historical: Value = serde_json::from_slice(&output).expect("historical target triage");
+        assert_eq!(historical["triage"]["recommendations"][0]["id"], "AUTH-1");
+        assert_eq!(
+            historical["triage"]["recommendations"][0]["title"],
+            "Historical target"
+        );
+        let output = command(root)
+            .arg("--db")
+            .arg(root.join(".beads"))
+            .args(["--robot-diff", "--diff-since", "HEAD~1"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let diff: Value = serde_json::from_slice(&output).expect("redirected target diff");
+        assert_eq!(diff["diff"]["summary"]["issues_added"], 0);
+        assert_eq!(diff["diff"]["summary"]["issues_removed"], 0);
+        assert_eq!(diff["diff"]["summary"]["issues_modified"], 1);
+
+        fs::create_dir(root.join(".bv")).expect("workspace directory");
+        fs::write(
+            root.join(".bv/workspace.yaml"),
+            "repos:\n  - path: .\n    prefix: project-\n",
+        )
+        .expect("single-repository workspace");
+        let historical = json(root, &["--robot-triage", "--as-of", "HEAD~1"]);
+        assert_eq!(
+            historical["triage"]["recommendations"][0]["title"],
+            "Historical target"
+        );
+        let diff = json(root, &["--robot-diff", "--diff-since", "HEAD~1"]);
+        assert_eq!(diff["diff"]["summary"]["issues_added"], 0);
+        assert_eq!(diff["diff"]["summary"]["issues_removed"], 0);
+        assert_eq!(diff["diff"]["summary"]["issues_modified"], 1);
+    }
+
+    #[test]
+    fn corrupt_intermediate_commits_cannot_hide_existing_workspace_members() {
+        let directory = tempfile::tempdir().expect("damaged ancestor fixture");
+        let root = directory.path();
+        let good = issue_line("GOOD-1", "Good issue", "open", 1);
+        let bad = issue_line("BAD-1", "Affected issue", "open", 1);
+        setup_workspace(root, &[("good", &good), ("bad", &bad)]);
+        for member in ["good", "bad"] {
+            let repo = root.join(member);
+            run_git(&repo, &["init"], None);
+            commit(&repo, "initial snapshot");
+            fs::write(repo.join("change.txt"), "first change").expect("intermediate content");
+            commit(&repo, "intermediate commit");
+            fs::write(repo.join("change.txt"), "second change").expect("latest content");
+            commit(&repo, "latest commit");
+        }
+        let repo = root.join("bad");
+        let output = ProcessCommand::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "HEAD~1"])
+            .output()
+            .expect("intermediate commit ID");
+        assert!(output.status.success());
+        let oid = String::from_utf8(output.stdout).expect("commit ID");
+        let (prefix, suffix) = oid.trim().split_at(2);
+        let object = repo.join(".git/objects").join(prefix).join(suffix);
+        assert!(object.is_file(), "fixture should use a loose commit");
+        damage_loose_object(&object, b"damaged intermediate commit");
+        assert_revision_rejected(root, "HEAD~2", &["workspace repo 'bad'", "corrupt"], None);
+    }
+
+    #[test]
+    fn mixed_record_tolerance_keeps_only_the_last_valid_record_per_id() {
+        let directory = tempfile::tempdir().expect("duplicate history fixture");
+        let root = directory.path();
+        initialize(root);
+        let final_record = issue_line("DUP-1", "Final title", "closed", 1);
+        let baseline = format!(
+            "\u{feff}{}\n{}\nnot json\n{final_record}\n",
+            issue_line("DUP-1", "Old title", "open", 1),
+            issue_line("CUSTOM-1", "Custom status", "reference", 1),
+        );
+        fs::write(root.join(".beads/issues.jsonl"), &baseline).expect("mixed baseline");
+        commit(root, "append duplicate update among tolerated records");
+        fs::write(root.join(".beads/issues.jsonl"), &final_record)
+            .expect("compacted current snapshot");
+        commit(root, "compact valid records");
+
+        let historical = json(root, &["--robot-triage", "--as-of", "HEAD~1"]);
+        let current = json(root, &["--robot-triage"]);
+        assert_eq!(historical["triage"]["quick_ref"]["total_open"], 0);
+        assert_eq!(historical["data_hash"], current["data_hash"]);
+        let diff = json(root, &["--robot-diff", "--diff-since", "HEAD~1"]);
+        assert_eq!(diff["diff"]["summary"]["total_changes"], 0);
+        assert_eq!(diff["from_data_hash"], diff["data_hash"]);
+
+        fs::write(root.join("baseline.jsonl"), &baseline).expect("mixed file baseline");
+        let file_diff = json(root, &["--robot-diff", "--diff-since", "baseline.jsonl"]);
+        assert_eq!(file_diff["diff"]["summary"]["total_changes"], 0);
+        assert_eq!(file_diff["from_data_hash"], diff["from_data_hash"]);
+    }
+
+    #[test]
+    fn corrupt_existing_workspace_members_do_not_disappear_from_history() {
+        let directory = tempfile::tempdir().expect("workspace history fixture");
+        let root = directory.path();
+        let good = issue_line("GOOD-1", "Good issue", "open", 1);
+        setup_workspace(root, &[("good", &good), ("bad", "not JSONL\n")]);
+        run_git(root, &["init"], None);
+        commit(root, "corrupt member baseline");
+        write_beads(
+            &root.join("bad"),
+            &issue_line("BAD-1", "Repaired issue", "open", 1),
+        );
+        commit(root, "repair member");
+
+        assert_rejected(
+            root,
+            &[
+                "workspace repo 'bad'",
+                "bad/.beads/beads.jsonl",
+                "no valid issue records",
+            ],
+            None,
+        );
+    }
+
+    #[test]
+    fn members_added_after_the_baseline_remain_supported_with_empty_or_nonempty_peers() {
+        for good in [
+            String::new(),
+            issue_line("GOOD-1", "Existing issue", "open", 1),
+        ] {
+            let directory = tempfile::tempdir().expect("new workspace member fixture");
+            let root = directory.path();
+            let added = issue_line("NEW-1", "New member issue", "open", 1);
+            setup_workspace(root, &[("good", &good), ("new", &added)]);
+            run_git(root, &["init"], None);
+            run_git(root, &["add", ".bv", "good"], None);
+            run_git(root, &["commit", "-m", "before new member"], None);
+            commit(root, "add new member snapshot");
+
+            let historical = json(root, &["--robot-triage", "--as-of", "HEAD~1"]);
+            assert_eq!(
+                historical["triage"]["quick_ref"]["total_open"],
+                usize::from(!good.is_empty())
+            );
+            let diff = json(root, &["--robot-diff", "--diff-since", "HEAD~1"]);
+            assert_eq!(diff["diff"]["summary"]["issues_added"], 1);
+            assert_eq!(diff["diff"]["new_issues"][0]["title"], "New member issue");
+            assert_eq!(diff["diff"]["summary"]["issues_removed"], 0);
+        }
+    }
+}
+
 fn setup_git_repo_with_history(root: &Path) {
     run_git(root, &["init"], None);
     fs::create_dir_all(root.join(".beads")).expect("mkdir .beads");

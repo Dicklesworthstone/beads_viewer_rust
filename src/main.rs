@@ -3531,25 +3531,124 @@ fn load_issues_from_git_relative_path(
     relative_path: &Path,
     revision: &str,
 ) -> bvr::Result<Vec<bvr::model::Issue>> {
-    let git_ref = format!("{revision}:{}", relative_path.to_string_lossy());
+    let bytes = read_historical_blob(
+        repo_root,
+        relative_path,
+        revision,
+        HISTORICAL_SNAPSHOT_MAX_BYTES,
+    )?;
+    let text = std::str::from_utf8(&bytes).map_err(|error| {
+        bvr::BvrError::InvalidIssue(format!(
+            "historical snapshot {} at revision {revision} is not UTF-8: {error}",
+            relative_path.display()
+        ))
+    })?;
+    parse_issues_from_jsonl_text(text).map_err(|error| {
+        bvr::BvrError::InvalidIssue(format!(
+            "historical snapshot {} at revision {revision}: {error}",
+            relative_path.display()
+        ))
+    })
+}
+
+const HISTORICAL_SNAPSHOT_MAX_BYTES: u64 = 128 * 1024 * 1024;
+const HISTORICAL_METADATA_MAX_BYTES: u64 = 1024 * 1024;
+
+fn resolve_historical_commit(repo_root: &Path, revision: &str) -> bvr::Result<Option<String>> {
+    // Pin the revision once so metadata and its declared snapshot cannot come
+    // from different commits when a branch advances during the load.
     let output = Command::new("git")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .arg("-C")
         .arg(repo_root)
-        .arg("show")
-        .arg(&git_ref)
+        .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+        .arg(format!("{revision}^{{commit}}"))
         .output()?;
-
     if !output.status.success() {
-        return Err(bvr::BvrError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "could not load {} at revision {revision}",
-                relative_path.display()
-            ),
-        )));
+        let is_absent = |output: &std::process::Output| {
+            output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty()
+        };
+        if !is_absent(&output) {
+            return Err(bvr::BvrError::InvalidIssue(format!(
+                "could not read historical revision {revision} in {}: {}",
+                repo_root.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let named = Command::new("git")
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
+            .arg(revision)
+            .output()?;
+        if !is_absent(&named) {
+            return Err(bvr::BvrError::InvalidIssue(format!(
+                "historical revision {revision} is not a readable commit in {}: {}",
+                repo_root.display(),
+                String::from_utf8_lossy(&named.stderr).trim()
+            )));
+        }
+        return Ok(None);
+    }
+    let commit = String::from_utf8(output.stdout).map_err(|error| {
+        bvr::BvrError::InvalidArgument(format!(
+            "git returned an invalid commit for revision {revision}: {error}"
+        ))
+    })?;
+    Ok(Some(commit.trim().to_string()))
+}
+
+fn read_historical_blob(
+    repo_root: &Path,
+    relative_path: &Path,
+    revision: &str,
+    max_bytes: u64,
+) -> bvr::Result<Vec<u8>> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let object_spec = format!("{revision}:{}", relative_path.to_string_lossy());
+    let invalid = |detail: String| {
+        bvr::BvrError::InvalidIssue(format!(
+            "historical file {} at revision {revision}: {detail}",
+            relative_path.display()
+        ))
+    };
+    let size = git_blob_size(repo_root, &object_spec)?
+        .ok_or_else(|| invalid("declared snapshot is missing or unreadable".to_string()))?;
+    if size > max_bytes {
+        return Err(invalid(format!("exceeds {max_bytes} bytes")));
     }
 
-    parse_issues_from_jsonl_text(&String::from_utf8_lossy(&output.stdout))
+    // Request raw blob bytes, without pretty-printing a tree or invoking a
+    // worktree filter. Bound the actual read as well as Git's reported size.
+    let mut child = Command::new("git")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["cat-file", "blob"])
+        .arg(&object_spec)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child.stdout.take().expect("piped Git blob stdout");
+    let mut bytes = Vec::new();
+    let result = stdout.take(max_bytes + 1).read_to_end(&mut bytes);
+    if result.is_err() || bytes.len() as u64 > max_bytes {
+        let _ = child.kill();
+        let _ = child.wait();
+        result.map_err(|error| invalid(format!("could not read blob: {error}")))?;
+        return Err(invalid(format!("exceeds {max_bytes} bytes")));
+    }
+    let status = child.wait()?;
+    if !status.success() || bytes.len() as u64 != size {
+        return Err(invalid(format!(
+            "could not read a complete Git blob ({status})"
+        )));
+    }
+    Ok(bytes)
 }
 
 fn historical_jsonl_skip_file_name(file_name: &str) -> bool {
@@ -3563,6 +3662,7 @@ fn historical_jsonl_skip_file_name(file_name: &str) -> bool {
 
 fn git_blob_size(repo_root: &Path, object_spec: &str) -> bvr::Result<Option<u64>> {
     let output = Command::new("git")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .arg("-C")
         .arg(repo_root)
         .arg("cat-file")
@@ -3571,6 +3671,29 @@ fn git_blob_size(repo_root: &Path, object_spec: &str) -> bvr::Result<Option<u64>
         .output()?;
 
     if !output.status.success() {
+        // A failed cat-file can mean a missing path or a damaged object.
+        // Inspect its tree entry before classifying the snapshot as absent:
+        // ls-tree need not open the referenced blob to prove it was committed.
+        let (revision, path) = object_spec.split_once(':').ok_or_else(|| {
+            bvr::BvrError::InvalidArgument(format!(
+                "invalid historical Git object specification: {object_spec}"
+            ))
+        })?;
+        let entry = Command::new("git")
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .arg("--literal-pathspecs")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["ls-tree", "-z", "--full-tree"])
+            .arg(revision)
+            .arg("--")
+            .arg(path)
+            .output()?;
+        if !entry.status.success() || !entry.stdout.is_empty() {
+            return Err(bvr::BvrError::InvalidIssue(format!(
+                "historical Git object {object_spec} is unreadable; its absence could not be established"
+            )));
+        }
         return Ok(None);
     }
 
@@ -3587,37 +3710,75 @@ fn resolve_historical_jsonl_relative_path(
     repo_root: &Path,
     beads_dir_relative: &Path,
     revision: &str,
-) -> bvr::Result<PathBuf> {
+) -> bvr::Result<Option<PathBuf>> {
+    let metadata_path = beads_dir_relative.join("metadata.json");
+    let metadata_spec = format!("{revision}:{}", metadata_path.to_string_lossy());
+    if git_blob_size(repo_root, &metadata_spec)?.is_some() {
+        let bytes = read_historical_blob(
+            repo_root,
+            &metadata_path,
+            revision,
+            HISTORICAL_METADATA_MAX_BYTES,
+        )?;
+        let metadata: loader::BeadsMetadata = serde_json::from_slice(&bytes).map_err(|error| {
+            bvr::BvrError::InvalidIssue(format!(
+                "historical metadata {} at revision {revision} is invalid: {error}",
+                metadata_path.display()
+            ))
+        })?;
+        let declared = metadata.jsonl_export.trim();
+        if !declared.is_empty() {
+            let path = historical_metadata_jsonl_path(repo_root, beads_dir_relative, declared)
+                .map_err(|error| {
+                    bvr::BvrError::InvalidIssue(format!(
+                        "historical metadata {} at revision {revision}: {error}",
+                        metadata_path.display()
+                    ))
+                })?;
+            // An explicit export remains authoritative when empty or missing.
+            // The blob reader diagnoses a missing declaration instead of
+            // silently choosing a different, potentially stale issue file.
+            return Ok(Some(path));
+        }
+    }
+
     for preferred in ["beads.jsonl", "issues.jsonl", "beads.base.jsonl"] {
         let candidate = beads_dir_relative.join(preferred);
         let object_spec = format!("{revision}:{}", candidate.to_string_lossy());
         if git_blob_size(repo_root, &object_spec)?.is_some_and(|size| size > 0) {
-            return Ok(candidate);
+            return Ok(Some(candidate));
         }
     }
 
     let directory_spec = format!("{revision}:{}", beads_dir_relative.to_string_lossy());
+    if git_blob_size(repo_root, &directory_spec)?.is_none() {
+        return Ok(None);
+    }
     let output = Command::new("git")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .arg("-C")
         .arg(repo_root)
         .arg("ls-tree")
         .arg("--name-only")
+        .arg("-z")
         .arg(&directory_spec)
         .output()?;
 
     if !output.status.success() {
-        return Err(bvr::BvrError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "could not resolve historical beads directory {} at revision {revision}",
-                beads_dir_relative.display()
-            ),
+        return Err(bvr::BvrError::InvalidIssue(format!(
+            "could not read historical beads directory {} at revision {revision}",
+            beads_dir_relative.display()
         )));
     }
 
-    let mut fallback_candidates = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
+    let names = std::str::from_utf8(&output.stdout).map_err(|error| {
+        bvr::BvrError::InvalidIssue(format!(
+            "historical beads directory {} at revision {revision} contains invalid UTF-8 paths: {error}",
+            beads_dir_relative.display()
+        ))
+    })?;
+    let mut fallback_candidates = names
+        .split('\0')
         .filter(|line| !line.is_empty())
         .filter(|line| line.ends_with(".jsonl"))
         .filter(|line| !historical_jsonl_skip_file_name(&line.to_ascii_lowercase()))
@@ -3625,34 +3786,79 @@ fn resolve_historical_jsonl_relative_path(
         .collect::<Vec<_>>();
     fallback_candidates.sort();
 
-    fallback_candidates
+    Ok(fallback_candidates
         .into_iter()
         .next()
-        .map(|relative_file_name| beads_dir_relative.join(relative_file_name))
-        .ok_or_else(|| {
-            bvr::BvrError::InvalidArgument(format!(
-                "could not resolve historical beads JSONL inside {} at revision {revision}",
-                beads_dir_relative.display()
-            ))
-        })
+        .map(|relative_file_name| beads_dir_relative.join(relative_file_name)))
+}
+
+fn historical_metadata_jsonl_path(
+    repo_root: &Path,
+    beads_dir_relative: &Path,
+    declared: &str,
+) -> bvr::Result<PathBuf> {
+    use std::path::Component;
+
+    let declared = Path::new(declared);
+    let joined = if declared.is_absolute() {
+        declared
+            .strip_prefix(repo_root)
+            .map_err(|_| {
+                bvr::BvrError::InvalidIssue(format!(
+                    "jsonl_export {} is outside repository {}",
+                    declared.display(),
+                    repo_root.display()
+                ))
+            })?
+            .to_path_buf()
+    } else {
+        beads_dir_relative.join(declared)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            Component::ParentDir if normalized.pop() => {}
+            _ => {
+                return Err(bvr::BvrError::InvalidIssue(format!(
+                    "jsonl_export {} escapes the historical repository",
+                    declared.display()
+                )));
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 fn load_issues_from_history_beads_dir(
     beads_dir: &Path,
     revision: &str,
-) -> bvr::Result<Vec<bvr::model::Issue>> {
-    let absolute_beads_dir = absolute_from_current_dir(beads_dir);
-    let repo_root = resolve_git_toplevel(
+) -> bvr::Result<Option<Vec<bvr::model::Issue>>> {
+    let beads_dir = loader::resolve_beads_redirect(beads_dir)?;
+    let absolute_beads_dir = absolute_from_current_dir(&beads_dir);
+    let Some(repo_root) = resolve_git_toplevel(
         absolute_beads_dir
             .parent()
             .unwrap_or_else(|| Path::new(".")),
-    )
-    .ok_or_else(|| {
-        bvr::BvrError::InvalidArgument(format!(
-            "could not determine repository root for historical beads dir {}",
-            absolute_beads_dir.display()
-        ))
-    })?;
+    ) else {
+        // A checkout without Git history can be absent from a workspace
+        // baseline. A present but unusable Git marker is a damaged source.
+        for ancestor in absolute_beads_dir.ancestors().skip(1) {
+            let marker = ancestor.join(".git");
+            match fs::symlink_metadata(&marker) {
+                Ok(_) => {
+                    return Err(bvr::BvrError::InvalidIssue(format!(
+                        "could not resolve historical repository with Git marker {} at revision {revision}",
+                        marker.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(bvr::BvrError::Io(error)),
+            }
+        }
+        return Ok(None);
+    };
     let beads_dir_relative = absolute_beads_dir.strip_prefix(&repo_root).map_err(|_| {
         bvr::BvrError::InvalidArgument(format!(
             "historical beads dir {} is outside repository root {}",
@@ -3660,16 +3866,37 @@ fn load_issues_from_history_beads_dir(
             repo_root.display()
         ))
     })?;
-    let jsonl_relative =
-        resolve_historical_jsonl_relative_path(&repo_root, beads_dir_relative, revision)?;
-
-    load_issues_from_git_relative_path(&repo_root, &jsonl_relative, revision)
+    let Some(commit) = resolve_historical_commit(&repo_root, revision)? else {
+        return Ok(None);
+    };
+    let result = (|| {
+        let Some(jsonl_relative) =
+            resolve_historical_jsonl_relative_path(&repo_root, beads_dir_relative, &commit)?
+        else {
+            return Ok(None);
+        };
+        load_issues_from_git_relative_path(&repo_root, &jsonl_relative, &commit).map(Some)
+    })();
+    result.map_err(|error| {
+        bvr::BvrError::InvalidIssue(format!(
+            "could not load historical snapshot in {} at revision {revision}: {error}",
+            absolute_beads_dir.display()
+        ))
+    })
 }
 
 fn load_issues_from_history_file_path(
     path: &Path,
     revision: &str,
 ) -> bvr::Result<Vec<bvr::model::Issue>> {
+    if path.is_dir() {
+        return load_issues_from_history_beads_dir(path, revision)?.ok_or_else(|| {
+            bvr::BvrError::InvalidArgument(format!(
+                "could not resolve historical beads JSONL inside {} at revision {revision}",
+                path.display()
+            ))
+        });
+    }
     let absolute_path = absolute_from_current_dir(path);
     let repo_root = resolve_git_toplevel(absolute_path.parent().unwrap_or_else(|| Path::new(".")))
         .ok_or_else(|| {
@@ -3686,7 +3913,18 @@ fn load_issues_from_history_file_path(
         ))
     })?;
 
-    load_issues_from_git_relative_path(&repo_root, relative_path, revision)
+    let commit = resolve_historical_commit(&repo_root, revision)?.ok_or_else(|| {
+        bvr::BvrError::InvalidArgument(format!(
+            "could not resolve historical revision {revision} for {}",
+            relative_path.display()
+        ))
+    })?;
+    load_issues_from_git_relative_path(&repo_root, relative_path, &commit).map_err(|error| {
+        bvr::BvrError::InvalidIssue(format!(
+            "could not load historical snapshot {} at revision {revision}: {error}",
+            relative_path.display()
+        ))
+    })
 }
 
 fn load_workspace_issues_at_revision(
@@ -3707,7 +3945,8 @@ fn load_workspace_issues_at_revision(
         .collect::<Vec<_>>();
 
     let mut all_issues = Vec::new();
-    let mut failed_repos = Vec::new();
+    let mut absent_repos = Vec::new();
+    let mut loaded_repos = 0usize;
 
     for repo in enabled_repos {
         let repo_name = repo.effective_name();
@@ -3719,30 +3958,40 @@ fn load_workspace_issues_at_revision(
         };
         let beads_dir = repo_path.join(repo.effective_beads_path(Some(&config.defaults)));
 
-        let repo_issues = (|| -> bvr::Result<Vec<bvr::model::Issue>> {
-            let mut issues = load_issues_from_history_beads_dir(&beads_dir, revision)?;
-            loader::namespace_workspace_issues(&mut issues, &prefix, &repo_name, &known_prefixes);
-            Ok(issues)
-        })();
-
-        match repo_issues {
-            Ok(mut issues) => all_issues.append(&mut issues),
-            Err(error) => {
-                tracing::warn!(
-                    "workspace repo '{}' failed to load at {}: {}",
-                    repo_name,
-                    revision,
-                    error
+        match load_issues_from_history_beads_dir(&beads_dir, revision) {
+            Ok(Some(mut issues)) => {
+                loader::namespace_workspace_issues(
+                    &mut issues,
+                    &prefix,
+                    &repo_name,
+                    &known_prefixes,
                 );
-                failed_repos.push(repo_name);
+                all_issues.append(&mut issues);
+                loaded_repos += 1;
+            }
+            Ok(None) => {
+                // A repository added after the baseline legitimately has no
+                // historical snapshot. Corrupt existing snapshots take the
+                // error branch below and must never disappear from a diff.
+                tracing::warn!(
+                    "workspace repo '{}' has no historical snapshot at {}",
+                    repo_name,
+                    revision
+                );
+                absent_repos.push(repo_name);
+            }
+            Err(error) => {
+                return Err(bvr::BvrError::InvalidIssue(format!(
+                    "workspace repo '{repo_name}' failed to load at revision {revision}: {error}"
+                )));
             }
         }
     }
 
-    if all_issues.is_empty() && !failed_repos.is_empty() {
+    if loaded_repos == 0 && !absent_repos.is_empty() {
         return Err(bvr::BvrError::InvalidArgument(format!(
             "workspace historical load failed for all repositories at {revision}: {}",
-            failed_repos.join(", ")
+            absent_repos.join(", ")
         )));
     }
 
@@ -3796,7 +4045,28 @@ fn resolve_forecast_sprint_beads(cli: &Cli, sprint_id: &str) -> bvr::Result<BTre
 
 fn load_issues_for_diff(cli: &Cli, diff_since: &str) -> bvr::Result<Vec<bvr::model::Issue>> {
     if let Some(path) = resolve_cli_reference_file_path(diff_since, cli) {
-        let mut issues = loader::load_issues_from_file(&path)?;
+        use std::io::Read;
+
+        let invalid = |detail: String| {
+            bvr::BvrError::InvalidIssue(format!(
+                "historical snapshot {} for --diff-since={diff_since}: {detail}",
+                path.display()
+            ))
+        };
+        let mut bytes = Vec::new();
+        fs::File::open(&path)?
+            .take(HISTORICAL_SNAPSHOT_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| invalid(format!("could not read snapshot: {error}")))?;
+        if bytes.len() as u64 > HISTORICAL_SNAPSHOT_MAX_BYTES {
+            return Err(invalid(format!(
+                "exceeds {HISTORICAL_SNAPSHOT_MAX_BYTES} bytes"
+            )));
+        }
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|error| invalid(format!("snapshot is not UTF-8: {error}")))?;
+        let mut issues =
+            parse_issues_from_jsonl_text(text).map_err(|error| invalid(error.to_string()))?;
         // When the current load target is a workspace, namespace the baseline
         // issues the same way the live workspace pipeline does, so diff IDs match.
         if let Ok(IssueLoadTarget::WorkspaceConfig(config_path)) = resolve_issue_load_target(cli) {
@@ -3841,7 +4111,12 @@ fn load_historical_issues_for_load_target(
         IssueLoadTarget::RepoPath(repo_path) => {
             let beads_dir = loader::get_beads_dir(repo_path.as_deref())
                 .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
-            load_issues_from_history_beads_dir(&beads_dir, reference)
+            load_issues_from_history_beads_dir(&beads_dir, reference)?.ok_or_else(|| {
+                bvr::BvrError::InvalidArgument(format!(
+                    "could not resolve historical beads JSONL inside {} at revision {reference}",
+                    beads_dir.display()
+                ))
+            })
         }
     }
 }
@@ -3925,16 +4200,16 @@ fn latest_commit_sha(cli: &Cli) -> Option<String> {
     }
 }
 
-/// Parse issues from historical JSONL text (e.g. `git show` output) with the
-/// same tolerance as the live loader path (`loader::parse_issues_from_text`):
-/// invalid records — including unknown custom statuses that `br` accepts but
-/// `KNOWN_STATUSES` does not — are warned about and skipped rather than
-/// aborting the whole load. Before this, a single custom-status record made
-/// every git-ref time travel fail even though the identical bytes loaded fine
-/// through the file-path form (issue #24).
+/// Preserve the live loader's mixed-record tolerance and last-record-wins
+/// behavior, while refusing files that cannot establish a historical snapshot.
+/// In particular, a corrupt nonempty baseline is not an empty issue database.
 fn parse_issues_from_jsonl_text(text: &str) -> bvr::Result<Vec<bvr::model::Issue>> {
-    let mut issues = Vec::<bvr::model::Issue>::new();
-
+    if text.contains('\0') {
+        return Err(bvr::BvrError::InvalidIssue(
+            "historical snapshot contains NUL bytes".to_string(),
+        ));
+    }
+    let mut nonblank = false;
     for (index, raw_line) in text.lines().enumerate() {
         let line_no = index + 1;
         let line = if index == 0 {
@@ -3945,36 +4220,29 @@ fn parse_issues_from_jsonl_text(text: &str) -> bvr::Result<Vec<bvr::model::Issue
         if line.is_empty() {
             continue;
         }
-
-        match serde_json::from_str::<bvr::model::Issue>(line) {
-            Ok(mut issue) => {
-                issue.status = issue.normalized_status();
-                if let Err(error) = issue.validate() {
-                    warn_historical_snapshot_skip(format!(
-                        "skipping invalid issue on line {line_no} in historical snapshot: {error}"
-                    ));
-                    continue;
-                }
-                issues.push(issue);
-            }
-            Err(error) => {
-                warn_historical_snapshot_skip(format!(
-                    "skipping malformed JSON on line {line_no} in historical snapshot: {error}"
-                ));
-            }
+        nonblank = true;
+        if line.starts_with("version https://git-lfs.github.com/spec/") {
+            return Err(bvr::BvrError::InvalidIssue(format!(
+                "historical snapshot is a Git LFS pointer on line {line_no}; materialize the JSONL snapshot"
+            )));
+        }
+        if line.starts_with("<<<<<<<")
+            || line.starts_with("|||||||")
+            || line.starts_with("=======")
+            || line.starts_with(">>>>>>>")
+        {
+            return Err(bvr::BvrError::InvalidIssue(format!(
+                "historical snapshot contains a merge conflict marker on line {line_no}"
+            )));
         }
     }
-
-    Ok(issues)
-}
-
-/// Warning channel for tolerant historical-snapshot parsing, mirroring the
-/// live loader's `warn`: stderr only, and suppressed in robot mode so piped
-/// `--robot-*` output stays clean.
-fn warn_historical_snapshot_skip(message: String) {
-    if !bvr::loader::is_robot_mode() {
-        eprintln!("Warning: {message}");
+    let issues = loader::parse_issues_from_text(text)?;
+    if nonblank && issues.is_empty() {
+        return Err(bvr::BvrError::InvalidIssue(
+            "nonempty historical snapshot contains no valid issue records".to_string(),
+        ));
     }
+    Ok(issues)
 }
 
 fn build_robot_history_output(
@@ -8458,6 +8726,98 @@ mod tests {
             ids,
             ["demo-1", "demo-3"],
             "known-status issues around skipped records must survive"
+        );
+    }
+
+    #[test]
+    fn historical_snapshot_parser_accepts_empty_and_escaped_content() {
+        for text in ["", " \n\t\r\n", "\u{feff}\n \n"] {
+            assert!(
+                parse_issues_from_jsonl_text(text)
+                    .expect("empty snapshot")
+                    .is_empty()
+            );
+        }
+        let text = r#"{"id":"SAFE-1","title":"ordinary","status":"open","issue_type":"task","description":"<<<<<<< text\n=======\n>>>>>>> text\u0000"}"#;
+        let issues = parse_issues_from_jsonl_text(text).expect("escaped issue text");
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].description.contains('\0'));
+    }
+
+    #[test]
+    fn historical_snapshot_parser_rejects_structural_corruption_and_empty_results() {
+        for (text, diagnostic) in [
+            (
+                "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 10",
+                "Git LFS pointer",
+            ),
+            (
+                "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch",
+                "merge conflict marker",
+            ),
+            ("\0", "NUL"),
+            ("not JSON", "no valid issue records"),
+            ("{\"title\":\"no issue ID\"}", "no valid issue records"),
+        ] {
+            let error =
+                parse_issues_from_jsonl_text(text).expect_err("invalid historical snapshot");
+            assert!(error.to_string().contains(diagnostic), "{error}");
+        }
+    }
+
+    #[test]
+    fn historical_snapshot_metadata_paths_stay_inside_the_git_tree() {
+        let directory = tempdir().expect("metadata path fixture");
+        let root = directory.path();
+        let beads = Path::new(".beads");
+        for declared in [
+            PathBuf::from("../archive/issues.jsonl"),
+            root.join("archive/issues.jsonl"),
+        ] {
+            assert_eq!(
+                super::historical_metadata_jsonl_path(root, beads, &declared.to_string_lossy())
+                    .expect("in-tree path"),
+                Path::new("archive/issues.jsonl")
+            );
+        }
+        for declared in [
+            PathBuf::from("../../outside.jsonl"),
+            root.parent()
+                .expect("fixture parent")
+                .join("elsewhere/issues.jsonl"),
+            root.join("../outside.jsonl"),
+        ] {
+            assert!(
+                super::historical_metadata_jsonl_path(root, beads, &declared.to_string_lossy())
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn historical_snapshot_blob_reader_enforces_its_byte_limit() {
+        let directory = tempdir().expect("Git blob fixture");
+        let root = directory.path();
+        fs::create_dir(root.join(".beads")).expect("tracker directory");
+        fs::write(root.join(".beads/issues.jsonl"), b"12345").expect("five-byte blob");
+        fs::write(root.join(".beads/empty.jsonl"), b"").expect("empty blob");
+        run_git(root, &["init"]);
+        run_git(root, &["add", "."]);
+        run_git(root, &["commit", "-m", "bounded blobs"]);
+        let commit = super::resolve_historical_commit(root, "HEAD")
+            .expect("resolve revision")
+            .expect("commit");
+        let path = Path::new(".beads/issues.jsonl");
+        assert_eq!(
+            super::read_historical_blob(root, path, &commit, 5).expect("exact cap"),
+            b"12345"
+        );
+        let error = super::read_historical_blob(root, path, &commit, 4).expect_err("exceeds cap");
+        assert!(error.to_string().contains("exceeds 4 bytes"));
+        assert_eq!(
+            super::read_historical_blob(root, Path::new(".beads/empty.jsonl"), &commit, 0)
+                .expect("empty blob"),
+            Vec::<u8>::new()
         );
     }
 
