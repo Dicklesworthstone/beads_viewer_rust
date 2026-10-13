@@ -1350,6 +1350,12 @@ mod tests {
                 "commit.gpgsign=false",
                 "-c",
                 "core.hooksPath=hooks-disabled",
+                // GIT_CONFIG_GLOBAL below does not stop git from reading the
+                // default excludes file ($XDG_CONFIG_HOME/git/ignore); a user
+                // ignore of `.beads/*.backup.*` would drop the backups this
+                // test commits.
+                "-c",
+                "core.excludesFile=/dev/null",
             ])
             .args(args)
             .env("GIT_AUTHOR_NAME", "History regression")

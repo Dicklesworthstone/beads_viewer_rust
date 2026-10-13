@@ -68,6 +68,11 @@ fn run_failing(args: &[&str], dir: &Path) -> String {
 fn run_git(dir: &Path, args: &[&str], date: Option<&str>) {
     let mut cmd = ProcessCommand::new("git");
     cmd.current_dir(dir);
+    // Isolate the test repository from the user's git configuration: a user
+    // ignore file (e.g. one listing `.bv/`) would make `git add .bv` fail.
+    cmd.args(["-c", "core.excludesFile=/dev/null"]);
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null");
     cmd.args(args);
     cmd.env("GIT_AUTHOR_NAME", "Test");
     cmd.env("GIT_AUTHOR_EMAIL", "test@test.com");
