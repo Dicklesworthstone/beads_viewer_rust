@@ -60,7 +60,7 @@ success** — one line, revert, next lever, no retraction narrative.
 
 We only use **Cargo** in this project, NEVER any other package manager.
 
-- **Edition:** Rust 2024 (`rust-version = "1.85"`)
+- **Edition:** Rust 2024 (`rust-version = "1.88"`)
 - **Dependency versions:** Explicit versions for stability
 - **Configuration:** Cargo.toml only (single crate, not a workspace)
 - **Unsafe code:** Forbidden (`unsafe_code = "forbid"` in `[lints.rust]`)

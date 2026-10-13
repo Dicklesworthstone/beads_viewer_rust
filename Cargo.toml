@@ -1,8 +1,8 @@
 [package]
 name = "beads_viewer_rust"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Spec-first Rust port of beads_viewer (bv) — graph-aware triage for beads issue trackers (CLI binary: bvr)"
 license-file = "LICENSE"
 repository = "https://github.com/Dicklesworthstone/beads_viewer_rust"
@@ -60,7 +60,9 @@ sha2 = "0.10.9"
 signal-hook = "0.3.18"
 tempfile = "3.25.0"
 thiserror = "2.0.18"
-toon = { package = "tru", version = "0.2.0" }
+# tru 0.2.4 and 0.2.5 declare Rust 1.88 but build-depend on vergen-gix 10, which
+# needs Rust 1.96. Stay below them until this crate's rust-version reaches 1.96.
+toon = { package = "tru", version = ">=0.2.0, <0.2.4" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
