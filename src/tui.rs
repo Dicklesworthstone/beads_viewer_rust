@@ -3198,6 +3198,7 @@ struct TreeFlatNode {
 enum Msg {
     KeyPress(KeyCode, Modifiers),
     Mouse(MouseEvent),
+    Paste(String),
     HistoryLoaded {
         generation: u64,
         result: std::result::Result<HistoryGitCache, String>,
@@ -3219,11 +3220,27 @@ impl From<Event> for Msg {
                 ..
             }) => Self::KeyPress(code, modifiers),
             Event::Mouse(event) => Self::Mouse(event),
+            Event::Paste(paste) => Self::Paste(paste.text),
             #[cfg(not(test))]
             Event::Tick => Self::Tick,
             _ => Self::Noop,
         }
     }
+}
+
+/// Text from a terminal paste, prepared for a one-line input field: a trailing
+/// line break is dropped, other line breaks and tabs become spaces, and the
+/// remaining control characters are removed.
+fn single_line_paste(text: &str) -> String {
+    text.trim_end_matches(['\r', '\n'])
+        .replace("\r\n", "\n")
+        .chars()
+        .filter_map(|ch| match ch {
+            '\n' | '\r' | '\t' => Some(' '),
+            ch if ch.is_control() => None,
+            ch => Some(ch),
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -3384,6 +3401,7 @@ impl Model for BvrApp {
                 cmd
             }
             Msg::Mouse(event) => self.handle_mouse(event),
+            Msg::Paste(text) => self.handle_paste(&text),
             Msg::HistoryLoaded { generation, result } => {
                 self.handle_history_load_result(generation, result);
                 Cmd::None
@@ -5214,6 +5232,65 @@ impl BvrApp {
             }
             _ => Cmd::None,
         }
+    }
+
+    /// Inserts pasted text into the input field that has focus: an active
+    /// search, the label or repo picker filter, a Pages wizard text step, or
+    /// the time-travel ref. The terminal delivers a paste as one event, not
+    /// as key presses, so pasted text is never taken as shortcuts (`n` in a
+    /// search, `q` in a list); outside an input field it is ignored.
+    fn handle_paste(&mut self, text: &str) -> Cmd<Msg> {
+        let text = single_line_paste(text);
+        if text.is_empty() || self.show_quit_confirm || self.show_help {
+            return Cmd::None;
+        }
+
+        if let Some(overlay) = &mut self.modal_overlay {
+            match overlay {
+                ModalOverlay::LabelPicker { filter, cursor, .. }
+                | ModalOverlay::RepoPicker { filter, cursor, .. } => {
+                    filter.push_str(&text);
+                    *cursor = 0;
+                }
+                ModalOverlay::PagesWizard(wiz) if wiz.step == 0 => wiz.export_dir.push_str(&text),
+                ModalOverlay::PagesWizard(wiz) if wiz.step == 1 => wiz.title.push_str(&text),
+                _ => {}
+            }
+            return Cmd::None;
+        }
+
+        let list_focus = self.focus == FocusPane::List;
+        if matches!(self.mode, ViewMode::Main) && list_focus && self.main_search_active {
+            self.main_search_query.push_str(&text);
+            self.main_search_match_cursor = 0;
+            self.select_current_main_search_match();
+        } else if self.board_shortcut_focus() && self.board_search_active {
+            self.board_search_query.push_str(&text);
+            self.board_search_match_cursor = 0;
+            self.select_current_board_search_match();
+        } else if matches!(self.mode, ViewMode::History) && list_focus && self.history_search_active
+        {
+            self.history_search_query.push_str(&text);
+            self.refresh_history_search_selection();
+        } else if matches!(self.mode, ViewMode::Graph) && list_focus && self.graph_search_active {
+            self.graph_search_query.push_str(&text);
+            self.graph_search_match_cursor = 0;
+            self.select_current_graph_search_match();
+        } else if matches!(self.mode, ViewMode::Insights)
+            && list_focus
+            && self.insights_search_active
+        {
+            self.insights_search_query.push_str(&text);
+            self.insights_search_match_cursor = 0;
+            self.select_current_insights_search_match();
+        } else if matches!(self.mode, ViewMode::Tree) && list_focus && self.tree_search_active {
+            self.tree_search_query.push_str(&text);
+            self.tree_search_match_cursor = 0;
+            self.select_current_tree_search_match();
+        } else if matches!(self.mode, ViewMode::TimeTravelDiff) && self.time_travel_input_active {
+            self.time_travel_ref_input.push_str(&text);
+        }
+        Cmd::None
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: Modifiers) -> Cmd<Msg> {
@@ -23218,6 +23295,57 @@ mod tests {
         app.update(key(KeyCode::Escape));
         assert!(!app.main_search_active);
         assert!(app.main_search_query.is_empty());
+    }
+
+    fn paste(text: &str) -> Msg {
+        use ftui::core::event::{Event, PasteEvent};
+        Msg::from(Event::Paste(PasteEvent::bracketed(text)))
+    }
+
+    #[test]
+    fn paste_event_fills_main_search_without_running_shortcuts() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.update(key(KeyCode::Char('/')));
+        // Typed `n` moves to the next match; a pasted `n` is part of the text.
+        app.update(paste("ependen\n"));
+        assert!(app.main_search_active);
+        assert_eq!(app.main_search_query, "ependen");
+        assert_eq!(selected_issue_id(&app), "B");
+
+        app.update(key(KeyCode::Escape));
+        app.update(key(KeyCode::Char('/')));
+        app.update(paste("Ro\r\not\t\u{7}x"));
+        assert_eq!(app.main_search_query, "Ro ot x");
+    }
+
+    #[test]
+    fn paste_event_outside_an_input_field_is_ignored() {
+        let mut app = new_app(ViewMode::Main, 1);
+        let cmd = app.update(paste("qb/"));
+        assert!(!matches!(cmd, Cmd::Quit));
+        assert!(!app.show_quit_confirm);
+        assert!(!app.main_search_active);
+        assert!(app.main_search_query.is_empty());
+        assert!(matches!(app.mode, ViewMode::Main));
+        assert_eq!(selected_issue_id(&app), "B");
+    }
+
+    #[test]
+    fn paste_event_fills_picker_filter_and_resets_cursor() {
+        let mut app = new_app(ViewMode::Main, 0);
+        app.modal_overlay = Some(ModalOverlay::RepoPicker {
+            items: vec!["api".to_string(), "web".to_string()],
+            cursor: 1,
+            filter: "w".to_string(),
+        });
+        app.update(paste("eb"));
+        match &app.modal_overlay {
+            Some(ModalOverlay::RepoPicker { cursor, filter, .. }) => {
+                assert_eq!(filter, "web");
+                assert_eq!(*cursor, 0);
+            }
+            other => panic!("repo picker closed: {other:?}"),
+        }
     }
 
     #[test]
