@@ -61,7 +61,8 @@ signal-hook = "0.3.18"
 tempfile = "3.25.0"
 thiserror = "2.0.18"
 # tru 0.2.4 and 0.2.5 declare Rust 1.88 but build-depend on vergen-gix 10, which
-# needs Rust 1.96. Stay below them until this crate's rust-version reaches 1.96.
+# needs Rust 1.95 or newer (1.96 from 10.0.2). Stay below them until this
+# crate's rust-version reaches 1.95.
 toon = { package = "tru", version = ">=0.2.0, <0.2.4" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
