@@ -141,7 +141,8 @@ and from user reports. Three of them change behaviour that scripts may rely on:
   time 0.3.55, serde_json 1.0.154 and ICU 2.3. `tru` (TOON) goes to 0.2.3 and
   is capped below 0.2.4, because 0.2.4 and 0.2.5 need Rust 1.96 through a
   build dependency.
-- The test suite no longer depends on the user's Git ignore file.
+- The test suite no longer depends on the user's Git ignore file, and an
+  intermittent "Text file busy" failure in the Git history tests is fixed.
   ([53972b9](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/53972b9))
 
 ---

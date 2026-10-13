@@ -1929,11 +1929,25 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_history_git(directory: &Path, script: &str) -> OsString {
-        use std::os::unix::fs::PermissionsExt;
+        use std::io::Write as _;
         let path = directory.join("fake-git");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).expect("fake Git script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-            .expect("executable script");
+        // A child process writes the script. If this multi-threaded test
+        // process held it open for writing, a fork on another test thread could
+        // inherit that descriptor, and starting the script would fail with
+        // "Text file busy" until the forked child called exec.
+        let mut writer = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 700 \"$1\"", "sh"])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("start fake Git script writer");
+        writer
+            .stdin
+            .take()
+            .expect("script writer stdin")
+            .write_all(format!("#!/bin/sh\n{script}\n").as_bytes())
+            .expect("fake Git script");
+        assert!(writer.wait().expect("script writer").success());
         path.into_os_string()
     }
 
