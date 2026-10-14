@@ -568,4 +568,4 @@ git push                # Push to remote
 4. **Sync beads** - `br sync --flush-only` to export to JSONL
 5. **Hand off** - Provide context for next session
 
-For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
+For any web requests you must make with curl or otherwise, identify yourself honestly: use a User-Agent that names this project, e.g. "beads_viewer_rust-agent (+https://github.com/Dicklesworthstone/beads_viewer_rust)". Never borrow another product's or company's crawler or client User-Agent, and never spoof a client to get past a block.
