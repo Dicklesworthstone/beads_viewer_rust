@@ -846,20 +846,13 @@ function topWhatIf(limit = 10) {
 }
 
 /**
- * Get actionable issues (all blockers closed)
+ * Get work that the core analyzer marked ready in this exported snapshot.
+ * This also works when the optional browser graph engine is unavailable.
  */
 function getActionableIssues() {
-  if (!GRAPH_STATE.ready) return [];
-
-  const closedSet = buildClosedSet();
-  const indices = GRAPH_STATE.planningGraph.actionableNodes(closedSet);
-  const actionableStatuses = new Set(execQuery(`
-    SELECT id FROM issues WHERE LOWER(TRIM(status)) IN ('open', 'in_progress')
-  `).map(issue => issue.id));
-
-  return (indices || [])
-    .map(idx => GRAPH_STATE.planningGraph.nodeId(idx))
-    .filter(id => actionableStatuses.has(id));
+  return execQuery(`
+    SELECT id FROM issue_overview_mv WHERE is_ready = 1 ORDER BY id
+  `).map(issue => issue.id);
 }
 
 /**
@@ -951,11 +944,12 @@ function buildFilterClauses(filters = {}, tableAlias = '') {
     params.push(filters.assignee);
   }
 
-	  // Blocked filter
-	  if (filters.hasBlockers === true || filters.hasBlockers === 'true') {
-    clauses.push(`(${col('blocked_by_ids')} IS NOT NULL AND ${col('blocked_by_ids')} <> '')`);
+  // Readiness comes from the core graph, including inherited blockers and
+  // scheduler deferrals. Direct relationship lists also contain closed issues.
+  if (filters.hasBlockers === true || filters.hasBlockers === 'true') {
+    clauses.push(`${col('is_blocked')} = 1`);
   } else if (filters.hasBlockers === false || filters.hasBlockers === 'false') {
-    clauses.push(`(${col('blocked_by_ids')} IS NULL OR ${col('blocked_by_ids')} = '')`);
+    clauses.push(`${col('is_ready')} = 1`);
   }
 
   // Blocking filter (has items depending on it)
@@ -1289,9 +1283,9 @@ function getStats() {
   try {
     // Count by status
     const statusCounts = execQuery(`
-      SELECT status, COUNT(*) as count
+      SELECT LOWER(TRIM(status)) AS status, COUNT(*) as count
       FROM issue_overview_mv
-      GROUP BY status
+      GROUP BY LOWER(TRIM(status))
     `);
     console.log('[Stats] Status counts:', statusCounts);
     statusCounts.forEach(row => {
@@ -1302,19 +1296,21 @@ function getStats() {
     console.error('[Stats] Error loading status counts:', err);
   }
 
-  // Count blocked (has blocked_by_ids and status is open/in_progress)
+  // Use the same snapshot decisions as the Ready/Blocked filters.
   stats.blocked = execScalar(`
     SELECT COUNT(*) FROM issue_overview_mv
-    WHERE blocked_by_ids IS NOT NULL
-    AND blocked_by_ids <> ''
-    AND status IN ('open', 'in_progress')
+    WHERE is_blocked = 1
   `) || 0;
 
-  // Count actionable (open/in_progress with NO open blockers)
   stats.actionable = execScalar(`
     SELECT COUNT(*) FROM issue_overview_mv
-    WHERE status IN ('open', 'in_progress')
-    AND (blocked_by_ids IS NULL OR blocked_by_ids = '')
+    WHERE is_ready = 1
+  `) || 0;
+
+  // Blocked is a subset of non-closed work, not an additional status bucket.
+  stats.open_like = execScalar(`
+    SELECT COUNT(*) FROM issue_overview_mv
+    WHERE LOWER(TRIM(status)) NOT IN ('closed', 'tombstone')
   `) || 0;
 
   // Total
@@ -1324,14 +1320,13 @@ function getStats() {
 }
 
 /**
- * Get quick wins - actionable issues that unblock the most items
+ * Get quick wins - claimable issues that unblock the most items
  */
 function getQuickWins(limit = 5) {
   return execQuery(`
     SELECT * FROM issue_overview_mv
-    WHERE status IN ('open', 'in_progress')
-    AND (blocked_by_ids IS NULL OR blocked_by_ids = '')
-    ORDER BY blocks_count DESC, triage_score DESC
+    WHERE is_claimable = 1
+    ORDER BY blocks_count DESC, triage_score DESC, id
     LIMIT ?
   `, [limit]);
 }
@@ -1381,8 +1376,8 @@ function getDistributionByPriority() {
 function getTopPicks(limit = 5) {
   return execQuery(`
     SELECT * FROM issue_overview_mv
-    WHERE status IN ('open', 'in_progress')
-    ORDER BY triage_score DESC
+    WHERE is_claimable = 1
+    ORDER BY triage_score DESC, id
     LIMIT ?
   `, [limit]);
 }
@@ -1775,15 +1770,19 @@ function getMeta() {
  */
 function getIssueDependencies(id) {
   const blocks = execQuery(`
-    SELECT i.* FROM issue_overview_mv i
-    JOIN dependencies d ON i.id = d.depends_on_id
-    WHERE d.issue_id = ? AND d.type = 'blocks'
+    SELECT DISTINCT i.* FROM issue_overview_mv i
+    JOIN dependencies d ON i.id = d.issue_id
+    WHERE d.depends_on_id = ?
+      AND LOWER(TRIM(d.type)) IN ('', 'blocks', 'waits-for', 'conditional-blocks')
+    ORDER BY i.id
   `, [id]);
 
   const blockedBy = execQuery(`
-    SELECT i.* FROM issue_overview_mv i
-    JOIN dependencies d ON i.id = d.issue_id
-    WHERE d.depends_on_id = ? AND d.type = 'blocks'
+    SELECT DISTINCT i.* FROM issue_overview_mv i
+    JOIN dependencies d ON i.id = d.depends_on_id
+    WHERE d.issue_id = ?
+      AND LOWER(TRIM(d.type)) IN ('', 'blocks', 'waits-for', 'conditional-blocks')
+    ORDER BY i.id
   `, [id]);
 
   return { blocks, blockedBy };
@@ -2343,6 +2342,7 @@ function beadsApp() {
 
     // Selected issue
     selectedIssue: null,
+    selectedDependencies: { blocks: [], blockedBy: [] },
     showDepGraph: false,
     depGraphGeneration: 0,
     issueNavList: [], // List of issue IDs for j/k navigation
@@ -2719,6 +2719,9 @@ function beadsApp() {
             this.showDepGraph = false;
             this.whatIfResult = null;
             this.selectedIssue = getIssue(route.params.id);
+            this.selectedDependencies = this.selectedIssue
+              ? getIssueDependencies(this.selectedIssue.id)
+              : { blocks: [], blockedBy: [] };
             this.issueNavList = issueNavListForView(this.view, this.issues);
           }
           break;
@@ -3278,6 +3281,7 @@ function beadsApp() {
       this.showDepGraph = false;
       this.whatIfResult = null;
       this.selectedIssue = issue;
+      this.selectedDependencies = getIssueDependencies(issue.id);
       this.issueNavList = issueNavListForView(this.view, this.issues);
     },
 
@@ -3294,6 +3298,7 @@ function beadsApp() {
     closeIssue() {
       // Reset issue detail state
       this.selectedIssue = null;
+      this.selectedDependencies = { blocks: [], blockedBy: [] };
       this.showDepGraph = false;
       this.whatIfResult = null;
 
@@ -3379,16 +3384,9 @@ function beadsApp() {
 
       // Query exact IDs: comma-separated overview fields cannot preserve IDs
       // that themselves contain commas or leading/trailing whitespace.
-      const blockedBy = execQuery(`
-        SELECT depends_on_id FROM dependencies
-        WHERE issue_id = ? AND (type = 'blocks' OR type = '')
-        ORDER BY depends_on_id
-      `, [issue.id]).map(row => row.depends_on_id);
-      const blocks = execQuery(`
-        SELECT issue_id FROM dependencies
-        WHERE depends_on_id = ? AND (type = 'blocks' OR type = '')
-        ORDER BY issue_id
-      `, [issue.id]).map(row => row.issue_id);
+      const dependencies = getIssueDependencies(issue.id);
+      const blockedBy = dependencies.blockedBy.map(row => row.id);
+      const blocks = dependencies.blocks.map(row => row.id);
 
       if (blockedBy.length === 0 && blocks.length === 0) {
         container.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center">No dependencies</p>';

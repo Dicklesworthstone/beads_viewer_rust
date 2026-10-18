@@ -12,6 +12,9 @@
 // BVR_VIEWER_REVISION optionally serves index.html/viewer.js/graph.js from a git revision
 // to demonstrate that these regressions fail before a fix, without changing files.
 // Exported SQLite/data files always come from BVR_BIN, including in revision mode.
+// BVR_EXPORT_ASSET_REVISION validates every exported asset against that exact
+// revision when BVR_BIN is a preserved baseline binary. Otherwise the complete
+// inventory must match this checkout, independently of browser source overlays.
 // Standalone graph tests always serve actual --export-graph output; revision mode
 // verifies that BVR_BIN embedded that revision's template instead of replacing it.
 // BVR_DOMPURIFY_REVISION serves only vendor/dompurify.min.js from a git revision
@@ -120,6 +123,59 @@ let bottleneckExport;
 let mutationExport;
 let dependencyExport;
 let standaloneExport;
+let readinessExport;
+
+// These expectations describe the source fixture, independently of the browser
+// implementation. The fixture is exported by bvr so Rust readiness, SQLite, and
+// the displayed dashboard all have to agree on the same real issue snapshot.
+const readinessPunctuationId = 'readiness, <img src=x onerror="window.__readinessPayloads.push(\'id\')">';
+const readinessIssues = [
+  { id: 'readiness-done', title: 'Readiness completed prerequisite', status: ' CLOSED ' },
+  { id: 'readiness-gone', title: 'Readiness removed prerequisite', status: ' TOMBSTONE ' },
+  {
+    id: 'readiness-root', title: 'Readiness resolved prerequisites', priority: 0,
+    dependencies: [
+      { depends_on_id: 'readiness-done', type: ' BLOCKS ' },
+      { depends_on_id: 'readiness-gone', type: 'conditional-blocks' },
+    ],
+  },
+  { id: 'readiness-ordinary', title: 'Readiness ordinary blocking edge', dependencies: [{ depends_on_id: 'readiness-root', type: 'blocks' }] },
+  { id: 'readiness-waits', title: 'Readiness waits-for edge', dependencies: [{ depends_on_id: 'readiness-root', type: '\tWAITS-FOR\n' }] },
+  { id: 'readiness-conditional', title: 'Readiness conditional edge', dependencies: [{ depends_on_id: 'readiness-root', type: '\u00a0CONDITIONAL-BLOCKS\u2003' }] },
+  { id: 'readiness-empty', title: 'Readiness empty blocking type', dependencies: [{ depends_on_id: 'readiness-root', type: '' }] },
+  {
+    id: 'readiness-mixed', title: 'Readiness normalized and duplicate blocking edges',
+    dependencies: [
+      { depends_on_id: 'readiness-root', type: ' BlOcKs ' },
+      { depends_on_id: 'readiness-root', type: ' WAITs-FoR ' },
+    ],
+  },
+  { id: 'readiness-inherited', title: 'Readiness child of blocked parent', dependencies: [{ depends_on_id: 'readiness-conditional', type: 'parent-child' }] },
+  { id: 'readiness-grandchild', title: 'Readiness inherited grandchild', dependencies: [{ depends_on_id: 'readiness-inherited', type: 'parent-child' }] },
+  { id: 'readiness-future', title: 'Readiness future scheduling deferral', defer_until: '2999-01-01T00:00:00Z' },
+  { id: 'readiness-expired', title: 'Readiness expired scheduling deferral', defer_until: '2020-01-01T00:00:00Z' },
+  { id: 'readiness-review', title: 'Readiness parked review status', status: ' REVIEW ', priority: 0, dependencies: [{ depends_on_id: 'readiness-root', type: 'blocks' }] },
+  { id: 'readiness-deferred', title: 'Readiness parked deferred status', status: 'deferred', priority: 0 },
+  { id: 'readiness-progress', title: 'Readiness work already in progress', status: ' IN_PROGRESS ', priority: 0 },
+  { id: 'readiness-assigned', title: 'Readiness assigned work', assignee: 'Ada', priority: 0 },
+  { id: 'readiness-epic', title: 'Readiness epic container', issue_type: 'epic', priority: 0 },
+  { id: 'readiness-parent', title: 'Readiness task container with an open child', priority: 0 },
+  { id: 'readiness-child', title: 'Readiness independent child', dependencies: [{ depends_on_id: 'readiness-parent', type: 'parent-child' }] },
+  { id: 'readiness-related', title: 'Readiness nonblocking information', dependencies: [{ depends_on_id: 'readiness-root', type: 'related' }] },
+  { id: readinessPunctuationId, title: 'Readiness literal punctuation prerequisite' },
+  { id: 'readiness-punctuation-child', title: 'Readiness exact punctuation reference', dependencies: [{ depends_on_id: readinessPunctuationId, type: ' WAITs-FoR ' }] },
+];
+const readinessReadyIds = [
+  'readiness-root', 'readiness-expired', 'readiness-progress', 'readiness-assigned',
+  'readiness-epic', 'readiness-parent', 'readiness-child', 'readiness-related', readinessPunctuationId,
+].sort();
+const readinessBlockedIds = [
+  'readiness-ordinary', 'readiness-waits', 'readiness-conditional', 'readiness-empty',
+  'readiness-mixed', 'readiness-inherited', 'readiness-grandchild', 'readiness-punctuation-child', 'readiness-review',
+].sort();
+const readinessClaimableIds = [
+  'readiness-root', 'readiness-expired', 'readiness-child', 'readiness-related', readinessPunctuationId,
+].sort();
 
 const securityDescriptions = [
   {
@@ -333,7 +389,7 @@ const mutationDescriptions = [
   })),
 ];
 
-async function exportBrowserFixture(label, fixtureIssues) {
+async function exportBrowserFixture(label, fixtureIssues, includeClosed = true) {
   const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
   await mkdir(parent, { recursive: true });
   const artifact = await mkdtemp(path.join(parent, `bvr-viewer-${label}-`));
@@ -347,7 +403,10 @@ async function exportBrowserFixture(label, fixtureIssues) {
   const binary = path.resolve(process.env.BVR_BIN || path.join(root, 'target/debug/bvr'));
   let output;
   try {
-    output = execFileSync(binary, ['--export-pages', directory, '--beads-file', fixture], {
+    output = execFileSync(binary, [
+      '--export-pages', directory, '--beads-file', fixture,
+      `--pages-include-closed=${includeClosed}`,
+    ], {
       cwd: root, encoding: 'utf8', timeout: 60000,
     });
   } catch (error) {
@@ -364,11 +423,27 @@ async function exportBrowserFixture(label, fixtureIssues) {
     assert.equal(exported.description, issue.description, 'the exporter preserves the fixture source');
   }
   // include_bytes! can silently leave a stale binary with old viewer assets.
-  // Check the emitted bytes before exercising them, even in negative-control mode.
-  for (const file of ['index.html', 'viewer.js', 'graph.js', 'vendor/dompurify.min.js']) {
-    assert.deepEqual(await readFile(path.join(directory, file)), await readFile(path.join(assets, file)),
-      `rebuild BVR_BIN: exported ${file} must match this checkout`);
+  // Check the entire emitted inventory against one explicit source, including
+  // when demonstrating a failure with a preserved baseline binary.
+  const assetRevision = process.env.BVR_EXPORT_ASSET_REVISION;
+  const gitFile = file => execFileSync('git', ['show', `${assetRevision}:${file}`], {
+    cwd: root, timeout: 10000, maxBuffer: 32 * 1024 * 1024,
+  });
+  const inventory = assetRevision ? gitFile('src/viewer_assets.rs').toString('utf8')
+    : await readFile(path.join(root, 'src/viewer_assets.rs'), 'utf8');
+  const inventoryPaths = [...inventory.matchAll(/^\s+path:\s*"([^"]+)"/gm)].map(match => match[1]);
+  assert.ok(inventoryPaths.length > 0, 'the exporter declares its viewer asset inventory');
+  const assetHashes = {};
+  for (const file of inventoryPaths) {
+    const actual = await readFile(path.join(directory, file));
+    const expected = assetRevision ? gitFile('viewer_assets/' + file) : await readFile(path.join(assets, file));
+    assert.deepEqual(actual, expected,
+      `rebuild BVR_BIN: exported ${file} must match ${assetRevision || 'this checkout'}`);
+    assetHashes[file] = createHash('sha256').update(actual).digest('hex');
   }
+  await writeFile(path.join(artifact, 'export-identity.json'), JSON.stringify({
+    binary, assetRevision: assetRevision || null, issueCount: rows.length, includeClosed, assetHashes,
+  }, null, 2));
   return directory;
 }
 
@@ -386,6 +461,14 @@ async function exportedDependencyFixture(t) {
   }
   t.diagnostic('Real dependency-diagram --export-pages dashboard: ' + dependencyExport);
   return 'dependency-fixture/';
+}
+
+async function exportedReadinessFixture(t) {
+  if (!readinessExport) {
+    readinessExport = await exportBrowserFixture('readiness', readinessIssues, true);
+  }
+  t.diagnostic('Real readiness --export-pages dashboard: ' + readinessExport);
+  return 'readiness-fixture/';
 }
 
 async function exportedStandaloneFixture(t) {
@@ -483,11 +566,23 @@ async function fixtureDatabase(fixtureIssues = issues, fixtureDependencies = dep
   }
   db.run('CREATE VIEW issues AS SELECT * FROM issue_overview_mv');
   db.run("INSERT INTO export_meta VALUES ('issue_count', ?)", [String(fixtureIssues.length)]);
+  // Retain the small search/graph fixtures' explicit source semantics as the
+  // real export schema grows. Readiness regressions below use real CLI exports.
+  const readyIds = new Set([
+    'bv-open', 'bv-progress', 'bv-description', 'bv-special',
+    'graph-root', 'graph-ready', 'graph-isolated', 'graph-external',
+  ]);
+  const blockedIds = new Set([
+    'bv-blocked', 'bv-other', 'graph-left', 'graph-right', 'graph-join', 'graph-tail', 'graph-info',
+  ]);
+  const claimableIds = new Set(['bv-special', 'graph-root', 'graph-ready', 'graph-isolated', 'graph-external']);
   for (const issue of fixtureIssues) {
     db.run(`INSERT INTO issue_overview_mv
       (id, title, description, status, priority, issue_type, assignee, labels,
-       blocked_by_ids, blocks_count, triage_score, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.5, '2026-10-06T12:00:00Z', '2026-10-06T12:00:00Z')`, issue);
+       blocked_by_ids, blocks_count, triage_score, created_at, updated_at,
+       is_ready, is_blocked, is_claimable)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.5, '2026-10-06T12:00:00Z', '2026-10-06T12:00:00Z', ?, ?, ?)`,
+    [...issue, Number(readyIds.has(issue[0])), Number(blockedIds.has(issue[0])), Number(claimableIds.has(issue[0]))]);
   }
   for (const dependency of fixtureDependencies) {
     db.run('INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES (?, ?, ?)', dependency);
@@ -520,8 +615,10 @@ before(async () => {
     const mutationFixture = requestedPath.startsWith('/mutation-fixture/');
     const dependencyFixture = requestedPath.startsWith('/dependency-fixture/');
     const standaloneFixture = requestedPath.startsWith('/standalone-fixture/');
-    const exportedFixture = standaloneFixture || dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
+    const readinessFixture = requestedPath.startsWith('/readiness-fixture/');
+    const exportedFixture = readinessFixture || standaloneFixture || dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
     const pathname = standaloneFixture ? requestedPath.slice('/standalone-fixture'.length)
+      : readinessFixture ? requestedPath.slice('/readiness-fixture'.length)
       : dependencyFixture ? requestedPath.slice('/dependency-fixture'.length)
       : mutationFixture ? requestedPath.slice('/mutation-fixture'.length)
       : bottleneckFixture ? requestedPath.slice('/bottleneck-fixture'.length)
@@ -548,7 +645,7 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const servingRoot = standaloneFixture ? standaloneExport : dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
+    const servingRoot = readinessFixture ? readinessExport : standaloneFixture ? standaloneExport : dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
       : bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
     if (!servingRoot) {
       response.writeHead(404).end();
@@ -882,6 +979,213 @@ async function selectHistoryEvent(page, index) {
   }, index);
 }
 
+async function openReadinessViewer(t, graphMode, mobile = false, hash = '#/') {
+  const fixturePath = await exportedReadinessFixture(t);
+  const page = await openViewer(t, mobile, hash, false, fixturePath, async page => {
+    await configureDependencyRendering(page);
+    await page.addInitScript(() => { window.__readinessPayloads = []; });
+    if (graphMode === 'unavailable') {
+      // Fail only the optional graph engine. SQL.js and its actual exported
+      // database remain available, as they do in the supported fallback mode.
+      await page.route('**/vendor/bv_graph_bg.wasm', request => request.abort('failed'));
+    }
+  });
+  assert.equal(await page.evaluate(() => window.beadsViewer.GRAPH_STATE.ready), graphMode === 'available',
+    'the scenario exercises the requested graph-WASM condition');
+  return page;
+}
+
+async function searchReadinessFixture(page, query) {
+  await page.locator(inputSelector).fill(query);
+  // Every fixture title contains "readiness", so the visible result set can
+  // remain unchanged while the debounced query is still waiting to commit.
+  await page.waitForFunction(expected => {
+    const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    return app.pendingSearch === null && app.searchQuery === expected
+      && params.get('q') === (expected || null);
+  }, query);
+}
+
+for (const graphMode of ['available', 'unavailable']) {
+  test(`readiness: actual export filters, search and cards agree with graph WASM ${graphMode}`, async t => {
+    const mobile = graphMode === 'unavailable';
+    const page = await openReadinessViewer(t, graphMode, mobile);
+    const observed = await page.evaluate(() => {
+      const viewer = window.beadsViewer;
+      const ids = rows => rows.map(issue => issue.id).sort();
+      return {
+        stats: viewer.getStats(),
+        ready: ids(viewer.queryIssues({ hasBlockers: false }, 'id', 100)),
+        blocked: ids(viewer.queryIssues({ hasBlockers: true }, 'id', 100)),
+        readySearch: ids(viewer.searchIssues('readiness', { filters: { hasBlockers: false }, limit: 100 })),
+        blockedSearch: ids(viewer.searchIssues('readiness', { filters: { hasBlockers: true }, limit: 100 })),
+        readyCount: viewer.countIssues({ hasBlockers: false, search: 'readiness' }),
+        blockedCount: viewer.countIssues({ hasBlockers: true, search: 'readiness' }),
+        actionable: [...viewer.getActionableIssues()].sort(),
+      };
+    });
+    await writeFile(path.join(path.dirname(readinessExport), `readiness-${graphMode}.json`),
+      JSON.stringify(observed, null, 2));
+    // Assert behavior first: a preserved parent export must fail on incorrect
+    // work selection, not merely on the absence of newly added SQL columns.
+    assert.deepEqual(observed.ready, readinessReadyIds,
+      'Ready includes resolved prerequisites and in-progress work, while excluding inherited blockers, deferrals and parked statuses');
+    assert.deepEqual(observed.blocked, readinessBlockedIds,
+      'Blocked includes every blocking edge kind, inherited blockers and parked issues with open prerequisites');
+    assert.deepEqual(observed.readySearch, readinessReadyIds);
+    assert.deepEqual(observed.blockedSearch, readinessBlockedIds);
+    assert.equal(observed.readyCount, readinessReadyIds.length);
+    assert.equal(observed.blockedCount, readinessBlockedIds.length);
+    assert.deepEqual(observed.actionable, readinessReadyIds,
+      'optional WASM availability cannot change the exported actionable set');
+    assert.equal(observed.stats.total, readinessIssues.length);
+    assert.equal(observed.stats.actionable, readinessReadyIds.length);
+    assert.equal(observed.stats.blocked, readinessBlockedIds.length);
+    assert.equal(observed.stats.open_like, readinessIssues.length - 2,
+      'dependency-blocked work is not counted a second time as a separate status');
+
+    const exported = await page.evaluate(() => window.beadsViewer.execQuery(
+      'SELECT id, defer_until, is_ready, is_blocked, is_claimable FROM issue_overview_mv ORDER BY id'));
+    for (const issue of exported) {
+      assert.equal(issue.is_ready, Number(readinessReadyIds.includes(issue.id)), issue.id + ': canonical readiness');
+      assert.equal(issue.is_blocked, Number(readinessBlockedIds.includes(issue.id)), issue.id + ': canonical blocked state');
+      assert.equal(issue.is_claimable, Number(readinessClaimableIds.includes(issue.id)), issue.id + ': canonical claimability');
+    }
+    assert.match(exported.find(issue => issue.id === 'readiness-future').defer_until, /^2999-01-01T/,
+      'scheduler deferral is present in the exported database');
+    const dependencyTypes = await page.evaluate(() => window.beadsViewer.execQuery(
+      "SELECT issue_id, type FROM dependencies WHERE issue_id IN ('readiness-waits', 'readiness-conditional') ORDER BY issue_id"));
+    assert.deepEqual(dependencyTypes, [
+      { issue_id: 'readiness-conditional', type: 'conditional-blocks' },
+      { issue_id: 'readiness-waits', type: 'waits-for' },
+    ], 'the export normalizes all Rust whitespace, including tabs, newlines and Unicode spaces');
+
+    const dashboard = () => page.locator('[x-show="view === \'dashboard\'"]');
+    const cards = () => dashboard().locator(mobile ? '.stat-card-mobile' : '.card-lift.cursor-pointer');
+    assert.equal(await dashboard().locator('[x-text="stats.actionable || 0"]:visible').textContent(), String(readinessReadyIds.length));
+    assert.equal(await dashboard().locator('[x-text="stats.blocked || 0"]:visible').textContent(), String(readinessBlockedIds.length));
+    await cards().filter({ has: page.getByText('Actionable', { exact: true }) }).click();
+    await results(page, readinessReadyIds, '');
+    await searchReadinessFixture(page, 'readiness');
+    await results(page, readinessReadyIds, 'readiness');
+    await filters(page, mobile);
+    await listView(page).getByRole('button', { name: 'Blocked', exact: true }).click();
+    await results(page, readinessBlockedIds, 'readiness');
+    await listView(page).getByRole('button', { name: 'Ready', exact: true }).click();
+    await results(page, readinessReadyIds, 'readiness');
+    await home(page, mobile);
+    await cards().filter({ has: page.getByText('Blocked', { exact: true }) }).click();
+    await results(page, readinessBlockedIds, 'readiness');
+    assert.deepEqual(await page.evaluate(() => window.__readinessPayloads), [], 'literal issue IDs stay inert while filtering');
+  });
+
+  test(`readiness: actual export Quick Wins and Top Picks only offer claimable work with graph WASM ${graphMode}`, async t => {
+    const page = await openReadinessViewer(t, graphMode);
+    const observed = await page.evaluate(() => {
+      const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+      return {
+        quickWins: app.quickWins.map(issue => issue.id).sort(),
+        topPicks: app.topPicks.map(issue => issue.id).sort(),
+      };
+    });
+    await writeFile(path.join(path.dirname(readinessExport), `claimable-${graphMode}.json`),
+      JSON.stringify(observed, null, 2));
+    assert.deepEqual(observed.quickWins, readinessClaimableIds,
+      'Quick Wins excludes assigned work, in-progress work, epics, open parents, parked statuses and future deferrals');
+    assert.deepEqual(observed.topPicks, readinessClaimableIds,
+      'Top Picks uses the same claimability contract as robot recommendations');
+    const dashboard = page.locator('[x-show="view === \'dashboard\'"]');
+    const quickWins = dashboard.getByRole('heading', { name: 'Quick Wins', exact: true }).locator('..').locator('..');
+    const topPicks = dashboard.getByRole('heading', { name: 'Top Picks', exact: true }).locator('..');
+    assert.deepEqual((await quickWins.locator('[x-text="issue.id"]').allTextContents()).sort(), readinessClaimableIds);
+    assert.deepEqual((await topPicks.locator('[x-text="issue.id"]').allTextContents()).sort(), readinessClaimableIds);
+    assert.equal(await dashboard.locator('img[src="x"]').count(), 0, 'punctuation in IDs renders as text');
+    assert.deepEqual(await page.evaluate(() => window.__readinessPayloads), []);
+  });
+
+  test(`readiness: actual export dependency links, h/l and diagrams preserve direction and exact IDs with graph WASM ${graphMode}`, async t => {
+    const page = await openReadinessViewer(t, graphMode, false, '#/issues');
+    const ids = ['readiness-ordinary', 'readiness-waits', 'readiness-conditional', 'readiness-empty', 'readiness-mixed'];
+    const observed = await page.evaluate(issueIds => Object.fromEntries(issueIds.map(id => {
+      const deps = window.beadsViewer.getIssueDependencies(id);
+      return [id, {
+        blockedBy: deps.blockedBy.map(issue => issue.id),
+        blocks: deps.blocks.map(issue => issue.id),
+      }];
+    })), [...ids, 'readiness-root', 'readiness-related', 'readiness-punctuation-child', readinessPunctuationId]);
+    const completed = [];
+    try {
+      for (const id of ids) {
+        assert.deepEqual(observed[id].blockedBy, ['readiness-root'], id + ': the prerequisite is blockedBy exactly once');
+        assert.deepEqual(observed[id].blocks, [], id + ': dependent direction is not reversed');
+      }
+      assert.deepEqual(observed['readiness-root'].blockedBy, ['readiness-done', 'readiness-gone'],
+        'resolved direct relationships remain available to inspect');
+      assert.deepEqual(observed['readiness-root'].blocks, [...ids, 'readiness-review'].sort(),
+        'all normalized blocking types share one deduplicated dependent list');
+      assert.deepEqual(observed['readiness-related'], { blockedBy: [], blocks: [] }, 'informational edges do not become blocking links');
+      assert.deepEqual(observed['readiness-punctuation-child'].blockedBy, [readinessPunctuationId]);
+      assert.deepEqual(observed[readinessPunctuationId].blocks, ['readiness-punctuation-child']);
+      completed.push('dependency query contract');
+
+      const modal = page.locator('[x-show="selectedIssue"]');
+      const openIssue = async id => {
+        const issue = readinessIssues.find(item => item.id === id);
+        // This fixture exceeds the default page size. Find each target through
+        // the real search UI so navigation also covers issues beyond page one.
+        await searchReadinessFixture(page, issue.title);
+        await results(page, [id], issue.title);
+        await page.getByRole('button', { name: 'View issue ' + id + ': ' + issue.title, exact: true }).click();
+        await selectedDependencyIssue(page, id);
+      };
+      await openIssue('readiness-ordinary');
+      await modal.locator('button').first().focus();
+      await page.keyboard.press('h');
+      await selectedDependencyIssue(page, 'readiness-root');
+      await page.keyboard.press('l');
+      await selectedDependencyIssue(page, 'readiness-conditional');
+      completed.push('ordinary h/l follows prerequisite then dependent');
+      await modal.locator('button').first().click();
+
+      for (const id of ['readiness-waits', 'readiness-conditional']) {
+        await openIssue(id);
+        await openDependencyDiagram(page, [id, 'readiness-root']);
+        await modal.locator('button').first().focus();
+        await page.keyboard.press('h');
+        await selectedDependencyIssue(page, 'readiness-root');
+        completed.push(id + ' diagram and h navigation');
+        await modal.locator('button').first().click();
+      }
+
+      await openIssue('readiness-punctuation-child');
+      const blockerLinks = modal.locator('[x-show="selectedDependencies.blockedBy.length"]');
+      assert.equal(await blockerLinks.locator('button').count(), 1, 'a comma inside an ID does not split the dependency');
+      assert.equal(await blockerLinks.locator('[x-text="selectedDependencies.blockedBy.length"]').textContent(), '1');
+      await blockerLinks.getByRole('button', { name: readinessPunctuationId, exact: true }).click();
+      await selectedDependencyIssue(page, readinessPunctuationId);
+      const dependentLinks = modal.locator('[x-show="selectedDependencies.blocks.length"]');
+      assert.deepEqual(await dependentLinks.locator('button').allTextContents(), ['readiness-punctuation-child']);
+      await modal.locator('button').first().focus();
+      await page.keyboard.press('l');
+      await selectedDependencyIssue(page, 'readiness-punctuation-child');
+      await page.keyboard.press('h');
+      await selectedDependencyIssue(page, readinessPunctuationId);
+      await openDependencyDiagram(page, [readinessPunctuationId, 'readiness-punctuation-child']);
+      assert.equal(await modal.locator('img[src="x"]').count(), 0, 'dependency labels cannot introduce event-handler images');
+      assert.deepEqual(await page.evaluate(() => window.__readinessPayloads), [], 'dependency ID payload stays inert after clicks, shortcuts and SVG rendering');
+      completed.push('literal punctuation dependency links, shortcuts and diagram');
+    } finally {
+      const state = await page.evaluate(() => ({
+        selectedId: Alpine.$data(document.querySelector('[x-data="beadsApp()"]')).selectedIssue?.id,
+        url: location.href, executed: window.__readinessPayloads, renders: window.__dependencyRenders,
+      }));
+      await writeFile(path.join(path.dirname(readinessExport), `dependency-readiness-${graphMode}.json`),
+        JSON.stringify({ observed, completed, ...state }, null, 2));
+    }
+  });
+}
+
 for (const mobile of [false, true]) {
   const device = mobile ? 'mobile' : 'desktop';
 
@@ -1174,7 +1478,8 @@ test('desktop: graph diamond honors all blockers, resolved statuses and exported
       join: viewer.whatIfClose('graph-join'),
     };
   });
-  assert.deepEqual(state.actionable, ['graph-external', 'graph-info', 'graph-isolated', 'graph-ready', 'graph-root']);
+  assert.deepEqual(state.actionable, ['graph-external', 'graph-isolated', 'graph-ready', 'graph-root'],
+    'the child of a dependency-blocked parent inherits the exported readiness gate');
   assert.deepEqual(state.nodes, graphIssues.map(issue => issue[0]).sort(), 'unknown endpoints do not create phantom work');
   assert.equal(state.edges, 7, 'blocking types participate; related/parent-child and missing endpoints do not');
   assert.equal(state.left.direct_unblocks, 0, 'closing one branch cannot unblock a join with another open prerequisite');

@@ -625,7 +625,7 @@
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">In Progress</p>
             </div>
             <!-- Blocked -->
-            <div @click="filters.hasBlockers = true; filters.status = ['open', 'in_progress']; applyFilters()"
+            <div @click="filters.hasBlockers = true; filters.status = []; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light">
               <div class="w-9 h-9 bg-red-100 dark:bg-red-900/50 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -636,7 +636,7 @@
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">Blocked</p>
             </div>
             <!-- Actionable -->
-            <div @click="filters.hasBlockers = false; filters.status = ['open']; applyFilters()"
+            <div @click="filters.hasBlockers = false; filters.status = []; applyFilters()"
                  class="stat-card-mobile flex-shrink-0 w-[130px] scroll-snap-start touch-btn haptic-light border-emerald-200 dark:border-emerald-800">
               <div class="w-9 h-9 bg-emerald-100 dark:bg-emerald-900/50 rounded-xl flex items-center justify-center mb-3">
                 <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -698,7 +698,7 @@
             </div>
           </div>
 
-          <div @click="filters.hasBlockers = true; filters.status = ['open', 'in_progress']; applyFilters()"
+          <div @click="filters.hasBlockers = true; filters.status = []; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>
@@ -713,7 +713,7 @@
             </div>
           </div>
 
-          <div @click="filters.hasBlockers = false; filters.status = ['open']; applyFilters()"
+          <div @click="filters.hasBlockers = false; filters.status = []; applyFilters()"
                class="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 p-5 cursor-pointer card-lift focus-ring group">
             <div class="flex items-center justify-between">
               <div>
@@ -1319,7 +1319,7 @@
                   <path stroke-linecap="round" stroke-width="2" d="M12 2v4m0 12v4M2 12h4m12 0h4"/>
                 </svg>
               </div>
-              <p class="text-2xl font-bold text-gray-900 dark:text-white" x-text="graphReady ? (stats.open + stats.in_progress + stats.blocked) : '-'"></p>
+              <p class="text-2xl font-bold text-gray-900 dark:text-white" x-text="stats.open_like || 0"></p>
               <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 font-medium">Active Nodes</p>
             </div>
             <!-- Graph Status -->
@@ -1379,7 +1379,7 @@
                 </svg>
               </div>
               <div>
-                <p class="text-2xl font-bold" x-text="graphReady ? (stats.open + stats.in_progress + stats.blocked) : '-'"></p>
+                <p class="text-2xl font-bold" x-text="stats.open_like || 0"></p>
                 <p class="text-xs text-gray-500 dark:text-gray-400 font-medium">Active Nodes</p>
               </div>
             </div>
@@ -3460,7 +3460,7 @@
               </div>
 
               <!-- Dependencies Section -->
-              <div x-show="selectedIssue.blocks_ids || selectedIssue.blocked_by_ids" class="pt-6 border-t border-gray-200 dark:border-gray-700">
+              <div x-show="selectedDependencies.blocks.length || selectedDependencies.blockedBy.length" class="pt-6 border-t border-gray-200 dark:border-gray-700">
                 <div class="flex items-center justify-between mb-4">
                   <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Dependencies</h3>
                   <button @click="showDepGraph = !showDepGraph"
@@ -3475,33 +3475,33 @@
 
                 <!-- Dependency Lists -->
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                  <div x-show="selectedIssue.blocked_by_ids">
+                  <div x-show="selectedDependencies.blockedBy.length">
                     <h4 class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 flex items-center">
                       <svg class="w-3 h-3 mr-1 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/>
                       </svg>
-                      Blocked By (<span x-text="(selectedIssue.blocked_by_ids || '').split(',').filter(Boolean).length"></span>)
+                      Blocked By (<span x-text="selectedDependencies.blockedBy.length"></span>)
                     </h4>
                     <div class="flex flex-wrap gap-1.5">
-                      <template x-for="id in (selectedIssue.blocked_by_ids || '').split(',').filter(Boolean)" :key="id">
-                        <button @click="showIssue(id.trim())"
+                      <template x-for="dependency in selectedDependencies.blockedBy" :key="dependency.id">
+                        <button @click="showIssue(dependency.id)"
                                 class="px-2 py-1 text-xs font-mono bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300 rounded hover:bg-yellow-100 dark:hover:bg-yellow-900/40 transition-colors"
-                                x-text="id.trim()"></button>
+                                x-text="dependency.id"></button>
                       </template>
                     </div>
                   </div>
-                  <div x-show="selectedIssue.blocks_ids">
+                  <div x-show="selectedDependencies.blocks.length">
                     <h4 class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2 flex items-center">
                       <svg class="w-3 h-3 mr-1 text-red-500" fill="currentColor" viewBox="0 0 20 20">
                         <path fill-rule="evenodd" d="M13.477 14.89A6 6 0 015.11 6.524l8.367 8.368zm1.414-1.414L6.524 5.11a6 6 0 018.367 8.367zM18 10a8 8 0 11-16 0 8 8 0 0116 0z" clip-rule="evenodd"/>
                       </svg>
-                      Blocks (<span x-text="(selectedIssue.blocks_ids || '').split(',').filter(Boolean).length"></span>)
+                      Blocks (<span x-text="selectedDependencies.blocks.length"></span>)
                     </h4>
                     <div class="flex flex-wrap gap-1.5">
-                      <template x-for="id in (selectedIssue.blocks_ids || '').split(',').filter(Boolean)" :key="id">
-                        <button @click="showIssue(id.trim())"
+                      <template x-for="dependency in selectedDependencies.blocks" :key="dependency.id">
+                        <button @click="showIssue(dependency.id)"
                                 class="px-2 py-1 text-xs font-mono bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
-                                x-text="id.trim()"></button>
+                                x-text="dependency.id"></button>
                       </template>
                     </div>
                   </div>

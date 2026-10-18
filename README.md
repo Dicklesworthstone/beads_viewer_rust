@@ -458,6 +458,10 @@ The bundle includes:
 - static-host helper files such as `_headers`
 - a deploy-facing bundle README
 
+The dashboard's Ready and Blocked filters, actionable counts, Quick Wins, and Top Picks use the Rust engine's decisions recorded in the export. Readiness includes every blocking dependency type, inherited parent blockers, issue status, and `defer_until`. Quick Wins and Top Picks also exclude already assigned work, work in progress, epics, and parents with open children. These decisions remain available when the optional browser graph engine cannot load. They describe the exported snapshot; export again to reflect source changes or elapsed deferrals.
+
+Dependency details retain completed prerequisites for context. Their links, `h`/`l` navigation, and diagrams preserve exact issue IDs and consistently distinguish prerequisites from dependents. Existing schema v2 dashboard databases upgrade to v3 automatically on re-export.
+
 ### Why pages export exists
 
 It solves a different problem than robot mode:

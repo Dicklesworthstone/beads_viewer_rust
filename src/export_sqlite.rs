@@ -8,20 +8,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::analysis::Analyzer;
-use crate::analysis::triage::TriageComputation;
+use crate::analysis::triage::{TriageComputation, TriageOptions, is_claimable_issue};
 use crate::model::Issue;
 use crate::{BvrError, Result};
 
 pub const SQLITE_EXPORT_FILENAME: &str = "beads.sqlite3";
 pub const SQLITE_EXPORT_CONFIG_FILENAME: &str = "beads.sqlite3.config.json";
-pub const SQLITE_EXPORT_SCHEMA_VERSION: i32 = 2;
+pub const SQLITE_EXPORT_SCHEMA_VERSION: i32 = 3;
 pub const SQLITE_WRITER_CONTRACT_VERSION: &str = "1";
 pub const DEFAULT_SQLITE_PAGE_SIZE: u32 = 1_024;
 pub const DEFAULT_SQLITE_CHUNK_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
 pub const DEFAULT_SQLITE_CHUNK_SIZE_BYTES: u64 = 1_048_576;
 
 const EXPORT_META_KEYS: &[(&str, &str)] = &[
-    ("schema_version", "2"),
+    ("schema_version", "3"),
     ("writer_contract_version", SQLITE_WRITER_CONTRACT_VERSION),
     ("layout", "single-file"),
 ];
@@ -117,10 +117,11 @@ pub fn bootstrap_export_database(
     fs::create_dir_all(output_dir)?;
 
     let database_path = export_database_path(output_dir);
-    let connection = Connection::open(&database_path)?;
+    let mut connection = Connection::open(&database_path)?;
 
     configure_connection(&connection, options.page_size)?;
     verify_existing_contract(&connection)?;
+    migrate_previous_export_schema(&mut connection)?;
     create_schema(&connection)?;
     rebuild_issue_search_index(&connection)?;
     rebuild_issue_overview_mv(&connection)?;
@@ -249,9 +250,9 @@ fn insert_issues(tx: &Transaction<'_>, issues: &[Issue]) -> Result<()> {
         INSERT INTO issues (
             id, title, description, design, acceptance_criteria, notes, status,
             priority, issue_type, assignee, estimated_minutes, labels, created_at,
-            updated_at, due_date, closed_at, source_repo
+            updated_at, due_date, closed_at, source_repo, defer_until
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ",
     )?;
 
@@ -269,6 +270,9 @@ fn insert_issues(tx: &Transaction<'_>, issues: &[Issue]) -> Result<()> {
             .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
         let closed_at = issue
             .closed_at
+            .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
+        let defer_until = issue
+            .defer_until
             .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Micros, true));
         stmt.execute(params![
             issue.id.as_str(),
@@ -288,6 +292,7 @@ fn insert_issues(tx: &Transaction<'_>, issues: &[Issue]) -> Result<()> {
             due_date.as_deref(),
             closed_at.as_deref(),
             source_repo,
+            defer_until.as_deref(),
         ])?;
     }
 
@@ -352,9 +357,10 @@ fn insert_metrics(
         "
         INSERT INTO issue_metrics (
             issue_id, pagerank, betweenness, critical_path_depth,
-            triage_score, blocks_count, blocked_by_count, in_cycle
+            triage_score, blocks_count, blocked_by_count, in_cycle,
+            is_ready, is_blocked, is_claimable
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ",
     )?;
 
@@ -364,8 +370,29 @@ fn insert_metrics(
         .iter()
         .flat_map(|cycle| cycle.iter().cloned())
         .collect::<BTreeSet<_>>();
+    // Persist the core scheduling decisions so Pages does not approximate
+    // readiness from display-only dependency lists or a browser graph. These
+    // sets include inherited blocking and scheduler deferrals, and cover every
+    // exported issue even when the recommendation payload is truncated.
+    let ready_ids = analyzer
+        .graph
+        .actionable_ids()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let dependency_unblocked_ids = analyzer
+        .graph
+        .dependency_unblocked_ids()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let parents_with_open_children = analyzer.graph.parents_with_open_children();
+    let default_triage_options = TriageOptions::default();
 
     for issue in sorted {
+        let is_ready = ready_ids.contains(&issue.id);
+        let is_blocked = issue.is_open_like() && !dependency_unblocked_ids.contains(&issue.id);
+        let is_claimable = is_ready
+            && !parents_with_open_children.contains(&issue.id)
+            && is_claimable_issue(issue, &default_triage_options.not_ready_labels);
         stmt.execute(params![
             issue.id.as_str(),
             analyzer
@@ -428,6 +455,9 @@ fn insert_metrics(
                 ))
             })?,
             i64::from(cycle_issue_ids.contains(&issue.id)),
+            i64::from(is_ready),
+            i64::from(is_blocked),
+            i64::from(is_claimable),
         ])?;
     }
 
@@ -512,7 +542,9 @@ fn collect_dependency_rows(issues: &[Issue]) -> Vec<ExportDependencyRow> {
             rows.push(ExportDependencyRow {
                 issue_id: issue.id.clone(),
                 depends_on_id: dep.depends_on_id.clone(),
-                dep_type: dep.dep_type.clone(),
+                // Normalize with Rust's whitespace rules before SQLite/JS
+                // consume the type; SQLite TRIM alone only removes spaces.
+                dep_type: dep.dep_type.trim().to_ascii_lowercase(),
                 created_by: dep.created_by.clone(),
                 created_at: dep
                     .created_at
@@ -617,6 +649,7 @@ pub fn rebuild_issue_overview_mv(connection: &Connection) -> Result<()> {
             due_date,
             closed_at,
             source_repo,
+            defer_until,
             pagerank,
             betweenness,
             critical_path_depth,
@@ -627,6 +660,9 @@ pub fn rebuild_issue_overview_mv(connection: &Connection) -> Result<()> {
             dependent_count,
             critical_depth,
             in_cycle,
+            is_ready,
+            is_blocked,
+            is_claimable,
             comment_count,
             blocks_ids,
             blocked_by_ids
@@ -649,6 +685,7 @@ pub fn rebuild_issue_overview_mv(connection: &Connection) -> Result<()> {
             i.due_date,
             i.closed_at,
             i.source_repo,
+            i.defer_until,
             COALESCE(m.pagerank, 0),
             COALESCE(m.betweenness, 0),
             COALESCE(m.critical_path_depth, 0),
@@ -659,6 +696,9 @@ pub fn rebuild_issue_overview_mv(connection: &Connection) -> Result<()> {
             COALESCE(m.blocks_count, 0),
             COALESCE(m.critical_path_depth, 0),
             COALESCE(m.in_cycle, 0),
+            COALESCE(m.is_ready, 0),
+            COALESCE(m.is_blocked, 0),
+            COALESCE(m.is_claimable, 0),
             (
                 SELECT COUNT(*)
                 FROM comments c
@@ -667,20 +707,20 @@ pub fn rebuild_issue_overview_mv(connection: &Connection) -> Result<()> {
             (
                 SELECT GROUP_CONCAT(issue_id)
                 FROM (
-                    SELECT issue_id
+                    SELECT DISTINCT issue_id
                     FROM dependencies
                     WHERE depends_on_id = i.id
-                        AND (type = 'blocks' OR type = '')
+                        AND LOWER(TRIM(type)) IN ('', 'blocks', 'waits-for', 'conditional-blocks')
                     ORDER BY issue_id
                 )
             ),
             (
                 SELECT GROUP_CONCAT(depends_on_id)
                 FROM (
-                    SELECT depends_on_id
+                    SELECT DISTINCT depends_on_id
                     FROM dependencies
                     WHERE issue_id = i.id
-                        AND (type = 'blocks' OR type = '')
+                        AND LOWER(TRIM(type)) IN ('', 'blocks', 'waits-for', 'conditional-blocks')
                     ORDER BY depends_on_id
                 )
             )
@@ -708,12 +748,39 @@ fn configure_connection(connection: &Connection, page_size: u32) -> Result<()> {
 fn verify_existing_contract(connection: &Connection) -> Result<()> {
     let existing_schema_version = query_pragma_i64(connection, "user_version")?;
     if existing_schema_version != 0
+        && existing_schema_version != 2
         && existing_schema_version != i64::from(SQLITE_EXPORT_SCHEMA_VERSION)
     {
         return Err(BvrError::InvalidArgument(format!(
             "existing export database uses schema version {existing_schema_version}, expected {SQLITE_EXPORT_SCHEMA_VERSION}"
         )));
     }
+    Ok(())
+}
+
+fn migrate_previous_export_schema(connection: &mut Connection) -> Result<()> {
+    if query_pragma_i64(connection, "user_version")? != 2 {
+        return Ok(());
+    }
+
+    // Existing Pages destinations must remain usable for the next export.
+    // Add the scheduling contract atomically, retaining the prior issue data;
+    // population below replaces the defaults with the new source snapshot.
+    let tx = connection.transaction()?;
+    tx.execute_batch(
+        "
+        ALTER TABLE issues ADD COLUMN defer_until TEXT;
+        ALTER TABLE issue_metrics ADD COLUMN is_ready INTEGER NOT NULL DEFAULT 0 CHECK (is_ready IN (0, 1));
+        ALTER TABLE issue_metrics ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0 CHECK (is_blocked IN (0, 1));
+        ALTER TABLE issue_metrics ADD COLUMN is_claimable INTEGER NOT NULL DEFAULT 0 CHECK (is_claimable IN (0, 1));
+        ALTER TABLE issue_overview_mv ADD COLUMN defer_until TEXT;
+        ALTER TABLE issue_overview_mv ADD COLUMN is_ready INTEGER NOT NULL DEFAULT 0 CHECK (is_ready IN (0, 1));
+        ALTER TABLE issue_overview_mv ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0 CHECK (is_blocked IN (0, 1));
+        ALTER TABLE issue_overview_mv ADD COLUMN is_claimable INTEGER NOT NULL DEFAULT 0 CHECK (is_claimable IN (0, 1));
+        ",
+    )?;
+    tx.pragma_update(None, "user_version", SQLITE_EXPORT_SCHEMA_VERSION)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -737,6 +804,7 @@ fn create_schema(connection: &Connection) -> Result<()> {
             updated_at TEXT,
             due_date TEXT,
             closed_at TEXT,
+            defer_until TEXT,
             source_repo TEXT NOT NULL DEFAULT '.'
         );
 
@@ -769,6 +837,9 @@ fn create_schema(connection: &Connection) -> Result<()> {
             blocks_count INTEGER NOT NULL DEFAULT 0,
             blocked_by_count INTEGER NOT NULL DEFAULT 0,
             in_cycle INTEGER NOT NULL DEFAULT 0,
+            is_ready INTEGER NOT NULL DEFAULT 0 CHECK (is_ready IN (0, 1)),
+            is_blocked INTEGER NOT NULL DEFAULT 0 CHECK (is_blocked IN (0, 1)),
+            is_claimable INTEGER NOT NULL DEFAULT 0 CHECK (is_claimable IN (0, 1)),
             FOREIGN KEY (issue_id) REFERENCES issues(id)
         );
 
@@ -804,6 +875,7 @@ fn create_schema(connection: &Connection) -> Result<()> {
             updated_at TEXT,
             due_date TEXT,
             closed_at TEXT,
+            defer_until TEXT,
             source_repo TEXT NOT NULL DEFAULT '.',
             pagerank REAL NOT NULL DEFAULT 0,
             betweenness REAL NOT NULL DEFAULT 0,
@@ -815,6 +887,9 @@ fn create_schema(connection: &Connection) -> Result<()> {
             dependent_count INTEGER NOT NULL DEFAULT 0,
             critical_depth INTEGER NOT NULL DEFAULT 0,
             in_cycle INTEGER NOT NULL DEFAULT 0,
+            is_ready INTEGER NOT NULL DEFAULT 0 CHECK (is_ready IN (0, 1)),
+            is_blocked INTEGER NOT NULL DEFAULT 0 CHECK (is_blocked IN (0, 1)),
+            is_claimable INTEGER NOT NULL DEFAULT 0 CHECK (is_claimable IN (0, 1)),
             comment_count INTEGER NOT NULL DEFAULT 0,
             blocks_ids TEXT,
             blocked_by_ids TEXT
@@ -1139,6 +1214,156 @@ mod tests {
         assert!(
             err.to_string().contains("schema version 1"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_export_database_upgrades_v2_and_repopulates_scheduling_data() {
+        let temp = tempdir().expect("tempdir");
+        let database_path = export_database_path(temp.path());
+        let connection = Connection::open(&database_path).expect("open v2 database");
+        // The three affected v2 tables, with no new scheduling columns. The
+        // remaining tables are created by bootstrap as usual.
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE issues (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '', design TEXT NOT NULL DEFAULT '',
+                    acceptance_criteria TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL, priority INTEGER NOT NULL, issue_type TEXT NOT NULL,
+                    assignee TEXT NOT NULL DEFAULT '', estimated_minutes INTEGER,
+                    labels TEXT NOT NULL DEFAULT '[]', created_at TEXT, updated_at TEXT,
+                    due_date TEXT, closed_at TEXT, source_repo TEXT NOT NULL DEFAULT '.'
+                );
+                CREATE TABLE issue_metrics (
+                    issue_id TEXT PRIMARY KEY, pagerank REAL NOT NULL DEFAULT 0,
+                    betweenness REAL NOT NULL DEFAULT 0, critical_path_depth INTEGER NOT NULL DEFAULT 0,
+                    triage_score REAL NOT NULL DEFAULT 0, blocks_count INTEGER NOT NULL DEFAULT 0,
+                    blocked_by_count INTEGER NOT NULL DEFAULT 0, in_cycle INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (issue_id) REFERENCES issues(id)
+                );
+                CREATE TABLE issue_overview_mv (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '', design TEXT NOT NULL DEFAULT '',
+                    acceptance_criteria TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL, priority INTEGER NOT NULL, issue_type TEXT NOT NULL,
+                    assignee TEXT NOT NULL DEFAULT '', estimated_minutes INTEGER,
+                    labels TEXT NOT NULL DEFAULT '[]', created_at TEXT, updated_at TEXT,
+                    due_date TEXT, closed_at TEXT, source_repo TEXT NOT NULL DEFAULT '.',
+                    pagerank REAL NOT NULL DEFAULT 0, betweenness REAL NOT NULL DEFAULT 0,
+                    critical_path_depth INTEGER NOT NULL DEFAULT 0, triage_score REAL NOT NULL DEFAULT 0,
+                    blocks_count INTEGER NOT NULL DEFAULT 0, blocked_by_count INTEGER NOT NULL DEFAULT 0,
+                    blocker_count INTEGER NOT NULL DEFAULT 0, dependent_count INTEGER NOT NULL DEFAULT 0,
+                    critical_depth INTEGER NOT NULL DEFAULT 0, in_cycle INTEGER NOT NULL DEFAULT 0,
+                    comment_count INTEGER NOT NULL DEFAULT 0, blocks_ids TEXT, blocked_by_ids TEXT
+                );
+                INSERT INTO issues (id, title, status, priority, issue_type)
+                    VALUES ('legacy', 'Previous export', 'open', 2, 'task');
+                INSERT INTO issue_metrics (issue_id, pagerank) VALUES ('legacy', 0.25);
+                PRAGMA user_version = 2;
+                ",
+            )
+            .expect("create v2 export fixture");
+        drop(connection);
+
+        let summary = bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("upgrade existing export");
+        assert_eq!(summary.schema_version, 3);
+        let connection = Connection::open(&database_path).expect("open upgraded database");
+        let retained: (String, f64) = connection
+            .query_row(
+                "SELECT title, pagerank FROM issue_overview_mv WHERE id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("prior issue and metrics retained");
+        assert_eq!(retained, ("Previous export".to_string(), 0.25));
+        assert_eq!(export_meta(&connection)["schema_version"], "3");
+        assert_eq!(
+            query_pragma_i64(&connection, "user_version").expect("upgraded user_version"),
+            3
+        );
+        drop(connection);
+
+        let issues = vec![Issue {
+            id: "legacy".to_string(),
+            title: "Now scheduled for later".to_string(),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            defer_until: ts("2999-01-01T00:00:00Z"),
+            ..Issue::default()
+        }];
+        let analyzer = Analyzer::new(issues.clone());
+        let triage = analyzer.triage(TriageOptions::default());
+        populate_export_database(temp.path(), None, &issues, &analyzer, &triage)
+            .expect("repopulate upgraded export");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("v3 bootstrap remains idempotent with data");
+
+        let connection = Connection::open(&database_path).expect("open re-exported database");
+        let exported: (String, String, bool, bool, bool) = connection
+            .query_row(
+                "SELECT title, defer_until, is_ready, is_blocked, is_claimable
+                 FROM issue_overview_mv WHERE id = 'legacy'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("query migrated scheduling fields");
+        assert_eq!(
+            exported,
+            (
+                "Now scheduled for later".to_string(),
+                "2999-01-01T00:00:00.000000Z".to_string(),
+                false,
+                false,
+                false,
+            )
+        );
+    }
+
+    #[test]
+    fn bootstrap_export_database_rolls_back_incomplete_v2_migration() {
+        let temp = tempdir().expect("tempdir");
+        let database_path = export_database_path(temp.path());
+        let connection = Connection::open(&database_path).expect("open incomplete v2 database");
+        connection
+            .execute_batch(
+                "CREATE TABLE issues (id TEXT PRIMARY KEY);
+                 INSERT INTO issues VALUES ('retained');
+                 PRAGMA user_version = 2;",
+            )
+            .expect("create incomplete v2 fixture");
+        drop(connection);
+
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect_err("missing v2 tables must fail the migration");
+        let connection = Connection::open(&database_path).expect("open unchanged v2 database");
+        assert_eq!(
+            query_pragma_i64(&connection, "user_version").expect("unmodified user_version"),
+            2
+        );
+        let columns: Vec<String> = connection
+            .prepare("SELECT name FROM pragma_table_info('issues')")
+            .expect("prepare column query")
+            .query_map([], |row| row.get(0))
+            .expect("query columns")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect columns");
+        assert_eq!(columns, ["id"]);
+        assert_eq!(
+            connection
+                .query_row("SELECT id FROM issues", [], |row| row.get::<_, String>(0))
+                .expect("retained original row"),
+            "retained"
         );
     }
 
@@ -1542,6 +1767,228 @@ mod tests {
         assert_eq!(meta.get("issue_count"), Some(&"2".to_string()));
         assert_eq!(meta.get("dependency_count"), Some(&"1".to_string()));
         assert_eq!(meta.get("comment_count"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn populate_export_database_preserves_core_scheduling_across_refreshes() {
+        let temp = tempdir().expect("tempdir");
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap scheduling export");
+        let issue = |id: &str, status: &str, dependencies: &[(&str, &str)]| Issue {
+            id: id.to_string(),
+            title: id.to_string(),
+            status: status.to_string(),
+            priority: 2,
+            issue_type: "task".to_string(),
+            dependencies: dependencies
+                .iter()
+                .map(|(target, kind)| Dependency {
+                    issue_id: id.to_string(),
+                    depends_on_id: (*target).to_string(),
+                    dep_type: (*kind).to_string(),
+                    ..Dependency::default()
+                })
+                .collect(),
+            ..Issue::default()
+        };
+        let mut issues = vec![
+            issue("root", "open", &[]),
+            issue("done", " CLOSED ", &[]),
+            issue("gone", " TOMBSTONE ", &[]),
+            issue(
+                "resolved",
+                "open",
+                &[
+                    ("done", ""),
+                    ("gone", "conditional-blocks"),
+                    ("root", "related"),
+                ],
+            ),
+            issue(
+                "waiter",
+                "open",
+                &[("root", "\tWAITS-FOR\n"), ("root", "blocks")],
+            ),
+            issue(
+                "conditional",
+                "open",
+                &[("root", "\u{2003}Conditional-Blocks\u{2003}")],
+            ),
+            issue("direct", "open", &[("root", ""), ("root", " BLOCKS ")]),
+            issue("child", "open", &[("waiter", "parent-child")]),
+            issue("grandchild", "open", &[("child", " PARENT-CHILD ")]),
+            Issue {
+                defer_until: ts("2999-01-01T00:00:00Z"),
+                ..issue("future", "open", &[])
+            },
+            Issue {
+                defer_until: ts("2000-01-01T00:00:00Z"),
+                ..issue("elapsed", "open", &[])
+            },
+            issue("working", " IN_PROGRESS ", &[]),
+            Issue {
+                assignee: "alice".to_string(),
+                ..issue("assigned", "open", &[])
+            },
+            Issue {
+                issue_type: " EPIC ".to_string(),
+                ..issue("epic", "open", &[])
+            },
+            issue("container", "open", &[]),
+            issue("container-child", "open", &[("container", "parent-child")]),
+            issue("parked", "deferred", &[]),
+            issue("parked-blocked", "blocked", &[("root", "blocks")]),
+            issue("completed-dependent", "closed", &[("root", "blocks")]),
+            issue("outside", "open", &[("missing", "blocks")]),
+        ];
+        let analyzer = Analyzer::new(issues.clone());
+        let triage = analyzer.triage(TriageOptions {
+            max_recommendations: 1,
+            ..TriageOptions::default()
+        });
+        assert_eq!(triage.result.recommendations.len(), 1);
+        populate_export_database(temp.path(), None, &issues, &analyzer, &triage)
+            .expect("populate all scheduling rows despite recommendation cutoff");
+
+        let expected = BTreeMap::from([
+            ("root", (true, false, true)),
+            ("done", (false, false, false)),
+            ("gone", (false, false, false)),
+            ("resolved", (true, false, true)),
+            ("waiter", (false, true, false)),
+            ("conditional", (false, true, false)),
+            ("direct", (false, true, false)),
+            ("child", (false, true, false)),
+            ("grandchild", (false, true, false)),
+            ("future", (false, false, false)),
+            ("elapsed", (true, false, true)),
+            ("working", (true, false, false)),
+            ("assigned", (true, false, false)),
+            ("epic", (true, false, false)),
+            ("container", (true, false, false)),
+            ("container-child", (true, false, true)),
+            ("parked", (false, false, false)),
+            ("parked-blocked", (false, true, false)),
+            ("completed-dependent", (false, false, false)),
+            ("outside", (true, false, true)),
+        ]);
+        let connection =
+            Connection::open(export_database_path(temp.path())).expect("open scheduling export");
+        assert_scheduling_rows(&connection, &expected);
+        for table in ["issues", "issue_overview_mv"] {
+            let deferred: String = connection
+                .query_row(
+                    &format!("SELECT defer_until FROM {table} WHERE id = 'future'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("defer_until preserved");
+            assert_eq!(deferred, "2999-01-01T00:00:00.000000Z");
+        }
+
+        // Raw relationship lists retain completed prerequisites and deduplicate
+        // normalized blocking kinds; they no longer determine readiness.
+        let direct_lists: BTreeMap<String, Option<String>> = connection
+            .prepare("SELECT id, blocked_by_ids FROM issue_overview_mv")
+            .expect("prepare relationship query")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query relationships")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect relationships");
+        assert_eq!(direct_lists["resolved"].as_deref(), Some("done,gone"));
+        assert_eq!(direct_lists["waiter"].as_deref(), Some("root"));
+        assert_eq!(direct_lists["conditional"].as_deref(), Some("root"));
+        assert_eq!(direct_lists["direct"].as_deref(), Some("root"));
+        assert_eq!(direct_lists["child"], None);
+        assert_eq!(direct_lists["outside"], None);
+        let stored_types: Vec<(String, String)> = connection
+            .prepare(
+                "SELECT issue_id, type FROM dependencies
+                 WHERE issue_id IN ('waiter', 'conditional') ORDER BY issue_id, type",
+            )
+            .expect("prepare canonical dependency type query")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query canonical dependency types")
+            .collect::<std::result::Result<_, _>>()
+            .expect("collect canonical dependency types");
+        assert_eq!(
+            stored_types,
+            [
+                ("conditional".to_string(), "conditional-blocks".to_string()),
+                ("waiter".to_string(), "blocks".to_string()),
+                ("waiter".to_string(), "waits-for".to_string()),
+            ]
+        );
+        let dependents: String = connection
+            .query_row(
+                "SELECT blocks_ids FROM issue_overview_mv WHERE id = 'root'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("normalized direct dependents");
+        assert_eq!(
+            dependents,
+            "completed-dependent,conditional,direct,parked-blocked,waiter"
+        );
+        drop(connection);
+
+        for issue in &mut issues {
+            match issue.id.as_str() {
+                "root" | "container-child" => issue.status = "closed".to_string(),
+                "future" => issue.defer_until = None,
+                "working" => issue.status = "open".to_string(),
+                "assigned" => issue.assignee.clear(),
+                _ => {}
+            }
+        }
+        let refreshed_analyzer = Analyzer::new(issues.clone());
+        let refreshed_triage = refreshed_analyzer.triage(TriageOptions::default());
+        bootstrap_export_database(temp.path(), &SqliteBootstrapOptions::default())
+            .expect("bootstrap existing destination");
+        populate_export_database(
+            temp.path(),
+            None,
+            &issues,
+            &refreshed_analyzer,
+            &refreshed_triage,
+        )
+        .expect("refresh scheduling snapshot");
+
+        let expected_after_refresh = BTreeMap::from([
+            ("root", (false, false, false)),
+            ("done", (false, false, false)),
+            ("gone", (false, false, false)),
+            ("resolved", (true, false, true)),
+            ("waiter", (true, false, false)),
+            ("conditional", (true, false, true)),
+            ("direct", (true, false, true)),
+            ("child", (true, false, false)),
+            ("grandchild", (true, false, true)),
+            ("future", (true, false, true)),
+            ("elapsed", (true, false, true)),
+            ("working", (true, false, true)),
+            ("assigned", (true, false, true)),
+            ("epic", (true, false, false)),
+            ("container", (true, false, true)),
+            ("container-child", (false, false, false)),
+            ("parked", (false, false, false)),
+            ("parked-blocked", (false, false, false)),
+            ("completed-dependent", (false, false, false)),
+            ("outside", (true, false, true)),
+        ]);
+        let connection =
+            Connection::open(export_database_path(temp.path())).expect("open refreshed export");
+        assert_scheduling_rows(&connection, &expected_after_refresh);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT defer_until FROM issue_overview_mv WHERE id = 'future'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .expect("cleared deferral"),
+            None
+        );
     }
 
     #[test]
@@ -2117,6 +2564,29 @@ mod tests {
             reassembled.extend_from_slice(&data);
         }
         assert_eq!(reassembled, content);
+    }
+
+    fn assert_scheduling_rows(
+        connection: &Connection,
+        expected: &BTreeMap<&str, (bool, bool, bool)>,
+    ) {
+        for (table, id_column) in [("issue_metrics", "issue_id"), ("issue_overview_mv", "id")] {
+            let rows: BTreeMap<String, (bool, bool, bool)> = connection
+                .prepare(&format!(
+                    "SELECT {id_column}, is_ready, is_blocked, is_claimable FROM {table}"
+                ))
+                .expect("prepare scheduling query")
+                .query_map([], |row| {
+                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
+                })
+                .expect("query scheduling rows")
+                .collect::<std::result::Result<_, _>>()
+                .expect("collect scheduling rows");
+            assert_eq!(rows.len(), expected.len(), "complete {table} snapshot");
+            for (id, flags) in expected {
+                assert_eq!(rows.get(*id), Some(flags), "{table}: {id}");
+            }
+        }
     }
 
     fn sqlite_object_inventory(connection: &Connection) -> BTreeSet<String> {
