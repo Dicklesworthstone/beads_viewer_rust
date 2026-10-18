@@ -462,6 +462,8 @@ The dashboard's Ready and Blocked filters, actionable counts, Quick Wins, and To
 
 Dependency details retain completed prerequisites for context. Their links, `h`/`l` navigation, and diagrams preserve exact issue IDs and consistently distinguish prerequisites from dependents. Existing schema v2 dashboard databases upgrade to v3 automatically on re-export.
 
+The viewer verifies database byte lengths and SHA-256 checksums against `beads.sqlite3.config.json` before opening SQLite. This covers downloads, each chunk, the assembled database, and browser-cached copies. A corrupt cache is replaced by a verified download; a missing or malformed manifest or mismatched download stops loading with an error. Publish the complete export, including its manifest and chunks, and serve it over HTTPS or localhost so [Web Crypto](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) is available. The checks establish consistency with the published manifest; whole-bundle publication and independent JSON sidecars remain separate concerns.
+
 ### Why pages export exists
 
 It solves a different problem than robot mode:

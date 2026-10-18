@@ -404,7 +404,6 @@ async function loadFromOPFS(cacheKey) {
     const file = await handle.getFile();
     const buffer = await file.arrayBuffer();
     DIAGNOSTICS.opfs = true;
-    DIAGNOSTICS.dbSizeBytes = buffer.byteLength;
     console.log(`[OPFS] Loaded ${buffer.byteLength} bytes from cache`);
     return new Uint8Array(buffer);
   } catch (err) {
@@ -443,6 +442,21 @@ async function cacheToOPFS(data, cacheKey) {
 }
 
 /**
+ * Discard only the current cache entry when it cannot be verified or opened.
+ */
+async function discardOPFSCache(cacheKey) {
+  if (!('storage' in navigator) || !navigator.storage.getDirectory) return;
+  try {
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(`beads-${cacheKey}.sqlite3`);
+  } catch (err) {
+    if (err.name !== 'NotFoundError') {
+      console.warn('[OPFS] Could not discard invalid cache:', err.message);
+    }
+  }
+}
+
+/**
  * Remove stale OPFS cache entries (old hashes and the legacy "default" key).
  * Runs in the background after a successful cache hit to free storage.
  */
@@ -468,41 +482,126 @@ async function cleanStaleOPFS(currentCacheKey) {
 }
 
 /**
- * Fetch JSON file
+ * Validate the manifest emitted by the SQLite exporter before loading bytes.
+ * Chunk paths are canonical export paths, never arbitrary URLs from the manifest.
  */
-async function fetchJSON(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+function validateDatabaseConfig(config) {
+  const fail = message => {
+    throw new Error(`Invalid database manifest: ${message}`);
+  };
+  const validHash = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+  const positiveSize = value => Number.isSafeInteger(value) && value > 0;
+
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    fail('expected an object');
+  }
+  if (!validHash(config.hash)) fail('hash must be a SHA-256 digest');
+  if (!positiveSize(config.total_size)) fail('total_size must be a positive safe integer');
+  if (!positiveSize(config.chunk_size)) fail('chunk_size must be a positive safe integer');
+  if (typeof config.chunked !== 'boolean') fail('chunked must be a boolean');
+  if (!Number.isSafeInteger(config.chunk_count) || config.chunk_count < 0) {
+    fail('chunk_count must be a nonnegative safe integer');
+  }
+  if (config.chunks !== undefined && !Array.isArray(config.chunks)) {
+    fail('chunks must be an array');
+  }
+
+  const chunks = config.chunks || [];
+  if (chunks.length !== config.chunk_count) fail('chunk_count does not match chunks');
+  if (!config.chunked) {
+    if (config.chunk_count !== 0) fail('a single-file database cannot declare chunks');
+    return config;
+  }
+  if (config.chunk_count === 0) fail('a chunked database must declare its chunks');
+
+  let totalSize = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (!chunk || typeof chunk !== 'object' || Array.isArray(chunk)) {
+      fail(`chunk ${i} must be an object`);
+    }
+    if (chunk.path !== `chunks/${String(i).padStart(5, '0')}.bin`) {
+      fail(`chunk ${i} has an invalid export path`);
+    }
+    if (!validHash(chunk.hash)) fail(`chunk ${i} must have a SHA-256 digest`);
+    if (!positiveSize(chunk.size) || chunk.size > config.chunk_size) {
+      fail(`chunk ${i} has an invalid size`);
+    }
+    totalSize += chunk.size;
+    if (!Number.isSafeInteger(totalSize) || totalSize > config.total_size) {
+      fail('chunk sizes exceed total_size');
+    }
+  }
+  if (totalSize !== config.total_size) fail('chunk sizes do not match total_size');
+  return config;
 }
 
 /**
- * Load database chunks and reassemble
+ * Require working Web Crypto; verification must never become an optional check.
  */
-async function loadChunks(config) {
+function databaseDigest() {
+  let subtle;
+  try {
+    subtle = globalThis.crypto?.subtle;
+    if (!subtle || typeof subtle.digest !== 'function') throw new Error('Web Crypto unavailable');
+  } catch {
+    throw new Error('SHA-256 database verification requires Web Crypto. Open this dashboard using HTTPS or localhost.');
+  }
+  return async data => {
+    let digest;
+    try {
+      // Hash the view, including its byte offset and length, not its backing buffer.
+      digest = await subtle.digest('SHA-256', data);
+    } catch (err) {
+      throw new Error(`SHA-256 database verification could not run: ${err?.message || String(err)}. Open this dashboard using HTTPS or localhost with Web Crypto enabled.`);
+    }
+    if (!(digest instanceof ArrayBuffer) || digest.byteLength !== 32) {
+      throw new Error('SHA-256 database verification returned an invalid digest.');
+    }
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  };
+}
+
+class DatabaseIntegrityError extends Error {}
+
+/**
+ * Verify original export bytes before opening SQLite or writing the OPFS cache.
+ */
+async function verifyDatabaseBytes(data, size, hash, label, digest) {
+  if (data.byteLength !== size) {
+    throw new DatabaseIntegrityError(`${label} size mismatch: expected ${size} bytes, received ${data.byteLength}.`);
+  }
+  if (await digest(data) !== hash) {
+    throw new DatabaseIntegrityError(`${label} SHA-256 mismatch: the bytes do not match the exported manifest.`);
+  }
+}
+
+/**
+ * Verify individual database chunks and reassemble them in manifest order.
+ */
+async function loadChunks(config, digest = databaseDigest()) {
+  validateDatabaseConfig(config);
   const chunks = [];
-  const totalChunks = config.chunk_count;
   // Use same cache-buster for all chunks to ensure consistency
   const cacheBuster = `?_t=${Date.now()}`;
 
-  for (let i = 0; i < totalChunks; i++) {
-    const chunkPath = `./chunks/${String(i).padStart(5, '0')}.bin${cacheBuster}`;
-    const response = await fetch(chunkPath);
-    if (!response.ok) throw new Error(`Failed to load chunk ${i}`);
-    const buffer = await response.arrayBuffer();
-    chunks.push(new Uint8Array(buffer));
+  for (const chunk of config.chunks) {
+    const response = await fetch(`./${chunk.path}${cacheBuster}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Failed to load ${chunk.path}: HTTP ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await verifyDatabaseBytes(bytes, chunk.size, chunk.hash, chunk.path, digest);
+    chunks.push(bytes);
   }
 
-  // Concatenate all chunks
-  const totalSize = chunks.reduce((sum, c) => sum + c.length, 0);
-  const combined = new Uint8Array(totalSize);
+  const combined = new Uint8Array(config.total_size);
   let offset = 0;
   for (const chunk of chunks) {
     combined.set(chunk, offset);
     offset += chunk.length;
   }
 
-  console.log(`[Chunks] Reassembled ${totalChunks} chunks, ${totalSize} bytes`);
+  await verifyDatabaseBytes(combined, config.total_size, config.hash, 'Assembled database', digest);
+  console.log(`[Chunks] Verified ${config.chunk_count} chunks, ${combined.byteLength} bytes`);
   return combined;
 }
 
@@ -513,76 +612,89 @@ async function loadDatabase(updateStatus) {
   const SQL = await initSqlJs();
 
   updateStatus?.('Checking cache...');
+  DB_STATE.cacheKey = null;
+  DB_STATE.source = 'unknown';
+  DIAGNOSTICS.dbSource = 'unknown';
+  DIAGNOSTICS.dbSizeBytes = 0;
 
-  // Load config to get cache key
-  // Use cache-busting query param to ensure we always get the latest config
-  // This prevents CDN caching issues on GitHub Pages where stale config
-  // could cause OPFS to serve an outdated database
-  let config = null;
-  try {
-    const cacheBuster = `?_t=${Date.now()}`;
-    config = await fetchJSON('./beads.sqlite3.config.json' + cacheBuster);
-    DB_STATE.cacheKey = config.hash || null;
-  } catch {
-    // Config file may not exist for small DBs
-  }
-
-  // Try OPFS cache first
-  if (DB_STATE.cacheKey) {
-    const cached = await loadFromOPFS(DB_STATE.cacheKey);
-    if (cached) {
-      DB_STATE.db = new SQL.Database(cached);
-      DB_STATE.source = 'cache';
-      DIAGNOSTICS.dbSource = 'cache';
-      // Clean up stale cache entries in the background
-      cleanStaleOPFS(DB_STATE.cacheKey).catch(() => {});
-      return DB_STATE.db;
-    }
-  }
-
-  updateStatus?.('Loading database...');
-
-  // Check if database is chunked
+  let config;
   let dbData;
+  let source;
   try {
-    if (config?.chunked) {
-      updateStatus?.(`Loading ${config.chunk_count} chunks...`);
-      dbData = await loadChunks(config);
-      DB_STATE.source = 'chunks';
-      DIAGNOSTICS.dbSource = 'chunks';
-    } else {
-      // Load single file - try multiple paths
-      // Add cache-busting to avoid CDN serving stale database
-      const cacheBuster = `?_t=${Date.now()}`;
-      const paths = ['./beads.sqlite3' + cacheBuster, './data/beads.sqlite3' + cacheBuster];
-      let loaded = false;
+    // Every export includes this manifest. Missing or malformed config must
+    // not silently turn a verified load into an unverified fallback.
+    const cacheBuster = `?_t=${Date.now()}`;
+    const response = await fetch('./beads.sqlite3.config.json' + cacheBuster, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Could not load database manifest: HTTP ${response.status}`);
+    try {
+      config = validateDatabaseConfig(await response.json());
+    } catch (err) {
+      throw new Error(`Could not read database manifest: ${err.message || err}`);
+    }
+    const digest = databaseDigest();
+    DB_STATE.cacheKey = config.hash;
 
+    let cached = await loadFromOPFS(config.hash);
+    if (cached) {
+      try {
+        await verifyDatabaseBytes(cached, config.total_size, config.hash, 'Cached database', digest);
+      } catch (err) {
+        // Digest support failures are fatal; they do not establish a bad cache.
+        if (!(err instanceof DatabaseIntegrityError)) throw err;
+        console.warn('[OPFS] Discarding invalid database:', err.message);
+        await discardOPFSCache(config.hash);
+        cached = null;
+      }
+      if (cached) {
+        let database;
+        try {
+          database = new SQL.Database(cached);
+        } catch (err) {
+          console.warn('[OPFS] Cached database could not be opened:', err.message);
+          await discardOPFSCache(config.hash);
+        }
+        if (database) {
+          DB_STATE.db = database;
+          DB_STATE.source = 'cache';
+          DIAGNOSTICS.dbSource = 'cache';
+          DIAGNOSTICS.dbSizeBytes = cached.byteLength;
+          cleanStaleOPFS(config.hash).catch(() => {});
+          return database;
+        }
+      }
+    }
+
+    updateStatus?.('Loading database...');
+    if (config.chunked) {
+      updateStatus?.(`Loading ${config.chunk_count} chunks...`);
+      dbData = await loadChunks(config, digest);
+      source = 'chunks';
+    } else {
+      // Both known paths must satisfy the same manifest. A successful response
+      // with mismatched bytes is an integrity failure, not a fallback signal.
+      const paths = ['./beads.sqlite3' + cacheBuster, './data/beads.sqlite3' + cacheBuster];
       for (const path of paths) {
         try {
-          const response = await fetch(path);
+          const response = await fetch(path, { cache: 'no-store' });
           if (response.ok) {
-            const buffer = await response.arrayBuffer();
-            dbData = new Uint8Array(buffer);
-            DIAGNOSTICS.dbSizeBytes = buffer.byteLength;
-            DB_STATE.source = 'network';
-            DIAGNOSTICS.dbSource = 'network';
-            loaded = true;
+            dbData = new Uint8Array(await response.arrayBuffer());
             break;
           }
         } catch {
-          // Try next path
+          // A failed request may use the other known path, still verified below.
         }
       }
-
-      if (!loaded) {
-        throw new Error('Database not found at any known path');
-      }
+      if (!dbData) throw new Error('Database not found at any known path');
+      updateStatus?.('Verifying database...');
+      await verifyDatabaseBytes(dbData, config.total_size, config.hash, 'Downloaded database', digest);
+      source = 'network';
     }
   } catch (err) {
+    DB_STATE.db = null;
     showError({
-      title: 'Database Not Found',
-      message: 'Could not load the issues database.',
-      details: `${err.message}\n\nThe beads.sqlite3 file may be missing or corrupted.`,
+      title: 'Database Verification Failed',
+      message: 'The issues database could not be loaded safely.',
+      details: `${err.message}\n\nReload the page after the complete export has been published.`,
       actions: [
         { label: 'Reload Page', action: () => location.reload() },
       ],
@@ -594,6 +706,7 @@ async function loadDatabase(updateStatus) {
   try {
     DB_STATE.db = new SQL.Database(dbData);
   } catch (err) {
+    DB_STATE.db = null;
     showError({
       title: 'Database Corrupted',
       message: 'The database file could not be opened.',
@@ -606,12 +719,15 @@ async function loadDatabase(updateStatus) {
     throw err;
   }
 
-  // Cache for next time and clean up stale entries (e.g., legacy "default" key)
-  if (DB_STATE.cacheKey) {
-    updateStatus?.('Caching for offline...');
-    await cacheToOPFS(DB_STATE.db.export(), DB_STATE.cacheKey);
-    cleanStaleOPFS(DB_STATE.cacheKey).catch(() => {});
-  }
+  DB_STATE.source = source;
+  DIAGNOSTICS.dbSource = source;
+  DIAGNOSTICS.dbSizeBytes = dbData.byteLength;
+
+  // Keep the exact verified export bytes. SQLite reserialization can change
+  // the file representation and would no longer match the manifest digest.
+  updateStatus?.('Caching for offline...');
+  await cacheToOPFS(dbData, config.hash);
+  cleanStaleOPFS(config.hash).catch(() => {});
 
   return DB_STATE.db;
 }

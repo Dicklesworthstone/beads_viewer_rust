@@ -124,6 +124,7 @@ let mutationExport;
 let dependencyExport;
 let standaloneExport;
 let readinessExport;
+const integrityExports = new Map();
 
 // These expectations describe the source fixture, independently of the browser
 // implementation. The fixture is exported by bvr so Rust readiness, SQLite, and
@@ -471,6 +472,38 @@ async function exportedReadinessFixture(t) {
   return 'readiness-fixture/';
 }
 
+async function exportedIntegrityFixture(t, kind = 'single') {
+  if (!integrityExports.has(kind)) {
+    const id = kind === 'other' ? 'integrity-evil' : 'integrity-good';
+    const directory = await exportBrowserFixture(`integrity-${kind}`, [{
+      id, title: kind === 'other' ? 'Replaced issue' : 'Expected issue',
+      // Exceed the real exporter's chunk threshold without adding an unrelated
+      // large graph workload or synthesizing a second chunking implementation.
+      description: kind === 'chunks' ? 'Chunked database payload. '.repeat(240000) : '**Verified Markdown**',
+    }]);
+    const bytes = await readFile(path.join(directory, 'beads.sqlite3'));
+    const config = JSON.parse(await readFile(path.join(directory, 'beads.sqlite3.config.json'), 'utf8'));
+    assert.equal(config.total_size, bytes.length);
+    assert.equal(config.hash, createHash('sha256').update(bytes).digest('hex'));
+    assert.equal(config.chunked, kind === 'chunks', 'the real CLI chooses the tested transfer mode');
+    if (config.chunked) {
+      assert.ok(config.chunk_count > 1, 'the real export spans multiple chunks');
+      const chunks = [];
+      for (const chunk of config.chunks) {
+        const part = await readFile(path.join(directory, chunk.path));
+        assert.equal(part.length, chunk.size);
+        assert.equal(createHash('sha256').update(part).digest('hex'), chunk.hash);
+        chunks.push(part);
+      }
+      assert.deepEqual(Buffer.concat(chunks), bytes, 'actual chunks reproduce the exact exported database');
+    }
+    integrityExports.set(kind, { directory, id, bytes, config, path: `integrity-fixture/${kind}/` });
+  }
+  const fixture = integrityExports.get(kind);
+  t.diagnostic('Real integrity --export-pages dashboard: ' + fixture.directory);
+  return fixture;
+}
+
 async function exportedStandaloneFixture(t) {
   if (!standaloneExport) {
     const parent = path.resolve(process.env.BVR_VIEWER_ARTIFACT_DIR || os.tmpdir());
@@ -594,6 +627,13 @@ async function fixtureDatabase(fixtureIssues = issues, fixtureDependencies = dep
   return bytes;
 }
 
+function fixtureDatabaseConfig(bytes) {
+  return {
+    chunked: false, chunk_count: 0, chunk_size: 1048576,
+    total_size: bytes.length, hash: createHash('sha256').update(bytes).digest('hex'),
+  };
+}
+
 before(async () => {
   const database = await fixtureDatabase();
   const graphDatabase = await fixtureDatabase(graphIssues, graphDependencies);
@@ -616,8 +656,10 @@ before(async () => {
     const dependencyFixture = requestedPath.startsWith('/dependency-fixture/');
     const standaloneFixture = requestedPath.startsWith('/standalone-fixture/');
     const readinessFixture = requestedPath.startsWith('/readiness-fixture/');
-    const exportedFixture = readinessFixture || standaloneFixture || dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
-    const pathname = standaloneFixture ? requestedPath.slice('/standalone-fixture'.length)
+    const integrityName = requestedPath.match(/^\/integrity-fixture\/([^/]+)\//)?.[1];
+    const exportedFixture = integrityName || readinessFixture || standaloneFixture || dependencyFixture || mutationFixture || bottleneckFixture || requestedPath.startsWith('/export-fixture/');
+    const pathname = integrityName ? requestedPath.slice(`/integrity-fixture/${integrityName}`.length)
+      : standaloneFixture ? requestedPath.slice('/standalone-fixture'.length)
       : readinessFixture ? requestedPath.slice('/readiness-fixture'.length)
       : dependencyFixture ? requestedPath.slice('/dependency-fixture'.length)
       : mutationFixture ? requestedPath.slice('/mutation-fixture'.length)
@@ -636,7 +678,7 @@ before(async () => {
     }
     if (!exportedFixture && pathname === '/beads.sqlite3.config.json') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end('{}');
+      response.end(JSON.stringify(fixtureDatabaseConfig(graphFixture ? graphDatabase : database)));
       return;
     }
     if (graphFixture && pathname === '/data/history.json') {
@@ -645,7 +687,8 @@ before(async () => {
       return;
     }
     const relative = pathname === '/' ? 'index.html' : pathname.slice(1);
-    const servingRoot = readinessFixture ? readinessExport : standaloneFixture ? standaloneExport : dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
+    const servingRoot = integrityName ? integrityExports.get(integrityName)?.directory
+      : readinessFixture ? readinessExport : standaloneFixture ? standaloneExport : dependencyFixture ? dependencyExport : mutationFixture ? mutationExport
       : bottleneckFixture ? bottleneckExport : exportedFixture ? securityExport : assets;
     if (!servingRoot) {
       response.writeHead(404).end();
@@ -758,6 +801,222 @@ async function openViewer(t, mobile, hash = '#/', useClock = false, fixturePath 
   }
   await searchInput(page, mobile);
   return page;
+}
+
+const databaseRequest = /\/beads\.sqlite3(?:\?|$)/;
+const configRequest = /\/beads\.sqlite3\.config\.json(?:\?|$)/;
+const chunkRequest = /\/chunks\/\d+\.bin(?:\?|$)/;
+
+async function cachedDatabaseIdentity(page, hash) {
+  return page.evaluate(async key => {
+    const root = await navigator.storage.getDirectory();
+    try {
+      const file = await (await root.getFileHandle(`beads-${key}.sqlite3`)).getFile();
+      const bytes = await file.arrayBuffer();
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return {
+        size: bytes.byteLength,
+        hash: Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join(''),
+      };
+    } catch (error) {
+      if (error.name === 'NotFoundError') return null;
+      throw error;
+    }
+  }, hash);
+}
+
+async function replaceCachedDatabase(page, hash, bytes) {
+  await page.evaluate(async ({ key, data }) => {
+    const root = await navigator.storage.getDirectory();
+    const handle = await root.getFileHandle(`beads-${key}.sqlite3`, { create: true });
+    const stream = await handle.createWritable();
+    await stream.write(new Uint8Array(data));
+    await stream.close();
+  }, { key: hash, data: Array.from(bytes) });
+}
+
+async function assertIntegrityFailure(page, expected) {
+  await page.waitForFunction(() => {
+    const app = window.Alpine?.$data(document.querySelector('[x-data="beadsApp()"]'));
+    return app && !app.loading;
+  });
+  const state = await page.evaluate(selector => {
+    const app = Alpine.$data(document.querySelector('[x-data="beadsApp()"]'));
+    return {
+      databaseLoaded: Boolean(window.beadsViewer.DB_STATE.db),
+      issueIds: app.issues.map(issue => issue.id),
+      error: app.error,
+      visibleRows: [...document.querySelectorAll(selector)].filter(row => row.getClientRects().length).length,
+    };
+  }, rowSelector);
+  assert.equal(state.databaseLoaded, false, 'unverified bytes never become the active database');
+  assert.deepEqual(state.issueIds, [], 'failed verification exposes no issue records');
+  assert.equal(state.visibleRows, 0, 'failed verification renders no issue rows');
+  assert.match(state.error, expected, 'the user sees the concrete integrity failure');
+  await page.locator('[x-show="error"]').waitFor({ state: 'visible' });
+  const caches = await page.evaluate(async () => {
+    const names = [];
+    for await (const [name] of (await navigator.storage.getDirectory()).entries()) {
+      if (name.startsWith('beads-') && name.endsWith('.sqlite3')) names.push(name);
+    }
+    return names;
+  });
+  assert.deepEqual(caches, [], 'failed network/config verification does not poison the database cache');
+}
+
+for (const transfer of ['single', 'chunks']) {
+  test(`integrity: actual ${transfer} export verifies downloads and reuses the original cached bytes`, async t => {
+    const fixture = await exportedIntegrityFixture(t, transfer);
+    const page = await openViewer(t, false, '#/issues', false, fixture.path);
+    await results(page, [fixture.id], '');
+    assert.equal(await page.evaluate(() => window.beadsViewer.DB_STATE.source),
+      transfer === 'single' ? 'network' : 'chunks');
+    assert.deepEqual(await cachedDatabaseIdentity(page, fixture.config.hash), {
+      hash: fixture.config.hash, size: fixture.config.total_size,
+    }, 'OPFS stores exactly the bytes covered by the exported checksum');
+
+    let payloadRequests = 0;
+    for (const pattern of [databaseRequest, chunkRequest]) {
+      await page.route(pattern, request => { payloadRequests++; return request.abort(); });
+    }
+    await page.reload();
+    await results(page, [fixture.id], '');
+    assert.equal(await page.evaluate(() => window.beadsViewer.DB_STATE.source), 'cache');
+    assert.equal(payloadRequests, 0, 'a verified cache needs no database/chunk download');
+    assert.deepEqual(await cachedDatabaseIdentity(page, fixture.config.hash), {
+      hash: fixture.config.hash, size: fixture.config.total_size,
+    });
+  });
+}
+
+for (const corruption of ['same-size valid SQLite replacement', 'truncated download']) {
+  test(`integrity: actual export rejects a ${corruption}`, async t => {
+    const fixture = await exportedIntegrityFixture(t);
+    const replacement = await exportedIntegrityFixture(t, 'other');
+    assert.equal(replacement.bytes.length, fixture.bytes.length, 'the valid replacement defeats length-only checks');
+    assert.notEqual(replacement.config.hash, fixture.config.hash);
+    const bytes = corruption.startsWith('same-size') ? replacement.bytes : fixture.bytes.subarray(0, -1);
+    const page = await openViewer(t, false, '#/issues', false, fixture.path, async page => {
+      await page.route(databaseRequest, request => request.fulfill({
+        status: 200, contentType: 'application/octet-stream', body: bytes,
+      }));
+    });
+    await assertIntegrityFailure(page, /checksum|SHA-256|size|length/i);
+  });
+}
+
+for (const corruption of ['same-size valid SQLite replacement', 'truncated cache']) {
+  test(`integrity: actual export recovers from a ${corruption} using verified network bytes`, async t => {
+    const fixture = await exportedIntegrityFixture(t);
+    const replacement = await exportedIntegrityFixture(t, 'other');
+    const page = await openViewer(t, false, '#/issues', false, fixture.path);
+    await results(page, [fixture.id], '');
+    const bytes = corruption.startsWith('same-size') ? replacement.bytes : fixture.bytes.subarray(0, 32);
+    await replaceCachedDatabase(page, fixture.config.hash, bytes);
+    let payloadRequests = 0;
+    await page.route(databaseRequest, request => { payloadRequests++; return request.continue(); });
+    await page.reload();
+    await results(page, [fixture.id], '');
+    assert.equal(payloadRequests, 1, 'invalid cache triggers one canonical network download');
+    assert.equal(await page.evaluate(() => window.beadsViewer.DB_STATE.source), 'network');
+    assert.deepEqual(await cachedDatabaseIdentity(page, fixture.config.hash), {
+      hash: fixture.config.hash, size: fixture.config.total_size,
+    }, 'the corrupt cache is replaced with the original verified export');
+  });
+}
+
+test('integrity: invalid cache and mismatched network both fail without retaining poisoned bytes', async t => {
+  const fixture = await exportedIntegrityFixture(t);
+  const replacement = await exportedIntegrityFixture(t, 'other');
+  const page = await openViewer(t, false, '#/issues', false, fixture.path);
+  await results(page, [fixture.id], '');
+  await replaceCachedDatabase(page, fixture.config.hash, replacement.bytes);
+  await page.route(databaseRequest, request => request.fulfill({
+    status: 200, contentType: 'application/octet-stream', body: replacement.bytes,
+  }));
+  await page.reload();
+  await assertIntegrityFailure(page, /checksum|SHA-256/i);
+});
+
+for (const scenario of [
+  { name: 'missing manifest', status: 404 },
+  { name: 'malformed manifest JSON', body: '{broken' },
+  { name: 'missing checksum', mutate: config => { delete config.hash; } },
+  { name: 'invalid byte length', mutate: config => { config.total_size = -1; } },
+  { name: 'inconsistent chunk count', chunked: true, mutate: config => { config.chunk_count++; } },
+  { name: 'external chunk path', chunked: true, mutate: config => { config.chunks[0].path = 'https://example.invalid/payload.bin'; } },
+  { name: 'inconsistent chunk sizes', chunked: true, mutate: config => { config.chunks[0].size--; } },
+]) {
+  test(`integrity: actual export fails closed for ${scenario.name}`, async t => {
+    const fixture = await exportedIntegrityFixture(t, scenario.chunked ? 'chunks' : 'single');
+    const config = structuredClone(fixture.config);
+    scenario.mutate?.(config);
+    let payloadRequests = 0;
+    const page = await openViewer(t, false, '#/issues', false, fixture.path, async page => {
+      await page.route(configRequest, request => request.fulfill({
+        status: scenario.status || 200, contentType: 'application/json',
+        body: scenario.body || JSON.stringify(config),
+      }));
+      for (const pattern of [databaseRequest, chunkRequest, /example\.invalid/]) {
+        await page.route(pattern, request => { payloadRequests++; return request.abort(); });
+      }
+    });
+    await assertIntegrityFailure(page, /manifest|config|checksum|hash|size|chunk|JSON|HTTP/i);
+    assert.equal(payloadRequests, 0, 'invalid transfer metadata is rejected before payload requests');
+  });
+}
+
+for (const hashing of ['unavailable', 'rejecting']) {
+  test(`integrity: actual export fails clearly when browser hashing is ${hashing}`, async t => {
+    const fixture = await exportedIntegrityFixture(t);
+    const page = await openViewer(t, false, '#/issues', false, fixture.path, async page => {
+      await page.addInitScript(mode => {
+        if (mode === 'unavailable') {
+          Object.defineProperty(crypto, 'subtle', { configurable: true, value: undefined });
+        } else {
+          Object.defineProperty(crypto.subtle, 'digest', {
+            configurable: true, value: () => Promise.reject(new Error('SHA-256 unavailable in fixture')),
+          });
+        }
+      }, hashing);
+    });
+    await assertIntegrityFailure(page, /SHA-256|verification|secure|hash/i);
+  });
+}
+
+for (const corruption of ['corrupt chunk', 'truncated chunk', 'missing chunk', 'swapped chunks', 'wrong aggregate checksum']) {
+  test(`integrity: actual chunked export rejects ${corruption}`, async t => {
+    const fixture = await exportedIntegrityFixture(t, 'chunks');
+    const first = fixture.config.chunks[0];
+    const original = await readFile(path.join(fixture.directory, first.path));
+    let payloadRequests = 0;
+    const page = await openViewer(t, false, '#/issues', false, fixture.path, async page => {
+      if (corruption === 'wrong aggregate checksum') {
+        await page.route(configRequest, request => request.fulfill({
+          status: 200, contentType: 'application/json',
+          body: JSON.stringify({ ...fixture.config, hash: '0'.repeat(64) }),
+        }));
+      }
+      await page.route(chunkRequest, async request => {
+        payloadRequests++;
+        if (!new URL(request.request().url()).pathname.endsWith('/' + first.path)
+          || corruption === 'wrong aggregate checksum') return request.continue();
+        if (corruption === 'missing chunk') return request.fulfill({ status: 404 });
+        let bytes = Buffer.from(original);
+        if (corruption === 'corrupt chunk') bytes[bytes.length - 1] ^= 1;
+        if (corruption === 'truncated chunk') bytes = bytes.subarray(0, -1);
+        if (corruption === 'swapped chunks') {
+          bytes = await readFile(path.join(fixture.directory, fixture.config.chunks[1].path));
+          assert.equal(bytes.length, original.length, 'swap preserves chunk length');
+          assert.notEqual(createHash('sha256').update(bytes).digest('hex'), first.hash);
+        }
+        return request.fulfill({ status: 200, contentType: 'application/octet-stream', body: bytes });
+      });
+    });
+    await assertIntegrityFailure(page, /chunk|checksum|SHA-256|size|length/i);
+    assert.equal(payloadRequests, corruption === 'wrong aggregate checksum' ? fixture.config.chunk_count : 1,
+      'each chunk is checked before proceeding, and the final database hash is checked after assembly');
+  });
 }
 
 function listView(page) {
