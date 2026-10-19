@@ -155,13 +155,21 @@ pub fn compute_execution_plan(
 
     // Exclude in_progress issues from highest_impact to match legacy behavior:
     // the "highest impact" pick should surface new work, not work already claimed.
+    // Track order includes running work, so after filtering it cannot rank the
+    // remaining candidates. Compare every candidate using the item score/ID order.
     let highest_impact_item = tracks
         .iter()
         .flat_map(|track| track.items.iter())
-        .find(|item| {
+        .filter(|item| {
             graph
                 .issue(&item.id)
                 .is_none_or(|issue| issue.normalized_status() != "in_progress")
+        })
+        .min_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.id.cmp(&right.id))
         });
 
     let highest_impact = highest_impact_item.map(|item| item.id.clone());
@@ -206,6 +214,119 @@ mod tests {
     use crate::model::{Dependency, Issue};
 
     use super::{compute_execution_plan, unique_unblocks_count};
+
+    fn impact_issue(id: &str, status: &str, prerequisites: &[&str]) -> Issue {
+        Issue {
+            id: id.to_string(),
+            title: format!("Issue {id}"),
+            status: status.to_string(),
+            issue_type: "task".to_string(),
+            priority: 2,
+            dependencies: prerequisites
+                .iter()
+                .map(|target| Dependency {
+                    depends_on_id: (*target).to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                })
+                .collect(),
+            ..Issue::default()
+        }
+    }
+
+    fn impact_tracks() -> Vec<Issue> {
+        // RUN and Z are actionable in one track because both block JOIN.
+        // A is an independent track. RUN sorts first but cannot be the pick.
+        vec![
+            impact_issue("RUN", "in_progress", &[]),
+            impact_issue("Z", "open", &[]),
+            impact_issue("A", "open", &[]),
+            impact_issue("JOIN", "open", &["RUN", "Z"]),
+        ]
+    }
+
+    #[test]
+    fn plan_highest_impact_compares_candidates_across_tracks() {
+        for (local_score, other_score, expected) in [(0.1, 0.8, "A"), (0.8, 0.1, "Z")] {
+            let scores = HashMap::from([
+                ("RUN".to_string(), 0.99),
+                ("Z".to_string(), local_score),
+                ("A".to_string(), other_score),
+                // A high score must not make the blocked join a candidate.
+                ("JOIN".to_string(), 1.0),
+            ]);
+            let mut issues = impact_tracks();
+            for _ in 0..issues.len() {
+                let plan = compute_execution_plan(&IssueGraph::build(&issues), &scores);
+                assert_eq!(plan.tracks.len(), 2);
+                assert_eq!(plan.tracks[0].items[0].id, "RUN");
+                assert_eq!(plan.tracks[0].items[1].id, "Z");
+                assert_eq!(plan.total_actionable, 3);
+                assert_eq!(plan.total_blocked, 1);
+                assert_eq!(plan.summary.highest_impact.as_deref(), Some(expected));
+                assert!(
+                    plan.summary
+                        .impact_reason
+                        .as_deref()
+                        .expect("selected candidate has an explanation")
+                        .starts_with(&format!("highest impact: {expected} (score 0.80"))
+                );
+                issues.rotate_left(1);
+            }
+        }
+    }
+
+    #[test]
+    fn plan_highest_impact_ties_use_issue_ids_not_track_rank() {
+        let scores = HashMap::from([
+            ("RUN".to_string(), 0.99),
+            ("Z".to_string(), 0.5),
+            ("A".to_string(), 0.5),
+        ]);
+        let mut issues = impact_tracks();
+        for _ in 0..issues.len() {
+            let plan = compute_execution_plan(&IssueGraph::build(&issues), &scores);
+            assert_eq!(plan.tracks[0].items[0].id, "RUN");
+            assert_eq!(plan.summary.highest_impact.as_deref(), Some("A"));
+            assert_eq!(
+                plan.summary.impact_reason.as_deref(),
+                Some("highest impact: A (score 0.50)")
+            );
+            issues.rotate_left(1);
+        }
+    }
+
+    #[test]
+    fn plan_highest_impact_skips_a_track_containing_only_running_work() {
+        let issues = vec![
+            impact_issue("RUN", "in_progress", &[]),
+            impact_issue("OPEN", "open", &[]),
+        ];
+        let scores = HashMap::from([("RUN".to_string(), 0.99), ("OPEN".to_string(), 0.2)]);
+        let plan = compute_execution_plan(&IssueGraph::build(&issues), &scores);
+        assert_eq!(plan.tracks.len(), 2);
+        assert_eq!(plan.tracks[0].items[0].id, "RUN");
+        assert_eq!(plan.total_actionable, 2, "running work stays in the plan");
+        assert_eq!(plan.summary.highest_impact.as_deref(), Some("OPEN"));
+        assert_eq!(
+            plan.summary.impact_reason.as_deref(),
+            Some("highest impact: OPEN (score 0.20)")
+        );
+    }
+
+    #[test]
+    fn plan_highest_impact_is_empty_when_all_actionable_work_is_running() {
+        let issues = vec![
+            impact_issue("A", "in_progress", &[]),
+            impact_issue("B", "in_progress", &[]),
+        ];
+        let scores = HashMap::from([("A".to_string(), 0.99), ("B".to_string(), 0.2)]);
+        let plan = compute_execution_plan(&IssueGraph::build(&issues), &scores);
+        assert_eq!(plan.total_actionable, 2);
+        assert_eq!(plan.tracks.len(), 2);
+        assert!(plan.summary.highest_impact.is_none());
+        assert!(plan.summary.impact_reason.is_none());
+    }
 
     #[test]
     fn plan_groups_by_components() {
