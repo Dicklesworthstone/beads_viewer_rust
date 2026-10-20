@@ -240,84 +240,83 @@ function initBurndownChart() {
 }
 
 /**
- * Compute burndown data from issues
- * Groups by day and computes cumulative counts
+ * Project creation/completion timestamps onto at most 31 UTC day-end samples.
+ * The last sample is now, so changes today are included without counting future
+ * events. This is a snapshot projection, not reconstructed status history:
+ * current blocked/open state is used before completion, and reopened issues
+ * ignore obsolete close timestamps.
+ *
+ * Choose samples BEFORE counting. Work is O(issues * log(samples)) with bounded
+ * auxiliary storage, independent of the number of days covered by the data.
  */
 function computeBurndownData() {
     const issues = chartsState.issues;
-    if (!issues.length) {
-        return { labels: [], open: [], closed: [], blocked: [] };
+    const result = { labels: [], open: [], closed: [], blocked: [] };
+    const now = Date.now();
+    const dayMs = 86400000;
+    // Missing timestamps are not the Unix epoch. Exported timestamps are
+    // strings; invalid values cannot expand the date range or create counts.
+    const timestamp = value => typeof value === 'string' && value.trim()
+        ? new Date(value).getTime() : NaN;
+    let earliest = Infinity;
+    for (const issue of issues) {
+        const created = timestamp(issue.created_at || issue.createdAt);
+        if (Number.isFinite(created) && created <= now) earliest = Math.min(earliest, created);
+    }
+    if (!Number.isFinite(earliest)) return result;
+
+    const firstDay = Math.floor(earliest / dayMs);
+    const lastDay = Math.floor(now / dayMs);
+    const sampleCount = Math.min(31, lastDay - firstDay + 1);
+    const cutoffs = [];
+    for (let i = 0; i < sampleCount; i++) {
+        const day = sampleCount === 1 ? lastDay
+            : firstDay + Math.floor(i * (lastDay - firstDay) / (sampleCount - 1));
+        cutoffs.push(Math.min((day + 1) * dayMs - 1, now));
+        result.labels.push(formatDateLabel(formatDateKey(new Date(day * dayMs))));
     }
 
-    // Get date range
-    const dates = issues
-        .map(i => new Date(i.created_at || i.createdAt))
-        .filter(d => !isNaN(d));
-
-    if (!dates.length) {
-        return { labels: [], open: [], closed: [], blocked: [] };
-    }
-
-    const minDate = new Date(Math.min(...dates));
-    const maxDate = new Date();
-
-    // Generate daily buckets
-    const buckets = new Map();
-    const current = new Date(minDate);
-    while (current <= maxDate) {
-        const key = formatDateKey(current);
-        buckets.set(key, { open: 0, closed: 0, blocked: 0 });
-        current.setDate(current.getDate() + 1);
-    }
-
-    // Count issues at each point
-    issues.forEach(issue => {
-        const created = new Date(issue.created_at || issue.createdAt);
-        const status = issue.status || 'open';
-
-        // Issue contributes to count from creation date onward
-        buckets.forEach((counts, dateKey) => {
-            const bucketDate = new Date(dateKey);
-            if (bucketDate >= created) {
-                // Check if closed before this date
-                let closedAt = null;
-                if (issue.closed_at) {
-                    closedAt = new Date(issue.closed_at);
-                } else if (status === 'closed' && issue.updated_at) {
-                    closedAt = new Date(issue.updated_at);
-                }
-
-                if (closedAt && bucketDate >= closedAt) {
-                    counts.closed++;
-                } else if (status === 'blocked') {
-                    counts.blocked++;
-                } else {
-                    counts.open++;
-                }
-            }
-        });
-    });
-
-    // Convert to arrays
-    const labels = [];
-    const open = [];
-    const closed = [];
-    const blocked = [];
-
-    // Sample every N days if too many data points
-    const entries = [...buckets.entries()];
-    const sampleRate = Math.max(1, Math.floor(entries.length / 30));
-
-    entries.forEach(([date, counts], i) => {
-        if (i % sampleRate === 0 || i === entries.length - 1) {
-            labels.push(formatDateLabel(date));
-            open.push(counts.open);
-            closed.push(counts.closed);
-            blocked.push(counts.blocked);
+    // First displayed snapshot that contains the event. All accepted events
+    // are <= now, so the final cutoff always contains them.
+    const slotFor = time => {
+        let low = 0;
+        let high = sampleCount - 1;
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2);
+            if (cutoffs[middle] < time) low = middle + 1;
+            else high = middle;
         }
-    });
-
-    return { labels, open, closed, blocked };
+        return low;
+    };
+    const deltas = {
+        open: new Array(sampleCount).fill(0),
+        closed: new Array(sampleCount).fill(0),
+        blocked: new Array(sampleCount).fill(0),
+    };
+    for (const issue of issues) {
+        const created = timestamp(issue.created_at || issue.createdAt);
+        if (!Number.isFinite(created) || created > now) continue;
+        const status = String(issue.status || 'open').trim().toLowerCase();
+        const active = status === 'blocked' ? 'blocked' : 'open';
+        deltas[active][slotFor(created)]++;
+        if (status === 'closed' || status === 'tombstone') {
+            let completed = timestamp(issue.closed_at || issue.closedAt);
+            if (!Number.isFinite(completed) || completed > now) {
+                completed = timestamp(issue.updated_at || issue.updatedAt);
+            }
+            // No reliable completion time: only the current snapshot establishes
+            // closure. Never invent a historical close or count a future event.
+            if (!Number.isFinite(completed) || completed > now) completed = now;
+            const slot = slotFor(Math.max(created, completed));
+            deltas[active][slot]--;
+            deltas.closed[slot]++;
+        }
+    }
+    for (const key of ['open', 'closed', 'blocked']) {
+        let count = 0;
+        result[key] = deltas[key].map(delta => { count += delta; return count; });
+    }
+    return result;
 }
 
 function updateBurndownChart() {
@@ -710,7 +709,7 @@ function formatDateKey(date) {
 
 function formatDateLabel(dateStr) {
     const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 function capitalize(str) {
