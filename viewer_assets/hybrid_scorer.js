@@ -20,12 +20,13 @@ class HybridScorer {
   score(result) {
     const statusScore = this.normalizeStatus(result.status);
     const priorityScore = this.normalizePriority(result.priority);
-    const impactScore = this.normalizeImpact(result.blockerCount || 0);
+    const impactScore = this.normalizeImpact(result.blockerCount);
     const recencyScore = this.normalizeRecency(result.updatedAt);
-    const pagerank = typeof result.pagerank === 'number' ? result.pagerank : 0.5;
+    const pagerank = HybridScorer.unitScore(result.pagerank, 0.5);
+    const textScore = HybridScorer.unitScore(result.textScore, 0);
 
     const finalScore =
-      this.weights.text * result.textScore +
+      this.weights.text * textScore +
       this.weights.pagerank * pagerank +
       this.weights.status * statusScore +
       this.weights.impact * impactScore +
@@ -50,19 +51,33 @@ class HybridScorer {
       return [];
     }
     const maxBlocker = results.reduce(
-      (max, r) => Math.max(max, r.blockerCount || 0),
+      (max, r) => Number.isFinite(r.blockerCount)
+        ? Math.max(max, r.blockerCount) : max,
       0
     );
     this.maxBlockerCount = maxBlocker;
 
     return results
       .map(r => this.score(r))
-      .sort((a, b) => b.hybrid_score - a.hybrid_score);
+      .sort(HybridScorer.compareResults);
+  }
+
+  static unitScore(value, fallback) {
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
+  }
+
+  static compareResults(a, b) {
+    const scoreOrder = b.hybrid_score - a.hybrid_score;
+    if (scoreOrder !== 0) return scoreOrder;
+    const left = String(a.id ?? a.issue_id ?? '');
+    const right = String(b.id ?? b.issue_id ?? '');
+    return left < right ? -1 : left > right ? 1 : 0;
   }
 
   normalizeStatus(status) {
     const STATUS_WEIGHTS = { open: 1.0, in_progress: 0.8, blocked: 0.5, closed: 0.1 };
-    return STATUS_WEIGHTS[status] ?? 0.5;
+    return Object.prototype.hasOwnProperty.call(STATUS_WEIGHTS, status)
+      ? STATUS_WEIGHTS[status] : 0.5;
   }
 
   normalizePriority(priority) {
@@ -72,6 +87,7 @@ class HybridScorer {
 
   normalizeImpact(blockerCount) {
     if (this.maxBlockerCount === 0) return 0.5;
+    if (!Number.isFinite(blockerCount)) return 0;
     if (blockerCount <= 0) return 0;
     if (blockerCount >= this.maxBlockerCount) return 1.0;
     return blockerCount / this.maxBlockerCount;
@@ -79,7 +95,11 @@ class HybridScorer {
 
   normalizeRecency(updatedAt) {
     if (!updatedAt) return 0.5;
-    const daysSince = (Date.now() - new Date(updatedAt).getTime()) / (1000 * 60 * 60 * 24);
+    const timestamp = new Date(updatedAt).getTime();
+    if (!Number.isFinite(timestamp)) return 0.5;
+    // Clock skew and valid far-future dates must not turn a normalized
+    // component into Infinity (even zero-weight components would yield NaN).
+    const daysSince = Math.max(0, (Date.now() - timestamp) / (1000 * 60 * 60 * 24));
     return Math.exp(-daysSince / 30);
   }
 }
