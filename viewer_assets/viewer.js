@@ -1294,6 +1294,11 @@ function searchIssues(term, options = {}) {
   const searchFilters = { ...filters };
   delete searchFilters.search;
 
+  // Decide the execution path before choosing SQL pagination. Without the
+  // optional hybrid libraries, SQL must apply the caller's offset itself.
+  const useHybrid = mode === 'hybrid'
+    && typeof HybridScorer !== 'undefined' && typeof HYBRID_PRESETS !== 'undefined';
+
   const { clauses, params } = buildFilterClauses(searchFilters, 'i');
   const baseSQL = `
       SELECT i.*,
@@ -1311,12 +1316,12 @@ function searchIssues(term, options = {}) {
   }
 
   let fetchLimit = limit;
-  if (mode === 'hybrid') {
+  if (useHybrid) {
     const minCandidates = isShortQuery(term) ? HYBRID_CANDIDATE_MIN_SHORT : HYBRID_CANDIDATE_MIN;
     fetchLimit = Math.max(limit * 2, offset + limit, minCandidates);
   }
-  const fetchOffset = mode === 'hybrid' ? 0 : offset;
-  sql += ` ORDER BY ${BM25_EXPR} LIMIT ? OFFSET ?`;
+  const fetchOffset = useHybrid ? 0 : offset;
+  sql += ` ORDER BY ${BM25_EXPR}, i.id COLLATE BINARY LIMIT ? OFFSET ?`;
   queryParams.push(fetchLimit, fetchOffset);
 
   let rows = [];
@@ -1329,14 +1334,19 @@ function searchIssues(term, options = {}) {
     rows = promoteExactID(term, rows);
   }
 
-  if (mode !== 'hybrid' || typeof HybridScorer === 'undefined' || typeof HYBRID_PRESETS === 'undefined') {
+  if (!useHybrid) {
     return rows.slice(0, limit);
   }
 
-  const maxBM25 = Math.max(...rows.map(r => Math.abs(r.bm25_score ?? 0)), 0);
+  // FTS5 negates BM25: more negative means more relevant. Convert to a
+  // positive strength before weighting; subtracting from one reverses rank.
+  // Do not reward missing/invalid scores or spread an unbounded candidate set
+  // into Math.max (large result sets can exceed the engine's argument limit).
+  const bm25Strength = score => Number.isFinite(score) && score < 0 ? -score : 0;
+  const maxBM25 = rows.reduce((max, r) => Math.max(max, bm25Strength(r.bm25_score)), 0);
   const normalized = rows.map(r => ({
     ...r,
-    textScore: maxBM25 > 0 ? (1 - Math.min(Math.abs(r.bm25_score ?? 0) / maxBM25, 1)) : 0.5,
+    textScore: maxBM25 > 0 ? bm25Strength(r.bm25_score) / maxBM25 : 0.5,
     blockerCount: r.blocker_count ?? r.blocked_by_count ?? 0,
     updatedAt: r.updated_at,
     pagerank: r.pagerank,

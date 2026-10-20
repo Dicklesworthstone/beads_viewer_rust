@@ -19,7 +19,7 @@ function runtime({ fallback = true } = {}) {
   const warnings = [];
   const context = vm.createContext({
     Date: FixedDate,
-    console: { log() {}, warn(...args) { warnings.push(args); } },
+    console: { log() {}, error() {}, warn(...args) { warnings.push(args); } },
   });
   context.window = context;
   for (const name of fallback
@@ -372,3 +372,310 @@ test('large accelerated batches retain all 5001 identities exactly once', () => 
   assert.equal(calls.freed, 1);
   finiteRanking(ranked);
 });
+
+// Load the complete viewer script, with only browser event registration stubbed.
+// Its real filter builder and query/count wrappers execute against a sql.js-shaped
+// adapter backed by node:sqlite FTS5. This does not run Alpine, the actual sql.js
+// WASM runtime, or the CLI exporter. The existing viewer CI uses Node 24.
+function searchRuntime({ fallback = true, execute } = {}) {
+  const { context, warnings } = runtime({ fallback });
+  const source = fs.readFileSync(path.join(ASSETS, 'viewer.js'), 'utf8');
+  context.addEventListener = () => {};
+  context.document = { addEventListener() {} };
+  vm.runInContext(source, context, { filename: 'viewer.js' });
+  const query = execute || (() => { throw new Error('query adapter not supplied'); });
+  context.beadsViewer.DB_STATE.db = {
+    exec(sql, params) {
+      const rows = query(sql, params);
+      if (!rows.length) return [];
+      const columns = Object.keys(rows[0]);
+      return [{ columns, values: rows.map(value => columns.map(column => value[column])) }];
+    },
+  };
+  context.queryIssues = () => { throw new Error('unexpected FTS fallback'); };
+  return { context, warnings };
+}
+
+function searchDatabase(t) {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(':memory:');
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE issue_overview_mv (
+      id TEXT PRIMARY KEY, title TEXT, description TEXT, labels TEXT,
+      assignee TEXT, status TEXT, priority INTEGER, pagerank REAL,
+      blocker_count INTEGER, updated_at TEXT
+    );
+    CREATE VIRTUAL TABLE issues_fts USING fts5(
+      id UNINDEXED, title, description, labels, assignee
+    );
+  `);
+  const insert = db.prepare('INSERT INTO issue_overview_mv VALUES (?,?,?,?,?,?,?,?,?,?)');
+  for (const [id, title, description] of [
+    ['BEST', 'nebula nebula nebula', 'nebula observing guide'],
+    ['MEDIUM', 'nebula', 'observing handbook with background notes'],
+    ['WEAK', 'Journal', `nebula ${'unrelated lengthy background '.repeat(80)}`],
+    ['OTHER', 'Different topic', 'no query term here'],
+  ]) {
+    insert.run(id, title, description, '[]', '', 'open', 2, 0.5, 0, '2026-01-15T12:00:00Z');
+  }
+  db.exec('INSERT INTO issues_fts SELECT id,title,description,labels,assignee FROM issue_overview_mv');
+  const execute = (sql, params) => db.prepare(sql).all(...params);
+  // Independent SQL ordering establishes the expected relevance direction.
+  const expected = db.prepare(`
+    SELECT id, bm25(issues_fts, 3.0, 2.0, 1.0, 1.5, 0.5) AS score
+    FROM issues_fts WHERE issues_fts MATCH ? ORDER BY score, id
+  `).all('nebula*');
+  assert.deepEqual(ids(expected), ['BEST', 'MEDIUM', 'WEAK']);
+  assert.ok(expected.every(value => value.score < 0));
+  assert.ok(expected[0].score < expected[1].score && expected[1].score < expected[2].score);
+  return { db, execute, expected };
+}
+
+for (const preset of ['text-only', 'default', 'bug-hunting', 'sprint-planning', 'impact-first']) {
+  test(`Pages ${preset} preserves actual SQLite FTS5 relevance`, t => {
+    const { execute, expected } = searchDatabase(t);
+    const { context } = searchRuntime({ execute });
+    const ranked = context.searchIssues('nebula', { mode: 'hybrid', preset });
+    assert.deepEqual(ids(ranked), ids(expected));
+    assert.equal(ranked[0].text_score, 1);
+    assert.ok(ranked[0].text_score > ranked[1].text_score);
+    assert.ok(ranked[1].text_score > ranked[2].text_score);
+    for (const result of ranked) {
+      assert.equal(result.bm25_score, expected.find(value => value.id === result.id).score);
+    }
+    assert.ok(ranked[0].snippet.includes('<mark>nebula</mark>'));
+    finiteRanking(ranked);
+  });
+}
+
+test('Pages relevance is corrected before either accelerated or fallback ranking', t => {
+  const { execute, expected } = searchDatabase(t);
+  const { context } = searchRuntime({ execute });
+  const calls = installBackend(context, payload => payload.map(value => scored(value.id, value.text_score)).reverse());
+  const ranked = context.searchIssues('nebula', { mode: 'hybrid', preset: 'text-only' });
+  assert.deepEqual(ids(ranked), ids(expected));
+  assert.equal(calls.payload.find(value => value.id === 'BEST').text_score, 1);
+  assert.ok(calls.payload.find(value => value.id === 'WEAK').text_score < 1);
+  assert.equal(calls.freed, 1);
+});
+
+test('Pages uses the correct SQL relevance when the optional scorer wrapper is absent', t => {
+  const { execute, expected } = searchDatabase(t);
+  const { context } = searchRuntime({ execute });
+  context.scoreBatchHybrid = undefined;
+  assert.deepEqual(ids(context.searchIssues('nebula', { mode: 'hybrid', preset: 'text-only' })), ids(expected));
+});
+
+test('Pages accelerator failure does not restore the reversed SQL relevance', t => {
+  const { execute, expected } = searchDatabase(t);
+  const { context } = searchRuntime({ execute });
+  const calls = installBackend(context, null, { scoreError: true, freeError: true });
+  assert.deepEqual(ids(context.searchIssues('nebula', { mode: 'hybrid', preset: 'text-only' })), ids(expected));
+  assert.equal(calls.freed, 1);
+});
+
+test('Pages hybrid pagination slices the correctly ranked candidate pool', t => {
+  const { execute, expected } = searchDatabase(t);
+  const { context } = searchRuntime({ execute });
+  const pages = expected.map((_, offset) => context.searchIssues('nebula', {
+    mode: 'hybrid', preset: 'text-only', limit: 1, offset,
+  }));
+  assert.deepEqual(pages.flatMap(ids), ids(expected));
+  assert.deepEqual(ids(context.searchIssues('nebula', {
+    mode: 'hybrid', preset: 'text-only', limit: 1, offset: expected.length,
+  })), []);
+});
+
+test('Pages missing or invalid BM25 scores never outrank genuine stronger matches', () => {
+  const invalid = [undefined, null, 0, -0, NaN, Infinity, -Infinity, 'not-a-score', '-100', 5];
+  const rows = [row('STRONG', { bm25_score: -4 }), row('WEAK', { bm25_score: -1 }),
+    ...invalid.map((bm25_score, index) => row(`BAD-${index}`, { bm25_score }))];
+  const before = structuredClone(rows);
+  const { context } = searchRuntime({ execute: () => rows });
+  const ranked = context.searchIssues('nebula', { mode: 'hybrid', preset: 'text-only' });
+  assert.deepEqual(ids(ranked).slice(0, 2), ['STRONG', 'WEAK']);
+  assert.equal(ranked[0].text_score, 1);
+  assert.equal(ranked[1].text_score, 0.25);
+  assert.ok(ranked.slice(2).every(value => value.text_score === 0));
+  assert.deepEqual(rows, before, 'source hits and metadata remain unchanged');
+  finiteRanking(ranked);
+});
+
+test('Pages handles the full finite negative BM25 range without overflow', () => {
+  const rows = [row('STRONG', { bm25_score: -Number.MAX_VALUE }),
+    row('WEAK', { bm25_score: -Number.MIN_VALUE })];
+  const { context } = searchRuntime({ execute: () => rows });
+  const ranked = context.searchIssues('nebula', { mode: 'hybrid', preset: 'text-only' });
+  assert.deepEqual(ids(ranked), ['STRONG', 'WEAK']);
+  assert.equal(ranked[0].text_score, 1);
+  assert.equal(ranked[1].text_score, 0);
+  finiteRanking(ranked);
+});
+
+test('Pages normalizes large candidate sets without a spread argument limit', () => {
+  const rows = Array.from({ length: 150000 }, (_, index) => ({
+    id: String(index).padStart(6, '0'), bm25_score: -(index + 1),
+    status: 'open', priority: 2, pagerank: 0.5,
+  }));
+  const { context } = searchRuntime({ execute: () => rows });
+  const ranked = context.searchIssues('nebula', {
+    mode: 'hybrid', preset: 'text-only', limit: rows.length,
+  });
+  assert.equal(ranked.length, rows.length);
+  assert.equal(ranked[0].id, rows.at(-1).id);
+  assert.equal(ranked.at(-1).id, rows[0].id);
+  assert.equal(ranked[0].text_score, 1);
+  assert.equal(new Set(ids(ranked)).size, rows.length);
+});
+
+test('Pages zero-information BM25 batches retain neutral text contribution', () => {
+  const { context } = searchRuntime({ execute: () => [row('Z', { bm25_score: 0 }), row('A')] });
+  const ranked = context.searchIssues('nebula', { mode: 'hybrid', preset: 'text-only' });
+  assert.deepEqual(ids(ranked), ['A', 'Z']);
+  assert.ok(ranked.every(value => value.text_score === 0.5));
+  finiteRanking(ranked);
+});
+
+test('Pages text mode retains direct SQLite ordering and pagination', t => {
+  const { execute, expected } = searchDatabase(t);
+  const { context } = searchRuntime({ execute });
+  assert.deepEqual(ids(context.searchIssues('nebula')), ids(expected));
+  assert.deepEqual(ids(context.searchIssues('nebula', { offset: 1, limit: 1 })), ['MEDIUM']);
+});
+
+test('Pages missing hybrid library retains the SQLite ranked rows', t => {
+  const { execute, expected } = searchDatabase(t);
+  const { context } = searchRuntime({ execute, fallback: false });
+  assert.deepEqual(ids(context.searchIssues('nebula', { mode: 'hybrid' })), ids(expected));
+});
+
+test('Pages exact-ID promotion still precedes relevance order', () => {
+  // This fixture isolates promotion; hyphens in raw FTS expressions are a
+  // separate query-parsing concern, so do not claim it tests the SQL parser.
+  const { context } = searchRuntime({ execute: () => [
+    row('OTHER', { bm25_score: -10 }), row('BD-1', { bm25_score: -1 }),
+  ] });
+  assert.deepEqual(ids(context.searchIssues('bd-1', { mode: 'hybrid', preset: 'text-only' })), ['BD-1', 'OTHER']);
+});
+
+test('Pages empty FTS results remain empty', t => {
+  const { execute } = searchDatabase(t);
+  const { context } = searchRuntime({ execute });
+  assert.deepEqual(ids(context.searchIssues('absentterm', { mode: 'hybrid' })), []);
+});
+
+test('Pages FTS errors preserve the existing query fallback arguments', () => {
+  const { context } = searchRuntime({ execute: () => { throw new Error('no FTS'); } });
+  const fallbackRows = [row('FALLBACK')];
+  let captured;
+  context.queryIssues = (...args) => { captured = plain(args); return fallbackRows; };
+  assert.equal(context.searchIssues('nebula', {
+    mode: 'hybrid', limit: 2, offset: 3, filters: { status: 'open' },
+  }), fallbackRows);
+  assert.deepEqual(captured, [{ status: 'open', search: 'nebula' }, 'score', 2, 3]);
+});
+
+for (const available of ['neither', 'scorer-only', 'presets-only']) {
+  test(`Pages hybrid pagination falls back to SQL when ${available} is available`, t => {
+    const { execute, expected } = searchDatabase(t);
+    const queries = [];
+    const { context } = searchRuntime({
+      fallback: false,
+      execute: (sql, params) => {
+        queries.push(plain(params));
+        return execute(sql, params);
+      },
+    });
+    if (available === 'scorer-only') {
+      vm.runInContext('class HybridScorer { constructor() { throw new Error("not usable without presets"); } }', context);
+    } else if (available === 'presets-only') {
+      vm.runInContext('const HYBRID_PRESETS = { default: { text: 1 } };', context);
+    }
+
+    const pages = [];
+    for (let offset = 0; offset <= expected.length; offset += 1) {
+      pages.push(context.searchIssues('nebula', { mode: 'hybrid', limit: 1, offset }));
+    }
+    assert.deepEqual(pages.flatMap(ids), ids(expected), 'every match appears once across pages');
+    assert.deepEqual(ids(pages.at(-1)), [], 'past the final page must be empty');
+    assert.deepEqual(queries.map(params => params.slice(-2)), [[1, 0], [1, 1], [1, 2], [1, 3]],
+      'SQL performs the requested pagination rather than fetching the first candidate pool repeatedly');
+  });
+}
+
+test('Pages missing hybrid libraries preserve active filter parameters and page offsets', t => {
+  const { db, execute } = searchDatabase(t);
+  db.prepare("UPDATE issue_overview_mv SET status = 'closed' WHERE id = ?").run('MEDIUM');
+  const queries = [];
+  const { context } = searchRuntime({
+    fallback: false,
+    execute: (sql, params) => { queries.push(plain(params)); return execute(sql, params); },
+  });
+  const filters = { status: 'open', search: 'ignored stale search' };
+  const pages = [0, 1, 2].map(offset => context.searchIssues('nebula', {
+    mode: 'hybrid', limit: 1, offset, filters,
+  }));
+  assert.deepEqual(pages.flatMap(ids), ['BEST', 'WEAK']);
+  assert.deepEqual(ids(pages.at(-1)), []);
+  assert.deepEqual(queries, [['nebula*', 'open', 1, 0], ['nebula*', 'open', 1, 1], ['nebula*', 'open', 1, 2]]);
+  assert.equal(filters.search, 'ignored stale search', 'caller filters remain unchanged');
+});
+
+test('Pages equal-relevance SQL pages use exact issue ID ordering across insertion orders', t => {
+  const { db, execute } = searchDatabase(t);
+  const permutations = [
+    ['Z', 'a', 'A,1', 'A'],
+    ['A,1', 'A', 'a', 'Z'],
+  ];
+  for (const order of permutations) {
+    db.exec('DELETE FROM issues_fts; DELETE FROM issue_overview_mv;');
+    const insert = db.prepare('INSERT INTO issue_overview_mv VALUES (?,?,?,?,?,?,?,?,?,?)');
+    for (const id of order) {
+      insert.run(id, 'nebula', 'same content', '[]', '', 'open', 2, 0.5, 0, null);
+    }
+    db.exec('INSERT INTO issues_fts SELECT id,title,description,labels,assignee FROM issue_overview_mv ORDER BY rowid');
+    for (const [mode, fallback] of [['text', true], ['hybrid', false]]) {
+      const { context } = searchRuntime({ execute, fallback });
+      const pages = order.map((_, offset) => context.searchIssues('nebula', { mode, limit: 1, offset }));
+      assert.deepEqual(pages.flatMap(ids), ['A', 'A,1', 'Z', 'a'], `${mode}: insertion order cannot determine page boundaries`);
+    }
+  }
+});
+
+for (const fallback of [true, false]) {
+  test(`Pages application next/previous navigation with hybrid library ${fallback ? 'present' : 'absent'}`, t => {
+    const { execute } = searchDatabase(t);
+    const { context } = searchRuntime({ execute, fallback });
+    context.localStorage = { getItem: () => null };
+    context.location = { hash: '#/issues?q=nebula' };
+    context.URLSearchParams = URLSearchParams;
+    context.history = {
+      replaceState(_state, _title, hash) { context.location.hash = hash; },
+    };
+    const app = context.beadsApp();
+    app.view = 'issues';
+    app.searchQuery = 'nebula';
+    app.searchMode = 'hybrid';
+    app.searchPreset = 'text-only';
+    app.pageSize = 1;
+    app.loadIssues();
+    assert.equal(app.totalIssues, 3, 'count and list query use the same database');
+    assert.deepEqual(ids(app.issues), ['BEST']);
+    app.nextPage();
+    assert.equal(app.page, 2);
+    assert.deepEqual(ids(app.issues), ['MEDIUM']);
+    app.nextPage();
+    assert.equal(app.page, 3);
+    assert.deepEqual(ids(app.issues), ['WEAK']);
+    app.nextPage();
+    assert.equal(app.page, 3, 'the final page is retained');
+    app.prevPage();
+    assert.deepEqual(ids(app.issues), ['MEDIUM']);
+    app.prevPage();
+    app.prevPage();
+    assert.equal(app.page, 1, 'navigation cannot go before page one');
+    assert.deepEqual(ids(app.issues), ['BEST']);
+    assert.equal(context.location.hash, '#/issues?q=nebula');
+  });
+}
