@@ -187,3 +187,188 @@ test('missing WASM uses the actual JavaScript scorer and preserves metadata', ()
   assert.deepEqual(plain(actual), plain(expected));
   assert.equal(actual.find(value => value.id === 'A').description, '<b>literal source</b>');
 });
+
+// Fault injection replaces only the optional WASM constructor. Batch matching,
+// validation, fallback scoring and cleanup execute the shipped loader verbatim.
+function installBackend(context, reply, { constructError, scoreError, freeError } = {}) {
+  const calls = { constructed: 0, scored: 0, freed: 0, payload: null };
+  context.TestBackend = class {
+    constructor() {
+      calls.constructed += 1;
+      if (constructError) throw new Error('constructor failed');
+    }
+    score_batch(raw) {
+      calls.scored += 1;
+      calls.payload = JSON.parse(raw);
+      if (scoreError) throw new Error('scoring failed');
+      const result = typeof reply === 'function' ? reply(calls.payload) : reply;
+      return typeof result === 'string' ? result : JSON.stringify(result);
+    }
+    free() {
+      calls.freed += 1;
+      if (freeError) throw new Error('cleanup failed');
+    }
+  };
+  vm.runInContext('HybridWasmCtor = TestBackend', context);
+  return calls;
+}
+
+function scored(id, score = 0.9) {
+  return { id, score, components: [0.2, 1, 0.5, 0.8, 0.5] };
+}
+
+const invalidBatches = [
+  ['duplicate IDs with unchanged count', [scored('A'), scored('A')]],
+  ['unknown ID replacing a result', [scored('A'), scored('UNKNOWN')]],
+  ['unknown extra result', [scored('B'), scored('UNKNOWN'), scored('A', 0.1)]],
+  ['missing result', [scored('B')]],
+  ['empty batch', []],
+  ['object instead of batch', { results: [scored('B'), scored('A')] }],
+  ['null batch', null],
+  ['null entry', [null, scored('B')]],
+  ['empty ID', [scored(''), scored('B')]],
+  ['numeric ID', [scored(1), scored('B')]],
+  ['missing score', [{ id: 'A', components: [0, 0, 0, 0, 0] }, scored('B')]],
+  ['null score', [scored('A', null), scored('B')]],
+  ['string score', [scored('A', '0.99'), scored('B')]],
+  ['boolean score', [scored('A', true), scored('B')]],
+  ['non-finite score', '[{"id":"A","score":1e999,"components":[0,0,0,0,0]},{"id":"B","score":0.9,"components":[0,0,0,0,0]}]'],
+  ['missing components', [{ id: 'A', score: 0.1 }, scored('B')]],
+  ['short components', [{ ...scored('A', 0.1), components: [0.5] }, scored('B')]],
+  ['extra components', [{ ...scored('A', 0.1), components: [0, 0, 0, 0, 0, 0] }, scored('B')]],
+  ['null component', [{ ...scored('A', 0.1), components: [0, 0, null, 0, 0] }, scored('B')]],
+  ['string component', [{ ...scored('A', 0.1), components: [0, 0, '0.5', 0, 0] }, scored('B')]],
+  ['non-finite component', '[{"id":"A","score":0.1,"components":[0,0,1e999,0,0]},{"id":"B","score":0.9,"components":[0,0,0,0,0]}]'],
+  ['invalid JSON', '{unfinished'],
+];
+
+for (const [name, reply] of invalidBatches) {
+  test(`WASM ${name} falls back to the complete JavaScript ranking`, () => {
+    const { context } = runtime();
+    const rows = [row('A', { textScore: 0.9 }), row('B', { textScore: 0.1 })];
+    const before = structuredClone(rows);
+    const expected = new context.HybridScorer().scoreAndRank(rows);
+    const calls = installBackend(context, reply);
+    const ranked = context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+    finiteRanking(ranked);
+    assert.deepEqual(plain(ranked), plain(expected));
+    assert.deepEqual(rows, before);
+    assert.equal(calls.constructed, 1);
+    assert.equal(calls.scored, 1);
+    assert.equal(calls.freed, 1);
+  });
+}
+
+test('valid WASM scores are used and preserve exact IDs and original metadata', () => {
+  const { context } = runtime();
+  const rows = [
+    row('A,1', { description: '<img src=x onerror="sentinel()">' }),
+    row('__proto__', { textScore: 0.1 }),
+  ];
+  const before = structuredClone(rows);
+  const calls = installBackend(context, [scored('A,1', 0.1), scored('__proto__', 0.9)]);
+  const ranked = context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+  assert.deepEqual(ids(ranked), ['__proto__', 'A,1']);
+  assert.equal(ranked[0].hybrid_score, 0.9, 'must not silently disable acceleration');
+  assert.equal(ranked[1].description, rows[0].description);
+  assert.deepEqual(rows, before);
+  assert.equal(calls.freed, 1);
+  finiteRanking(ranked);
+});
+
+test('equal WASM scores use the same exact-ID tie order as JavaScript', () => {
+  const { context } = runtime();
+  const rows = [row('Z'), row('A')];
+  const calls = installBackend(context, [scored('Z', 0.5), scored('A', 0.5)]);
+  assert.deepEqual(ids(context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default)), ['A', 'Z']);
+  assert.equal(calls.freed, 1);
+});
+
+test('ambiguous input IDs retain both original rows instead of duplicating the last', () => {
+  const { context } = runtime();
+  const rows = [row('A', { title: 'First', textScore: 0.9 }), row('A', { title: 'Second', textScore: 0.1 })];
+  const expected = new context.HybridScorer().scoreAndRank(rows);
+  const calls = installBackend(context, [scored('A'), scored('A')]);
+  const ranked = context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+  assert.deepEqual(plain(ranked), plain(expected));
+  assert.equal(calls.constructed, 0, 'ambiguous identities cannot be merged safely');
+});
+
+test('empty input IDs use a lossless fallback', () => {
+  const { context } = runtime();
+  const rows = [row(''), row('B')];
+  const expected = new context.HybridScorer().scoreAndRank(rows);
+  const calls = installBackend(context, [scored(''), scored('B')]);
+  assert.deepEqual(plain(context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default)), plain(expected));
+  assert.equal(calls.constructed, 0);
+});
+
+test('constructor failure uses JavaScript without attempting to free an absent instance', () => {
+  const { context } = runtime();
+  const rows = [row('A'), row('B')];
+  const calls = installBackend(context, null, { constructError: true });
+  assert.deepEqual(
+    plain(context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default)),
+    plain(new context.HybridScorer().scoreAndRank(rows)),
+  );
+  assert.equal(calls.scored, 0);
+  assert.equal(calls.freed, 0);
+});
+
+test('cleanup failure cannot replace a valid accelerated ranking with an exception', () => {
+  const { context, warnings } = runtime();
+  const rows = [row('A'), row('B')];
+  const calls = installBackend(context, [scored('B', 0.9), scored('A', 0.1)], { freeError: true });
+  const ranked = context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+  assert.deepEqual(ids(ranked), ['B', 'A']);
+  assert.equal(ranked[0].hybrid_score, 0.9);
+  assert.equal(calls.freed, 1);
+  assert.equal(warnings.length, 1, 'cleanup failure is still observable');
+});
+
+test('simultaneous score and cleanup failures preserve the complete fallback', () => {
+  const { context } = runtime();
+  const rows = [row('A'), row('B')];
+  const calls = installBackend(context, null, { scoreError: true, freeError: true });
+  const ranked = context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+  assert.deepEqual(plain(ranked), plain(new context.HybridScorer().scoreAndRank(rows)));
+  assert.equal(calls.freed, 1);
+});
+
+test('valid acceleration works without the optional JavaScript fallback library', () => {
+  const { context } = runtime({ fallback: false });
+  const calls = installBackend(context, [scored('A', 0.1), scored('B', 0.9)]);
+  const rows = [row('A'), row('B')];
+  const ranked = context.scoreBatchHybrid(rows, { text: 1 });
+  assert.deepEqual(ids(ranked), ['B', 'A']);
+  assert.equal(ranked[0].hybrid_score, 0.9);
+  assert.equal(calls.freed, 1);
+});
+
+test('malformed acceleration without JavaScript returns every original result', () => {
+  const { context } = runtime({ fallback: false });
+  installBackend(context, [scored('A'), scored('A')]);
+  const rows = [row('A'), row('B')];
+  const ranked = context.scoreBatchHybrid(rows, { text: 1 });
+  assert.equal(ranked, rows, 'neither backend may fabricate a partial replacement');
+});
+
+test('future dates are sent to WASM as zero age, not the missing-date sentinel', () => {
+  const { context } = runtime();
+  const rows = [row('FUTURE', { updatedAt: '9999-01-01T00:00:00Z' }), row('MISSING', { updatedAt: null })];
+  const calls = installBackend(context, [scored('FUTURE'), scored('MISSING', 0.1)]);
+  context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+  assert.equal(calls.payload[0].days_since_update, 0);
+  assert.equal(calls.payload[1].days_since_update, -1);
+});
+
+test('large accelerated batches retain all 5001 identities exactly once', () => {
+  const { context } = runtime();
+  const rows = Array.from({ length: 5001 }, (_, index) => row(`id-${String(index).padStart(5, '0')}`));
+  const calls = installBackend(context, payload => payload.map(value => scored(value.id, 0.5)).reverse());
+  const ranked = context.scoreBatchHybrid(rows, context.HYBRID_PRESETS.default);
+  assert.deepEqual(ids(ranked), ids(rows));
+  assert.equal(new Set(ids(ranked)).size, rows.length);
+  assert.equal(calls.freed, 1);
+  finiteRanking(ranked);
+});

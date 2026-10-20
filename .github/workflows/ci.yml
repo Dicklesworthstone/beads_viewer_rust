@@ -106,6 +106,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Hybrid search asset tests
+        run: node --test scripts/test_hybrid_scorer.cjs
       - name: Build exporter with embedded viewer assets
         run: cargo build --locked
       - name: Prepare browser test runtime

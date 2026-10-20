@@ -41,7 +41,7 @@ function daysSince(updatedAt) {
   if (!updatedAt) return -1;
   const ts = new Date(updatedAt).getTime();
   if (!Number.isFinite(ts)) return -1;
-  return (Date.now() - ts) / (1000 * 60 * 60 * 24);
+  return Math.max(0, (Date.now() - ts) / (1000 * 60 * 60 * 24));
 }
 
 async function initHybridWasmScorer(issueCount) {
@@ -97,6 +97,15 @@ function scoreBatchHybrid(results, weights) {
     return scoreBatchHybridFallback(results, weights);
   }
 
+  // A batch must be a one-to-one mapping back to the original search hits.
+  // Duplicate input identities cannot safely pass through an ID-keyed merger.
+  const byId = new Map();
+  for (const result of results) {
+    const id = String(result.id ?? result.issue_id ?? '');
+    if (!id || byId.has(id)) return scoreBatchHybridFallback(results, weights);
+    byId.set(id, result);
+  }
+
   const payload = results.map(r => ({
     id: String(r.id ?? r.issue_id ?? ''),
     text_score: toNumber(r.textScore ?? r.text_score, 0),
@@ -112,39 +121,52 @@ function scoreBatchHybrid(results, weights) {
     scorer = new HybridWasmCtor(JSON.stringify(weights));
     const raw = scorer.score_batch(JSON.stringify(payload));
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return scoreBatchHybridFallback(results, weights);
+    if (!Array.isArray(parsed) || parsed.length !== results.length) {
+      throw new Error('WASM returned an incomplete search batch');
     }
 
-    const byId = new Map(
-      results.map(r => [String(r.id ?? r.issue_id ?? ''), r])
-    );
     const merged = [];
+    const seen = new Set();
     for (const item of parsed) {
+      if (!item || typeof item.id !== 'string' || !byId.has(item.id)
+          || seen.has(item.id) || !Number.isFinite(item.score)
+          || !Array.isArray(item.components) || item.components.length !== 5
+          || !item.components.every(Number.isFinite)) {
+        throw new Error('WASM returned invalid or duplicate search results');
+      }
+      seen.add(item.id);
       const base = byId.get(item.id);
-      if (!base) continue;
       merged.push({
         ...base,
-        hybrid_score: toNumber(item.score, 0),
+        hybrid_score: item.score,
         component_scores: {
-          pagerank: toNumber(item.components?.[0], 0.5),
-          status: toNumber(item.components?.[1], 0.5),
-          impact: toNumber(item.components?.[2], 0.5),
-          priority: toNumber(item.components?.[3], 0.5),
-          recency: toNumber(item.components?.[4], 0.5),
+          pagerank: item.components[0],
+          status: item.components[1],
+          impact: item.components[2],
+          priority: item.components[3],
+          recency: item.components[4],
         },
       });
     }
-    if (merged.length !== results.length) {
-      return scoreBatchHybridFallback(results, weights);
-    }
-    return merged;
+    // Do not depend on an optional backend's iteration order. This is the
+    // same score/ID order as JavaScript, and also works when that asset is absent.
+    return merged.sort((a, b) => {
+      const scoreOrder = b.hybrid_score - a.hybrid_score;
+      if (scoreOrder !== 0) return scoreOrder;
+      const left = String(a.id ?? a.issue_id ?? '');
+      const right = String(b.id ?? b.issue_id ?? '');
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
   } catch (err) {
     console.warn('[HybridScorer] WASM scoring failed, using JS fallback', err);
     return scoreBatchHybridFallback(results, weights);
   } finally {
-    if (scorer && typeof scorer.free === 'function') {
-      scorer.free();
+    // Cleanup must not override either successful output or a successful
+    // fallback with an exception from the optional accelerator.
+    try {
+      if (scorer && typeof scorer.free === 'function') scorer.free();
+    } catch (err) {
+      console.warn('[HybridScorer] WASM cleanup failed', err);
     }
   }
 }
