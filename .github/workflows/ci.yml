@@ -131,6 +131,19 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  preview-macos:
+    name: macOS Preview Server
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Accepted socket regression
+        run: cargo test --locked --lib export_pages::tests::preview_ -- --test-threads=4
+      - name: Preview transfer integrity and lifecycle
+        run: cargo test --locked --test export_pages preview_pages_ -- --test-threads=4
+
   bench:
     name: Benchmarks (smoke)
     runs-on: ubuntu-latest

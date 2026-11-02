@@ -2044,6 +2044,525 @@ fn preview_pages_handles_sigterm_gracefully() {
     assert!(stdout.contains("Preview server stopped: received shutdown signal."));
 }
 
+mod preview_transfers {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::net::{Shutdown, SocketAddr};
+    use std::process::Child;
+
+    // Keep every new socket/process test bounded, including failure paths: a
+    // failed body assertion must not leave a preview server running in CI.
+    struct PreviewProcess {
+        child: Child,
+        stdout: Option<thread::JoinHandle<String>>,
+        stderr: Option<thread::JoinHandle<String>>,
+        port: u16,
+    }
+
+    impl PreviewProcess {
+        fn start(bundle: &Path, max_requests: usize) -> Self {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).expect("reserve preview port");
+            let port = probe.local_addr().expect("preview address").port();
+            drop(probe);
+            let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("bvr"))
+                .arg("--preview-pages")
+                .arg(bundle)
+                .arg("--no-live-reload")
+                .env("BVR_PREVIEW_PORT", port.to_string())
+                .env("BVR_PREVIEW_MAX_REQUESTS", max_requests.to_string())
+                .env("BV_NO_BROWSER", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn preview");
+            let stdout = child.stdout.take().expect("preview stdout");
+            let stderr = child.stderr.take().expect("preview stderr");
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let stdout = thread::spawn(move || {
+                let mut captured = String::new();
+                let mut actual_port = None;
+                for line in BufReader::new(stdout).lines() {
+                    let line = line.expect("read preview stdout");
+                    if let Some(raw) =
+                        line.strip_prefix("Preview server running at http://127.0.0.1:")
+                    {
+                        actual_port = raw.parse::<u16>().ok();
+                    }
+                    if line == "Press Ctrl+C to stop." {
+                        let _ = ready_tx.send(actual_port.expect("advertised preview port"));
+                    }
+                    captured.push_str(&line);
+                    captured.push('\n');
+                }
+                captured
+            });
+            let stderr = thread::spawn(move || {
+                let mut captured = String::new();
+                BufReader::new(stderr)
+                    .read_to_string(&mut captured)
+                    .expect("read preview stderr");
+                captured
+            });
+            let mut server = Self {
+                child,
+                stdout: Some(stdout),
+                stderr: Some(stderr),
+                port: 0,
+            };
+            match ready_rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(port) => server.port = port,
+                Err(error) => {
+                    let _ = server.child.kill();
+                    let _ = server.child.wait();
+                    let (stdout, stderr) = server.take_logs();
+                    panic!("preview startup failed: {error}\n{stdout}\n{stderr}");
+                }
+            }
+            server
+        }
+
+        fn take_logs(&mut self) -> (String, String) {
+            let stdout = self
+                .stdout
+                .take()
+                .map_or_else(String::new, |reader| reader.join().expect("stdout reader"));
+            let stderr = self
+                .stderr
+                .take()
+                .map_or_else(String::new, |reader| reader.join().expect("stderr reader"));
+            (stdout, stderr)
+        }
+
+        fn finish(&mut self, reason: &str, timeout: Duration) -> String {
+            let deadline = Instant::now() + timeout;
+            let (status, timed_out) = loop {
+                if let Some(status) = self.child.try_wait().expect("poll preview") {
+                    break (status, false);
+                }
+                if Instant::now() >= deadline {
+                    let _ = self.child.kill();
+                    break (self.child.wait().expect("reap timed out preview"), true);
+                }
+                thread::sleep(Duration::from_millis(20));
+            };
+            let (stdout, stderr) = self.take_logs();
+            assert!(
+                !timed_out,
+                "preview shutdown exceeded {timeout:?}\n{stdout}\n{stderr}"
+            );
+            assert!(
+                status.success(),
+                "preview exited with {status}\n{stdout}\n{stderr}"
+            );
+            assert!(
+                stdout.contains(reason),
+                "missing shutdown reason {reason:?}\n{stdout}\n{stderr}"
+            );
+            stderr
+        }
+
+        fn finish_requests(&mut self) {
+            let stderr = self.finish("request limit reached", Duration::from_secs(5));
+            assert!(
+                !stderr.contains("preview request failed"),
+                "unexpected transfer failure: {stderr}"
+            );
+        }
+
+        #[cfg(unix)]
+        fn terminate(&mut self) {
+            let status = ProcessCommand::new("kill")
+                .args(["-TERM", &self.child.id().to_string()])
+                .status()
+                .expect("send SIGTERM");
+            assert!(status.success(), "failed to send SIGTERM");
+            self.finish("received shutdown signal", Duration::from_secs(3));
+        }
+    }
+
+    impl Drop for PreviewProcess {
+        fn drop(&mut self) {
+            if self.child.try_wait().ok().flatten().is_none() {
+                let _ = self.child.kill();
+            }
+            let _ = self.child.wait();
+            if let Some(reader) = self.stdout.take() {
+                let _ = reader.join();
+            }
+            if let Some(reader) = self.stderr.take() {
+                let _ = reader.join();
+            }
+        }
+    }
+
+    struct BinaryResponse {
+        headers: String,
+        body: Vec<u8>,
+    }
+
+    impl BinaryResponse {
+        fn header(&self, name: &str) -> &str {
+            self.headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.trim()))
+                .unwrap_or_else(|| panic!("missing {name} header: {}", self.headers))
+        }
+
+        fn assert_body(&self, expected: &[u8]) {
+            assert_eq!(
+                self.body.len(),
+                expected.len(),
+                "preview truncated the response body"
+            );
+            assert!(self.body == expected, "preview corrupted the response body");
+            assert_eq!(Sha256::digest(&self.body), Sha256::digest(expected));
+        }
+    }
+
+    fn connect(port: u16) -> TcpStream {
+        let stream = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_secs(5),
+        )
+        .expect("connect preview");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .expect("read timeout");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("write timeout");
+        stream
+    }
+
+    fn request(port: u16, method: &str, path: &str) -> TcpStream {
+        let mut stream = connect(port);
+        let request =
+            format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).expect("send request");
+        stream
+    }
+
+    fn read_response(stream: &mut TcpStream, head: bool, paced: bool) -> BinaryResponse {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut response = Vec::new();
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "preview response exceeded its deadline"
+            );
+            let bytes = stream
+                .read(&mut buffer)
+                .expect("read binary preview response");
+            if bytes == 0 {
+                break;
+            }
+            response.extend_from_slice(&buffer[..bytes]);
+            if paced {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let header_end = response
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .expect("HTTP response headers")
+            + 4;
+        let body = response.split_off(header_end);
+        let headers = String::from_utf8(response).expect("UTF-8 HTTP headers");
+        assert!(
+            headers.starts_with("HTTP/1.1 200 OK\r\n"),
+            "unexpected headers: {headers}"
+        );
+        let response = BinaryResponse { headers, body };
+        let advertised: usize = response
+            .header("Content-Length")
+            .parse()
+            .expect("numeric Content-Length");
+        assert_eq!(
+            response.body.len(),
+            if head { 0 } else { advertised },
+            "advertised Content-Length does not match the delivered body"
+        );
+        response
+    }
+
+    fn write_bundle(bundle: &Path) {
+        fs::create_dir_all(bundle.join("chunks")).expect("create bundle");
+        fs::write(
+            bundle.join("index.html"),
+            b"<!doctype html><html><body>transfer test</body></html>\n",
+        )
+        .expect("write index");
+    }
+
+    fn export_large_bundle(root: &Path) -> std::path::PathBuf {
+        fs::create_dir_all(root.join(".beads")).expect("create beads");
+        let mut input = fs::File::create(root.join(".beads/beads.jsonl")).expect("beads input");
+        let description = "preview database payload ".repeat(4096);
+        for index in 0..64 {
+            serde_json::to_writer(&mut input, &serde_json::json!({
+                "id": format!("TRANSFER-{index}"), "title": format!("Transfer issue {index}"),
+                "status": "open", "priority": 2, "issue_type": "task", "description": description,
+            })).expect("write issue");
+            writeln!(input).expect("issue newline");
+        }
+        drop(input);
+        Command::new(assert_cmd::cargo::cargo_bin!("bvr"))
+            .current_dir(root)
+            .args([
+                "--export-pages",
+                "bundle",
+                "--no-hooks",
+                "--pages-include-history=false",
+            ])
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .timeout(Duration::from_secs(45))
+            .assert()
+            .success();
+        root.join("bundle")
+    }
+
+    fn payload(size: usize) -> Vec<u8> {
+        (0..size).map(|offset| (offset % 251) as u8).collect()
+    }
+
+    fn read_headers(stream: &mut TcpStream) {
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            assert!(header.len() < 8192, "oversized response headers");
+            let mut byte = [0];
+            stream.read_exact(&mut byte).expect("read response header");
+            header.push(byte[0]);
+        }
+        assert!(header.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    }
+
+    #[test]
+    fn preview_pages_serves_large_files_completely_to_slow_readers() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = payload(4 * 1024 * 1024);
+        fs::write(temp.path().join("chunks/00000.bin"), &expected).expect("write large chunk");
+        let mut server = PreviewProcess::start(temp.path(), 1);
+        let mut stream = request(server.port, "GET", "/chunks/00000.bin");
+        // Reproduce the reporter's backpressure, then keep draining in small
+        // paced reads instead of allowing a single eager read to mask it.
+        thread::sleep(Duration::from_millis(300));
+        let response = read_response(&mut stream, false, true);
+        assert_eq!(response.header("Content-Type"), "application/octet-stream");
+        response.assert_body(&expected);
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_completes_overlapping_large_requests() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let first = payload(4 * 1024 * 1024);
+        let second = payload(2 * 1024 * 1024 + 17);
+        fs::write(temp.path().join("chunks/first.bin"), &first).expect("first asset");
+        fs::write(temp.path().join("chunks/second.bin"), &second).expect("second asset");
+        let mut server = PreviewProcess::start(temp.path(), 2);
+        let mut first_stream = request(server.port, "GET", "/chunks/first.bin");
+        let mut second_stream = request(server.port, "GET", "/chunks/second.bin");
+        // The server intentionally serves serially. Both clients remain live
+        // and drain independently, so queued browser requests must still finish.
+        thread::scope(|scope| {
+            let second_response = scope.spawn(|| read_response(&mut second_stream, false, false));
+            thread::sleep(Duration::from_millis(300));
+            read_response(&mut first_stream, false, true).assert_body(&first);
+            second_response
+                .join()
+                .expect("second reader")
+                .assert_body(&second);
+        });
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_preserves_exported_database_chunks_and_wasm() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bundle = export_large_bundle(temp.path());
+        let config_bytes =
+            fs::read(bundle.join("beads.sqlite3.config.json")).expect("bootstrap config");
+        let config: bvr::export_sqlite::SqliteBootstrapConfig =
+            serde_json::from_slice(&config_bytes).expect("config schema");
+        assert!(
+            config.chunked && config.chunks.len() > 1,
+            "fixture must exercise actual chunked export"
+        );
+        let mut server = PreviewProcess::start(&bundle, config.chunks.len() + 6);
+        read_response(
+            &mut request(server.port, "GET", "/beads.sqlite3.config.json"),
+            false,
+            false,
+        )
+        .assert_body(&config_bytes);
+        let database = read_response(
+            &mut request(server.port, "GET", "/beads.sqlite3"),
+            false,
+            false,
+        );
+        assert_eq!(database.header("Content-Type"), "application/x-sqlite3");
+        assert_eq!(database.body.len() as u64, config.total_size);
+        assert_eq!(format!("{:x}", Sha256::digest(&database.body)), config.hash);
+        database.assert_body(&fs::read(bundle.join("beads.sqlite3")).expect("database on disk"));
+        let mut reassembled = Vec::new();
+        for chunk in &config.chunks {
+            let response = read_response(
+                &mut request(server.port, "GET", &format!("/{}", chunk.path)),
+                false,
+                false,
+            );
+            assert_eq!(response.body.len() as u64, chunk.size);
+            assert_eq!(format!("{:x}", Sha256::digest(&response.body)), chunk.hash);
+            response.assert_body(&fs::read(bundle.join(&chunk.path)).expect("exported chunk"));
+            reassembled.extend_from_slice(&response.body);
+        }
+        database.assert_body(&reassembled);
+        let reassembled_path = temp.path().join("served.sqlite3");
+        fs::write(&reassembled_path, &reassembled).expect("save served database");
+        let conn = Connection::open(&reassembled_path).expect("open served database");
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("database integrity");
+        assert_eq!(integrity, "ok");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM issues", [], |row| row.get(0))
+            .expect("served issue count");
+        assert_eq!(count, 64);
+        for (path, mime) in [
+            ("vendor/sql-wasm.wasm", "application/wasm"),
+            (
+                "vendor/mermaid.min.js",
+                "application/javascript; charset=utf-8",
+            ),
+        ] {
+            let expected = fs::read(bundle.join(path)).expect("embedded vendor asset");
+            assert!(
+                expected.len() > 327_680,
+                "asset must exceed reported truncation boundary"
+            );
+            let response = read_response(
+                &mut request(server.port, "GET", &format!("/{path}")),
+                false,
+                false,
+            );
+            assert_eq!(response.header("Content-Type"), mime);
+            response.assert_body(&expected);
+        }
+        for path in ["beads.sqlite3", "vendor/sql-wasm.wasm"] {
+            let response = read_response(
+                &mut request(server.port, "HEAD", &format!("/{path}")),
+                true,
+                false,
+            );
+            assert_eq!(
+                response
+                    .header("Content-Length")
+                    .parse::<u64>()
+                    .expect("HEAD length"),
+                fs::metadata(bundle.join(path))
+                    .expect("asset metadata")
+                    .len()
+            );
+        }
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_recovers_after_interrupted_large_response() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        fs::File::create(temp.path().join("large.bin"))
+            .expect("large file")
+            .set_len(32 * 1024 * 1024)
+            .expect("large file size");
+        let mut server = PreviewProcess::start(temp.path(), 1);
+        let mut interrupted = request(server.port, "GET", "/large.bin");
+        read_headers(&mut interrupted);
+        let mut prefix = [0; 1024];
+        interrupted.read_exact(&mut prefix).expect("response began");
+        interrupted
+            .shutdown(Shutdown::Both)
+            .expect("interrupt transfer");
+        drop(interrupted);
+        read_response(&mut request(server.port, "GET", "/"), false, false)
+            .assert_body(&fs::read(temp.path().join("index.html")).expect("index"));
+        let stderr = server.finish("request limit reached", Duration::from_secs(5));
+        assert!(
+            stderr.contains("preview request failed"),
+            "interrupted response should be reported: {stderr}"
+        );
+    }
+
+    #[test]
+    fn preview_pages_times_out_idle_connections_and_serves_next_request() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let mut server = PreviewProcess::start(temp.path(), 1);
+        let mut idle = connect(server.port);
+        let started = Instant::now();
+        let mut byte = [0];
+        assert_eq!(idle.read(&mut byte).expect("idle connection closure"), 0);
+        assert!(
+            started.elapsed() >= Duration::from_secs(4),
+            "idle connection closed before the five-second read timeout"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "idle connection exceeded its read timeout allowance"
+        );
+        read_response(&mut request(server.port, "GET", "/"), false, false)
+            .assert_body(&fs::read(temp.path().join("index.html")).expect("index"));
+        let stderr = server.finish("request limit reached", Duration::from_secs(5));
+        assert!(
+            stderr.contains("preview request failed"),
+            "read timeout should be reported: {stderr}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_pages_sigterm_interrupts_idle_connection() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let mut server = PreviewProcess::start(temp.path(), 0);
+        let idle = connect(server.port);
+        thread::sleep(Duration::from_millis(300));
+        server.terminate();
+        drop(idle);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_pages_sigterm_interrupts_blocked_large_response() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        fs::File::create(temp.path().join("large.bin"))
+            .expect("large file")
+            .set_len(32 * 1024 * 1024)
+            .expect("large file size");
+        let mut server = PreviewProcess::start(temp.path(), 0);
+        let mut stalled = request(server.port, "GET", "/large.bin");
+        read_headers(&mut stalled);
+        thread::sleep(Duration::from_millis(300));
+        server.terminate();
+        drop(stalled);
+    }
+}
+
 #[cfg(unix)]
 mod dolt_watch {
     use super::*;

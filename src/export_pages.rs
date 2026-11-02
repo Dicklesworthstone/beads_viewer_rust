@@ -2,11 +2,11 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -466,7 +466,17 @@ pub fn run_preview_server(bundle_dir: &Path, live_reload: bool) -> Result<()> {
 
         match listener.accept() {
             Ok((stream, _)) => {
-                match handle_preview_request(stream, bundle_dir, live_reload, port) {
+                let result = handle_preview_connection(
+                    stream,
+                    bundle_dir,
+                    live_reload,
+                    port,
+                    &shutdown_requested,
+                );
+                if shutdown_requested.load(Ordering::Relaxed) {
+                    break PreviewShutdownReason::ShutdownSignal;
+                }
+                match result {
                     Ok(count_as_request) => {
                         if count_as_request {
                             served = served.saturating_add(1);
@@ -483,6 +493,11 @@ pub fn run_preview_server(bundle_dir: &Path, live_reload: bool) -> Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(PREVIEW_ACCEPT_POLL_INTERVAL);
             }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+                ) => {}
             Err(error) if shutdown_requested.load(Ordering::Relaxed) => {
                 eprintln!("warning: preview accept loop stopped after shutdown signal: {error}");
                 break PreviewShutdownReason::ShutdownSignal;
@@ -496,6 +511,48 @@ pub fn run_preview_server(bundle_dir: &Path, live_reload: bool) -> Result<()> {
         shutdown_reason.operator_summary()
     );
     Ok(())
+}
+
+fn handle_preview_connection(
+    stream: TcpStream,
+    bundle_dir: &Path,
+    live_reload: bool,
+    port: u16,
+    shutdown_requested: &AtomicBool,
+) -> Result<bool> {
+    // Keep a handle to interrupt blocking I/O on shutdown. A socket timeout is
+    // per operation, so a client making intermittent progress could otherwise
+    // keep write_all (and the serial accept loop) busy indefinitely.
+    let interrupt = stream.try_clone()?;
+    thread::scope(|scope| {
+        let (completed, completion) = mpsc::sync_channel(1);
+        let request = thread::Builder::new()
+            .name("bvr-preview-request".to_string())
+            .spawn_scoped(scope, move || {
+                let result = handle_preview_request(stream, bundle_dir, live_reload, port);
+                let _ = completed.send(());
+                result
+            })?;
+
+        loop {
+            if shutdown_requested.load(Ordering::Relaxed) {
+                // The peer may already have closed. Either way, join the worker
+                // before returning so no request outlives the preview server.
+                let _ = interrupt.shutdown(Shutdown::Both);
+                break;
+            }
+            match completion.recv_timeout(PREVIEW_ACCEPT_POLL_INTERVAL) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+
+        request.join().unwrap_or_else(|_| {
+            Err(BvrError::Io(std::io::Error::other(
+                "preview request worker panicked",
+            )))
+        })
+    })
 }
 
 fn bind_preview_listener() -> Result<(TcpListener, u16)> {
@@ -529,6 +586,11 @@ fn handle_preview_request(
     live_reload: bool,
     port: u16,
 ) -> Result<bool> {
+    // The listener is nonblocking so idle accepts can poll for shutdown. Some
+    // platforms (notably macOS/BSD) can inherit that mode on accepted sockets.
+    // write_all needs blocking I/O here or a full send buffer truncates the
+    // response with WouldBlock after we have already advertised HTTP 200.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut buffer = [0_u8; 8192];
@@ -1204,6 +1266,144 @@ mod tests {
     fn normalize_request_path_rejects_parent_segments() {
         let result = normalize_request_path("/../../etc/passwd");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn preview_request_serves_large_body_on_nonblocking_accepted_socket() {
+        let bundle = tempdir().expect("tempdir");
+        let payload: Vec<u8> = (0..16 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        fs::write(bundle.path().join("large.bin"), &payload).expect("write large asset");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .expect("client read timeout");
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("client write timeout");
+        let (server, _) = listener.accept().expect("accept client");
+        // Reproduce inherited O_NONBLOCK even on Linux, where accept normally
+        // clears it. Exercise the actual request handler, not a test-only path.
+        server
+            .set_nonblocking(true)
+            .expect("nonblocking connection");
+        client
+            .write_all(b"GET /large.bin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("send request");
+
+        let (response, serve_result) = thread::scope(|scope| {
+            let serving =
+                scope.spawn(|| handle_preview_request(server, bundle.path(), false, port));
+            // Hold off draining until a body much larger than the usual TCP
+            // send buffer has put the server under backpressure.
+            thread::sleep(Duration::from_millis(300));
+            let mut response = Vec::new();
+            let read_result = client.read_to_end(&mut response);
+            drop(client);
+            let serve_result = serving.join().expect("request worker");
+            read_result.expect("read complete response");
+            (response, serve_result)
+        });
+
+        let header_end = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("HTTP headers")
+            + 4;
+        let headers = std::str::from_utf8(&response[..header_end]).expect("ASCII headers");
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains(&format!("Content-Length: {}\r\n", payload.len())));
+        let body = &response[header_end..];
+        assert_eq!(body.len(), payload.len(), "preview truncated the body");
+        assert!(body == payload.as_slice(), "preview corrupted the body");
+        assert!(serve_result.expect("serve complete response"));
+    }
+
+    #[test]
+    fn preview_request_times_out_writes_without_progress() {
+        use std::io::ErrorKind;
+        use std::time::Instant;
+
+        let bundle = tempdir().expect("tempdir");
+        fs::write(bundle.path().join("index.html"), b"preview").expect("write index");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect client");
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("client write timeout");
+        let (mut server, _) = listener.accept().expect("accept client");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .expect("send request");
+
+        // A large response alone does not establish a no-progress write:
+        // buffered TCP data can advance across several per-write timeouts.
+        // First saturate the socket and let delayed acknowledgments settle,
+        // while this peer stays connected without reading any data.
+        server
+            .set_write_timeout(Some(Duration::from_millis(100)))
+            .expect("prefill timeout");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last_progress = Instant::now();
+        let buffer = vec![0_u8; 64 * 1024];
+        let mut probe = buffer.as_slice();
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "failed to establish backpressure"
+            );
+            match server.write(probe) {
+                Ok(0) => panic!("peer closed during prefill"),
+                Ok(_) => last_progress = Instant::now(),
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    if probe.len() > 1 {
+                        // BSD send low-water marks can block a large write
+                        // while a short HTTP header would still fit. Exhaust
+                        // that remaining space before measuring the timeout.
+                        probe = &buffer[..1];
+                        last_progress = Instant::now();
+                    } else if last_progress.elapsed() >= Duration::from_secs(1) {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => panic!("prefill failed: {error}"),
+            }
+        }
+
+        let (elapsed, result) = thread::scope(|scope| {
+            let (completed, completion) = mpsc::sync_channel(1);
+            let serving = scope.spawn(move || {
+                let started = Instant::now();
+                let result = handle_preview_request(server, bundle.path(), false, port);
+                let _ = completed.send((started.elapsed(), result));
+            });
+            let outcome = completion.recv_timeout(Duration::from_secs(15));
+            // Even if the handler loses its timeout, close the peer before
+            // joining so this regression cannot leave a blocked test thread.
+            let _ = client.shutdown(Shutdown::Both);
+            drop(client);
+            serving.join().expect("request worker");
+            outcome.expect("stalled write exceeded the timeout allowance")
+        });
+
+        assert!(
+            elapsed >= Duration::from_secs(8) && elapsed < Duration::from_secs(15),
+            "handler did not retain its ten-second write timeout: {elapsed:?}"
+        );
+        assert!(
+            matches!(result, Err(BvrError::Io(ref error))
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)),
+            "expected a write timeout, got {result:?}"
+        );
     }
 
     #[test]
