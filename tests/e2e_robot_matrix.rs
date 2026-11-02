@@ -403,6 +403,363 @@ fn e2e_robot_insights() {
     assert!(validate_type_at(&json, "Bottlenecks", JsonType::Array).is_empty());
 }
 
+mod advanced_planning {
+    use super::{Value, fs, json, run_robot};
+
+    #[derive(Clone)]
+    struct Fixture {
+        ids: Vec<String>,
+        closed: Vec<bool>,
+        edges: Vec<Vec<bool>>,
+        nonblocking: Vec<(usize, usize, &'static str)>,
+    }
+
+    impl Fixture {
+        fn new(ids: &[&str], edges: &[(usize, usize)]) -> Self {
+            let mut graph = Self {
+                ids: ids.iter().map(|id| (*id).to_string()).collect(),
+                closed: vec![false; ids.len()],
+                edges: vec![vec![false; ids.len()]; ids.len()],
+                nonblocking: Vec::new(),
+            };
+            for &(from, to) in edges {
+                graph.edges[from][to] = true;
+            }
+            graph
+        }
+
+        fn run(&self, reverse: bool) -> Value {
+            let temp = tempfile::tempdir().expect("advanced planning fixture directory");
+            let path = temp.path().join("issues.jsonl");
+            let mut records = Vec::new();
+            for (to, id) in self.ids.iter().enumerate() {
+                let mut dependencies = Vec::new();
+                for (from, blocker) in self.ids.iter().enumerate() {
+                    if self.edges[from][to] {
+                        // Every accepted blocking type must retain the same
+                        // direction: the suggested `from` blocks `to`.
+                        let kind =
+                            ["blocks", "waits-for", "conditional-blocks", ""][(from + to) % 4];
+                        dependencies.push(json!({
+                            "issue_id": id, "depends_on_id": blocker, "type": kind
+                        }));
+                    }
+                }
+                for &(from, target, kind) in &self.nonblocking {
+                    if target == to {
+                        dependencies.push(json!({
+                            "issue_id": id, "depends_on_id": self.ids[from], "type": kind
+                        }));
+                    }
+                }
+                if reverse {
+                    dependencies.reverse();
+                }
+                records.push(json!({
+                    "id": id,
+                    "title": id,
+                    "status": if self.closed[to] { "closed" } else { "open" },
+                    "issue_type": "task",
+                    "priority": 2,
+                    "dependencies": dependencies
+                }));
+            }
+            if reverse {
+                records.reverse();
+            }
+            let contents = records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(&path, format!("{contents}\n")).expect("write advanced planning fixture");
+            let output = run_robot(&["--robot-insights"], path.to_str().expect("fixture path"));
+            output["advanced_insights"].clone()
+        }
+
+        // These small-fixture oracles deliberately use matrix transitive
+        // closure and exhaustive DAG paths, independent of production SCC and
+        // topological algorithms. No reflexive edges are added: a true diagonal
+        // means the input actually contains a cycle through that vertex.
+        fn reachability(&self, open_only: bool) -> Vec<Vec<bool>> {
+            let mut reachable = self.edges.clone();
+            for from in 0..self.ids.len() {
+                for to in 0..self.ids.len() {
+                    if open_only && (self.closed[from] || self.closed[to]) {
+                        reachable[from][to] = false;
+                    }
+                }
+            }
+            for via in 0..self.ids.len() {
+                for from in 0..self.ids.len() {
+                    for to in 0..self.ids.len() {
+                        if reachable[from][via] && reachable[via][to] {
+                            reachable[from][to] = true;
+                        }
+                    }
+                }
+            }
+            reachable
+        }
+
+        fn cyclic_components(&self) -> usize {
+            let reachable = self.reachability(false);
+            (0..self.ids.len())
+                .filter(|&node| {
+                    reachable[node][node]
+                        && (0..node).all(|other| !reachable[node][other] || !reachable[other][node])
+                })
+                .count()
+        }
+
+        fn open_components(&self) -> usize {
+            let mut visited = self.closed.clone();
+            let mut count = 0;
+            for start in 0..self.ids.len() {
+                if visited[start] {
+                    continue;
+                }
+                count += 1;
+                visited[start] = true;
+                let mut pending = vec![start];
+                while let Some(node) = pending.pop() {
+                    for neighbor in 0..self.ids.len() {
+                        if !visited[neighbor]
+                            && (self.edges[node][neighbor] || self.edges[neighbor][node])
+                        {
+                            visited[neighbor] = true;
+                            pending.push(neighbor);
+                        }
+                    }
+                }
+            }
+            count
+        }
+
+        fn open_depth(&self) -> Option<usize> {
+            fn longest_from(graph: &Fixture, node: usize) -> usize {
+                1 + (0..graph.ids.len())
+                    .filter(|&next| !graph.closed[next] && graph.edges[node][next])
+                    .map(|next| longest_from(graph, next))
+                    .max()
+                    .unwrap_or(0)
+            }
+
+            let reachable = self.reachability(true);
+            if (0..self.ids.len()).any(|node| reachable[node][node]) {
+                return None;
+            }
+            Some(
+                (0..self.ids.len())
+                    .filter(|&node| !self.closed[node])
+                    .map(|node| longest_from(self, node))
+                    .max()
+                    .unwrap_or(0),
+            )
+        }
+
+        fn edge_indices(&self, item: &Value, from: &str, to: &str) -> (usize, usize) {
+            let lookup = |field: &str| {
+                let id = item[field].as_str().expect("edge endpoint is a string");
+                self.ids
+                    .iter()
+                    .position(|known| known == id)
+                    .expect("known endpoint")
+            };
+            let edge = (lookup(from), lookup(to));
+            assert!(
+                self.edges[edge.0][edge.1],
+                "suggestion must name a real remaining edge: {item}"
+            );
+            edge
+        }
+
+        fn assert_cycle_replay(&self, advanced: &Value) {
+            let result = &advanced["cycle_break"];
+            let mut residual = self.clone();
+            assert_eq!(result["cycles_before"], residual.cyclic_components());
+            for cut in result["suggestions"].as_array().expect("cycle suggestions") {
+                let before = residual.cyclic_components();
+                let (from, to) = residual.edge_indices(cut, "from", "to");
+                assert!(
+                    residual.reachability(false)[to][from],
+                    "cut must lie on a remaining cycle"
+                );
+                residual.edges[from][to] = false;
+                assert_eq!(
+                    cut["cycles_broken"],
+                    before.saturating_sub(residual.cyclic_components()),
+                    "{cut}"
+                );
+            }
+            assert_eq!(
+                result["estimated_cycles_after"],
+                residual.cyclic_components()
+            );
+        }
+
+        fn assert_parallel_replay(&self, advanced: &Value) {
+            let cuts = &advanced["parallel_cut"];
+            let gains = &advanced["parallel_gain"];
+            let before = self.open_depth().unwrap_or(0);
+            assert_eq!(cuts["current_serial_depth"], before);
+            assert_eq!(gains["current_max_chain"], before);
+            assert_eq!(gains["current_components"], self.open_components());
+
+            let mut residual = self.clone();
+            for cut in cuts["cuts"].as_array().expect("parallel cuts") {
+                let previous = residual.open_depth().expect("parallel cuts require a DAG");
+                let (from, to) = residual.edge_indices(cut, "from", "to");
+                assert!(!self.closed[from] && !self.closed[to]);
+                residual.edges[from][to] = false;
+                let after = residual
+                    .open_depth()
+                    .expect("deleting edges preserves acyclicity");
+                assert_eq!(cut["depth_reduction"], previous - after, "{cut}");
+            }
+            assert_eq!(
+                cuts["estimated_depth_after"],
+                residual.open_depth().unwrap_or(0)
+            );
+
+            for gain in gains["gains"].as_array().expect("parallel gains") {
+                let mut single = self.clone();
+                let (from, to) = single.edge_indices(gain, "edge_from", "edge_to");
+                assert!(!self.closed[from] && !self.closed[to]);
+                single.edges[from][to] = false;
+                let after = single.open_depth().expect("parallel gains require a DAG");
+                assert_eq!(gain["new_max_chain"], after, "{gain}");
+                assert_eq!(gain["new_components"], single.open_components(), "{gain}");
+                let expected = f64::from(u32::try_from(before - after).unwrap())
+                    / f64::from(u32::try_from(before).unwrap());
+                assert!(
+                    (gain["parallelism_delta"].as_f64().unwrap() - expected).abs() < 1e-12,
+                    "{gain}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn e2e_advanced_cycle_break_replays_overlapping_cycles() {
+        let graph = Fixture::new(
+            &["A", "B", "C"],
+            &[(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)],
+        );
+        let advanced = graph.run(false);
+        graph.assert_cycle_replay(&advanced);
+        assert_eq!(advanced["cycle_break"]["estimated_cycles_after"], 0);
+        assert!(
+            advanced["cycle_break"]["suggestions"]
+                .as_array()
+                .unwrap()
+                .len()
+                > 1
+        );
+    }
+
+    #[test]
+    fn e2e_advanced_cycle_break_budget_reports_actual_remaining_cycles() {
+        let edges = (0..7)
+            .flat_map(|from| {
+                (0..7)
+                    .filter(move |&to| from != to)
+                    .map(move |to| (from, to))
+            })
+            .collect::<Vec<_>>();
+        let graph = Fixture::new(&["A", "B", "C", "D", "E", "F", "G"], &edges);
+        let advanced = graph.run(false);
+        graph.assert_cycle_replay(&advanced);
+        assert_eq!(
+            advanced["cycle_break"]["suggestions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10
+        );
+        // Every pair has both directions, requiring at least 21 removals.
+        assert!(
+            advanced["cycle_break"]["estimated_cycles_after"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+    }
+
+    #[test]
+    fn e2e_advanced_diamond_does_not_claim_single_edge_parallel_gain() {
+        let graph = Fixture::new(&["A", "B", "C", "D"], &[(0, 1), (0, 2), (1, 3), (2, 3)]);
+        let advanced = graph.run(false);
+        graph.assert_parallel_replay(&advanced);
+        assert_eq!(advanced["parallel_gain"]["current_max_chain"], 3);
+        let gains = advanced["parallel_gain"]["gains"].as_array().unwrap();
+        assert_eq!(gains.len(), 4);
+        for gain in gains {
+            assert_eq!(gain["new_max_chain"], 3);
+            assert_eq!(gain["parallelism_delta"], 0.0);
+        }
+    }
+
+    #[test]
+    fn e2e_advanced_parallel_cut_reports_cumulative_residual_depth() {
+        let graph = Fixture::new(&["A", "B", "C", "D"], &[(0, 1), (1, 2), (2, 3)]);
+        let advanced = graph.run(false);
+        graph.assert_parallel_replay(&advanced);
+        assert_eq!(advanced["parallel_cut"]["current_serial_depth"], 4);
+        assert_eq!(advanced["parallel_cut"]["cuts"][0]["from"], "B");
+        assert_eq!(advanced["parallel_cut"]["cuts"][0]["to"], "C");
+        assert_eq!(advanced["parallel_cut"]["cuts"][0]["depth_reduction"], 2);
+        assert_eq!(advanced["parallel_cut"]["estimated_depth_after"], 1);
+    }
+
+    #[test]
+    fn e2e_advanced_parallel_scope_excludes_closed_and_nonblocking_edges() {
+        let mut graph = Fixture::new(
+            &["A", "B", "X1", "X2", "X3", "X4", "X5"],
+            &[(0, 1), (2, 3), (3, 4), (4, 5), (5, 6)],
+        );
+        graph.closed[2..].fill(true);
+        graph.nonblocking = vec![(1, 0, "related"), (1, 0, "parent-child")];
+        let advanced = graph.run(false);
+        graph.assert_parallel_replay(&advanced);
+        assert_eq!(advanced["parallel_cut"]["current_serial_depth"], 2);
+        assert_eq!(
+            advanced["parallel_cut"]["cuts"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(advanced["parallel_cut"]["estimated_depth_after"], 1);
+    }
+
+    #[test]
+    fn e2e_advanced_closed_cycles_do_not_hide_open_parallel_work() {
+        let mut graph = Fixture::new(&["A", "B", "X", "Y"], &[(0, 1), (2, 3), (3, 2)]);
+        graph.closed[2..].fill(true);
+        let advanced = graph.run(false);
+        graph.assert_cycle_replay(&advanced);
+        graph.assert_parallel_replay(&advanced);
+        assert_eq!(advanced["cycle_break"]["cycles_before"], 1);
+        assert_eq!(advanced["parallel_cut"]["current_serial_depth"], 2);
+        assert_eq!(advanced["parallel_cut"]["estimated_depth_after"], 1);
+    }
+
+    #[test]
+    fn e2e_advanced_suggestions_are_stable_under_input_reordering() {
+        for graph in [
+            Fixture::new(&["A", "B", "C", "D"], &[(0, 1), (0, 2), (1, 3), (2, 3)]),
+            Fixture::new(
+                &["A", "B", "C"],
+                &[(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)],
+            ),
+        ] {
+            let forward = graph.run(false);
+            let reverse = graph.run(true);
+            for field in ["cycle_break", "parallel_cut", "parallel_gain"] {
+                assert_eq!(forward[field], reverse[field], "{field}");
+            }
+        }
+    }
+}
+
 #[test]
 fn e2e_robot_priority() {
     let json = run_robot(&["--robot-priority"], FIXTURE);

@@ -329,13 +329,264 @@ fn compute_k_paths(graph: &IssueGraph, metrics: &GraphMetrics, k: usize) -> KPat
 }
 
 // ---------------------------------------------------------------------------
-// 4. CycleBreak – minimum feedback arc set (greedy approximation)
+// 4. CycleBreak – greedy feedback arc removal with residual cycle checks
 // ---------------------------------------------------------------------------
+
+/// A stable topology for edge-removal experiments. Adjacency stores edge IDs so
+/// simulations toggle a bit instead of rebuilding issue records or string maps.
+struct ResidualGraph {
+    ids: Vec<String>,
+    edges: Vec<(usize, usize)>,
+    outgoing: Vec<Vec<usize>>,
+    incoming: Vec<Vec<usize>>,
+    removed: Vec<bool>,
+}
+
+struct CyclicComponents {
+    membership: Vec<usize>,
+    cyclic: Vec<bool>,
+    count: usize,
+}
+
+struct DagDepths {
+    prefix: Vec<usize>,
+    suffix: Vec<usize>,
+    max_depth: usize,
+}
+
+#[derive(Default)]
+struct DepthScratch {
+    pending: Vec<usize>,
+    prefix: Vec<usize>,
+    order: Vec<usize>,
+}
+
+impl ResidualGraph {
+    fn from_issue_graph(graph: &IssueGraph, open_only: bool) -> Self {
+        let mut ids = graph.issue_ids_sorted();
+        ids.dedup();
+        if open_only {
+            ids.retain(|id| graph.issue(id).is_some_and(Issue::is_open_like));
+        }
+        let indices = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut edges = Vec::new();
+        for (dependent, id) in ids.iter().enumerate() {
+            for blocker in graph.blockers(id) {
+                if let Some(&prerequisite) = indices.get(blocker.as_str()) {
+                    edges.push((prerequisite, dependent));
+                }
+            }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        let mut outgoing = vec![Vec::new(); ids.len()];
+        let mut incoming = vec![Vec::new(); ids.len()];
+        for (edge, &(from, to)) in edges.iter().enumerate() {
+            outgoing[from].push(edge);
+            incoming[to].push(edge);
+        }
+        let removed = vec![false; edges.len()];
+        Self {
+            ids,
+            edges,
+            outgoing,
+            incoming,
+            removed,
+        }
+    }
+
+    /// Iterative Kosaraju traversal: cyclic components include singleton loops.
+    fn cyclic_components(&self) -> CyclicComponents {
+        let mut visited = vec![false; self.ids.len()];
+        let mut finish_order = Vec::with_capacity(self.ids.len());
+        let mut frames = Vec::new();
+        for root in 0..self.ids.len() {
+            if visited[root] {
+                continue;
+            }
+            visited[root] = true;
+            frames.push((root, 0));
+            while let Some((node, cursor)) = frames.last_mut() {
+                let node = *node;
+                if *cursor == self.outgoing[node].len() {
+                    finish_order.push(node);
+                    frames.pop();
+                    continue;
+                }
+                let edge = self.outgoing[node][*cursor];
+                *cursor += 1;
+                let next = self.edges[edge].1;
+                if !self.removed[edge] && !visited[next] {
+                    visited[next] = true;
+                    frames.push((next, 0));
+                }
+            }
+        }
+
+        let mut membership = vec![usize::MAX; self.ids.len()];
+        let mut cyclic = Vec::new();
+        let mut stack = Vec::new();
+        for &root in finish_order.iter().rev() {
+            if membership[root] != usize::MAX {
+                continue;
+            }
+            let component = cyclic.len();
+            let mut size = 0;
+            membership[root] = component;
+            stack.push(root);
+            while let Some(node) = stack.pop() {
+                size += 1;
+                for &edge in &self.incoming[node] {
+                    let next = self.edges[edge].0;
+                    if !self.removed[edge] && membership[next] == usize::MAX {
+                        membership[next] = component;
+                        stack.push(next);
+                    }
+                }
+            }
+            cyclic.push(
+                size > 1
+                    || self.outgoing[root]
+                        .iter()
+                        .any(|&edge| !self.removed[edge] && self.edges[edge].1 == root),
+            );
+        }
+        let count = cyclic.iter().filter(|&&is_cyclic| is_cyclic).count();
+        CyclicComponents {
+            membership,
+            cyclic,
+            count,
+        }
+    }
+
+    /// Longest paths count nodes, so an isolated issue has depth one. A cyclic
+    /// graph has no topological depth; never report a partially traversed DAG.
+    fn dag_depths(&self) -> Option<DagDepths> {
+        let mut scratch = DepthScratch::default();
+        let max_depth = self.dag_max_depth(&mut scratch)?;
+        let mut suffix = vec![1usize; self.ids.len()];
+        for &node in scratch.order.iter().rev() {
+            for &edge in &self.outgoing[node] {
+                if !self.removed[edge] {
+                    suffix[node] = suffix[node].max(suffix[self.edges[edge].1] + 1);
+                }
+            }
+        }
+        Some(DagDepths {
+            prefix: scratch.prefix,
+            suffix,
+            max_depth,
+        })
+    }
+
+    /// Scalar simulation reuses its buffers across candidates. The order vector
+    /// also serves as Kahn's queue, avoiding a second allocation per experiment.
+    fn dag_max_depth(&self, scratch: &mut DepthScratch) -> Option<usize> {
+        scratch.pending.clear();
+        scratch.pending.extend(
+            self.incoming
+                .iter()
+                .map(|edges| edges.iter().filter(|&&edge| !self.removed[edge]).count()),
+        );
+        scratch.prefix.resize(self.ids.len(), 1);
+        scratch.prefix.fill(1);
+        scratch.order.clear();
+        scratch.order.extend(
+            scratch
+                .pending
+                .iter()
+                .enumerate()
+                .filter_map(|(node, &count)| (count == 0).then_some(node)),
+        );
+        let mut cursor = 0;
+        while cursor < scratch.order.len() {
+            let node = scratch.order[cursor];
+            cursor += 1;
+            for &edge in &self.outgoing[node] {
+                if self.removed[edge] {
+                    continue;
+                }
+                let next = self.edges[edge].1;
+                scratch.prefix[next] = scratch.prefix[next].max(scratch.prefix[node] + 1);
+                scratch.pending[next] -= 1;
+                if scratch.pending[next] == 0 {
+                    scratch.order.push(next);
+                }
+            }
+        }
+        (scratch.order.len() == self.ids.len())
+            .then(|| scratch.prefix.iter().copied().max().unwrap_or(0))
+    }
+
+    fn critical_edges(&self, depths: &DagDepths) -> Vec<usize> {
+        self.edges
+            .iter()
+            .enumerate()
+            .filter_map(|(edge, &(from, to))| {
+                (!self.removed[edge] && depths.prefix[from] + depths.suffix[to] == depths.max_depth)
+                    .then_some(edge)
+            })
+            .collect()
+    }
+
+    /// Every longest path crosses each prefix layer once. If another critical
+    /// edge exists at the same layer, its longest path avoids this edge, proving
+    /// that this single deletion cannot shorten the maximum chain. Only edges
+    /// alone at their layer require a depth simulation.
+    fn critical_edge_candidates(&self, depths: &DagDepths) -> Vec<(usize, bool)> {
+        let critical = self.critical_edges(depths);
+        let mut layer_counts = vec![0usize; depths.max_depth];
+        for &edge in &critical {
+            layer_counts[depths.prefix[self.edges[edge].0]] += 1;
+        }
+        critical
+            .into_iter()
+            .map(|edge| {
+                let needs_simulation = layer_counts[depths.prefix[self.edges[edge].0]] == 1;
+                (edge, needs_simulation)
+            })
+            .collect()
+    }
+
+    fn component_count(&self) -> usize {
+        let mut visited = vec![false; self.ids.len()];
+        let mut stack = Vec::new();
+        let mut count = 0;
+        for root in 0..self.ids.len() {
+            if visited[root] {
+                continue;
+            }
+            count += 1;
+            visited[root] = true;
+            stack.push(root);
+            while let Some(node) = stack.pop() {
+                for &edge in self.outgoing[node].iter().chain(&self.incoming[node]) {
+                    if self.removed[edge] {
+                        continue;
+                    }
+                    let (from, to) = self.edges[edge];
+                    let next = if from == node { to } else { from };
+                    if !visited[next] {
+                        visited[next] = true;
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+        count
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CycleBreakResult {
     pub suggestions: Vec<CycleBreakSuggestion>,
+    /// Number of cyclic strongly connected components, including self-loops.
     pub cycles_before: usize,
+    /// Actual cyclic component count after applying all suggestions together.
     pub estimated_cycles_after: usize,
 }
 
@@ -343,107 +594,84 @@ pub struct CycleBreakResult {
 pub struct CycleBreakSuggestion {
     pub from: String,
     pub to: String,
+    /// Nonnegative decrease in cyclic SCC count at this step. A cut can leave
+    /// subcycles or split one SCC into several cyclic SCCs, yielding zero here.
     pub cycles_broken: usize,
     pub collateral_score: f64,
 }
 
-/// Suggest edges to remove to break dependency cycles with minimal collateral damage.
+/// Suggest cumulative edge removals that break dependency cycles.
 ///
-/// Greedy: at each step, find the edge appearing in the most remaining cycles,
-/// weighted inversely by the edge's importance (pagerank of endpoints).
+/// Each step removes the lowest-PageRank-collateral edge inside a remaining
+/// cyclic SCC, then recomputes SCCs. This greedy plan does not guarantee a
+/// minimum feedback arc set. Its counters describe SCCs, not simple cycles.
 fn compute_cycle_break(
     graph: &IssueGraph,
     metrics: &GraphMetrics,
     max_suggestions: usize,
 ) -> CycleBreakResult {
-    let cycles_before = metrics.cycles.len();
-
-    if cycles_before == 0 {
-        return CycleBreakResult {
-            suggestions: Vec::new(),
-            cycles_before: 0,
-            estimated_cycles_after: 0,
-        };
-    }
-
-    // Collect all edges within cycles.
-    let mut remaining_cycles: Vec<Vec<String>> = metrics.cycles.clone();
+    let mut residual = ResidualGraph::from_issue_graph(graph, false);
+    let mut components = residual.cyclic_components();
+    let cycles_before = components.count;
+    let collateral = residual
+        .ids
+        .iter()
+        .map(|id| metrics.pagerank.get(id).copied().unwrap_or_default())
+        .collect::<Vec<_>>();
     let mut suggestions = Vec::new();
-    let mut estimated_remaining = remaining_cycles.len();
 
     for _ in 0..max_suggestions {
-        if remaining_cycles.is_empty() {
+        if components.count == 0 {
             break;
         }
-
-        // Count edge frequency across remaining cycles.
-        let mut edge_freq: HashMap<(String, String), usize> = HashMap::new();
-        for cycle in &remaining_cycles {
-            // Edges within the SCC: check actual dependency edges between cycle members.
-            let cycle_set: HashSet<&String> = cycle.iter().collect();
-            for member in cycle {
-                for blocker in graph.blockers(member) {
-                    if cycle_set.contains(&blocker) {
-                        *edge_freq.entry((blocker, member.clone())).or_default() += 1;
-                    }
-                }
-            }
-        }
-
-        if edge_freq.is_empty() {
-            break;
-        }
-
-        // Pick edge with highest frequency; break ties by lowest collateral (pagerank sum).
-        let best = edge_freq
+        let best = residual
+            .edges
             .iter()
-            .map(|((from, to), freq)| {
-                let pr_from = metrics.pagerank.get(from).copied().unwrap_or_default();
-                let pr_to = metrics.pagerank.get(to).copied().unwrap_or_default();
-                let collateral = pr_from + pr_to;
-                (from.clone(), to.clone(), *freq, collateral)
+            .enumerate()
+            .filter(|&(edge, &(from, to))| {
+                !residual.removed[edge]
+                    && components.cyclic[components.membership[from]]
+                    && components.membership[from] == components.membership[to]
             })
-            .max_by(|a, b| {
-                a.2.cmp(&b.2)
-                    .then_with(|| a.3.total_cmp(&b.3).reverse())
-                    .then_with(|| b.0.cmp(&a.0))
+            .map(|(edge, &(from, to))| (edge, collateral[from] + collateral[to]))
+            .min_by(|left, right| {
+                left.1
+                    .total_cmp(&right.1)
+                    .then_with(|| left.0.cmp(&right.0))
             });
-
-        let Some((from, to, freq, collateral)) = best else {
+        let Some((edge, collateral_score)) = best else {
             break;
         };
-
-        // Remove cycles that contained this edge.
-        remaining_cycles.retain(|cycle| {
-            let set: HashSet<&String> = cycle.iter().collect();
-            !(set.contains(&from) && set.contains(&to))
-        });
-
-        estimated_remaining = remaining_cycles.len();
-
+        residual.removed[edge] = true;
+        let next_components = residual.cyclic_components();
+        let (from, to) = residual.edges[edge];
         suggestions.push(CycleBreakSuggestion {
-            from,
-            to,
-            cycles_broken: freq,
-            collateral_score: collateral,
+            from: residual.ids[from].clone(),
+            to: residual.ids[to].clone(),
+            cycles_broken: components.count.saturating_sub(next_components.count),
+            collateral_score,
         });
+        components = next_components;
     }
 
     CycleBreakResult {
         suggestions,
         cycles_before,
-        estimated_cycles_after: estimated_remaining,
+        estimated_cycles_after: components.count,
     }
 }
 
 // ---------------------------------------------------------------------------
-// 5. ParallelCut – edges whose removal maximizes parallelization
+// 5. ParallelCut – cumulative greedy longest-path reductions
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ParallelCutResult {
+    /// Cumulative plan in application order; later cuts include earlier ones.
     pub cuts: Vec<ParallelCutEdge>,
+    /// Longest open-issue chain in nodes, or zero when the open graph is cyclic.
     pub current_serial_depth: usize,
+    /// Actual depth after applying the cumulative plan.
     pub estimated_depth_after: usize,
 }
 
@@ -451,73 +679,67 @@ pub struct ParallelCutResult {
 pub struct ParallelCutEdge {
     pub from: String,
     pub to: String,
+    /// Reduction from this step alone. Zero can prepare a later reduction when
+    /// several equally long paths must be cut.
     pub depth_reduction: usize,
 }
 
-/// Find edges on the critical path whose removal would reduce the longest chain.
+/// Greedily cut current longest paths using measured residual chain lengths.
 ///
-/// Heuristic: edges between issues with high `critical_depth` differences that sit on
-/// the longest chain are candidates for removal to increase parallelism.
+/// Choose the best immediate depth, breaking ties by edge IDs. A zero-reduction
+/// step may be needed to cut tied longest paths. This is a cumulative heuristic,
+/// not a guarantee of the globally best set for the requested budget.
 fn compute_parallel_cut(
     graph: &IssueGraph,
-    metrics: &GraphMetrics,
+    _metrics: &GraphMetrics,
     max_cuts: usize,
 ) -> ParallelCutResult {
-    let max_depth = metrics.critical_depth.values().copied().max().unwrap_or(0);
-
-    if max_depth == 0 {
+    let mut residual = ResidualGraph::from_issue_graph(graph, true);
+    let Some(mut depths) = residual.dag_depths() else {
         return ParallelCutResult {
             cuts: Vec::new(),
             current_serial_depth: 0,
             estimated_depth_after: 0,
         };
-    }
-
-    // Find edges on the critical path (where both endpoints are on critical path
-    // and depth decreases by exactly 1).
-    let mut candidates: Vec<ParallelCutEdge> = Vec::new();
-
-    for id in graph.issue_ids_sorted() {
-        let depth = metrics.critical_depth.get(&id).copied().unwrap_or(0);
-        if depth == 0 {
-            continue;
-        }
-
-        for blocker in graph.blockers(&id) {
-            let blocker_depth = metrics.critical_depth.get(&blocker).copied().unwrap_or(0);
-            // An edge is on the critical path if the blocker's depth == our depth + 1
-            // (blocker is one level above dependent in the critical chain).
-            if blocker_depth == depth + 1 {
-                candidates.push(ParallelCutEdge {
-                    from: blocker,
-                    to: id.clone(),
-                    depth_reduction: 1,
-                });
+    };
+    let current_serial_depth = depths.max_depth;
+    let mut cuts = Vec::new();
+    let mut scratch = DepthScratch::default();
+    for _ in 0..max_cuts {
+        let mut best = None;
+        for (edge, needs_simulation) in residual.critical_edge_candidates(&depths) {
+            let candidate_depth = if needs_simulation {
+                residual.removed[edge] = true;
+                // Deleting an edge from a DAG cannot introduce a cycle.
+                let depth = residual
+                    .dag_max_depth(&mut scratch)
+                    .expect("edge deletion preserves DAG");
+                residual.removed[edge] = false;
+                depth
+            } else {
+                depths.max_depth
+            };
+            if best.is_none_or(|previous| (candidate_depth, edge) < previous) {
+                best = Some((candidate_depth, edge));
             }
         }
+        let Some((next_depth, edge)) = best else {
+            break;
+        };
+        residual.removed[edge] = true;
+        let (from, to) = residual.edges[edge];
+        cuts.push(ParallelCutEdge {
+            from: residual.ids[from].clone(),
+            to: residual.ids[to].clone(),
+            depth_reduction: depths.max_depth - next_depth,
+        });
+        depths = residual.dag_depths().expect("edge deletion preserves DAG");
     }
 
-    // Sort by depth of 'from' node (higher = more impactful cut), descending.
-    candidates.sort_by(|a, b| {
-        let a_depth = metrics.critical_depth.get(&a.from).copied().unwrap_or(0);
-        let b_depth = metrics.critical_depth.get(&b.from).copied().unwrap_or(0);
-        b_depth
-            .cmp(&a_depth)
-            .then_with(|| a.from.cmp(&b.from))
-            .then_with(|| a.to.cmp(&b.to))
-    });
-    candidates.truncate(max_cuts);
-
-    let estimated_after = if candidates.is_empty() {
-        max_depth
-    } else {
-        max_depth.saturating_sub(1)
-    };
-
     ParallelCutResult {
-        cuts: candidates,
-        current_serial_depth: max_depth,
-        estimated_depth_after: estimated_after,
+        cuts,
+        current_serial_depth,
+        estimated_depth_after: depths.max_depth,
     }
 }
 
@@ -528,7 +750,9 @@ fn compute_parallel_cut(
 #[derive(Debug, Clone, Serialize)]
 pub struct ParallelGainResult {
     pub current_components: usize,
+    /// Longest open-issue chain in nodes, or zero when the open graph is cyclic.
     pub current_max_chain: usize,
+    /// Independent single-edge experiments, each starting from the baseline.
     pub gains: Vec<ParallelGainItem>,
 }
 
@@ -548,173 +772,61 @@ pub struct ParallelGainItem {
 /// - Change in longest chain length (shorter = faster completion with parallel agents).
 fn compute_parallel_gain(
     graph: &IssueGraph,
-    metrics: &GraphMetrics,
+    _metrics: &GraphMetrics,
     max_items: usize,
 ) -> ParallelGainResult {
-    let open_ids: HashSet<String> = graph
-        .issue_ids_sorted()
-        .into_iter()
-        .filter(|id| graph.issue(id).is_some_and(Issue::is_open_like))
-        .collect();
-
-    let current_components = graph.connected_open_components().len();
-    let current_max = metrics.critical_depth.values().copied().max().unwrap_or(0);
-
-    if open_ids.is_empty() || current_max == 0 {
+    let mut residual = ResidualGraph::from_issue_graph(graph, true);
+    let current_components = residual.component_count();
+    let Some(depths) = residual.dag_depths() else {
         return ParallelGainResult {
             current_components,
-            current_max_chain: current_max,
+            current_max_chain: 0,
             gains: Vec::new(),
         };
-    }
-
-    // Collect critical-path edges (same logic as parallel_cut).
-    let mut critical_edges: Vec<(String, String)> = Vec::new();
-    for id in &open_ids {
-        let depth = metrics.critical_depth.get(id).copied().unwrap_or(0);
-        if depth == 0 {
-            continue;
-        }
-        for blocker in graph.blockers(id) {
-            if !open_ids.contains(&blocker) {
-                continue;
-            }
-            let blocker_depth = metrics.critical_depth.get(&blocker).copied().unwrap_or(0);
-            if blocker_depth == depth + 1 {
-                critical_edges.push((blocker, id.clone()));
-            }
-        }
-    }
-
-    // For each critical edge, simulate removal and compute new component count + max chain.
-    let mut gains: Vec<ParallelGainItem> = critical_edges
-        .iter()
-        .map(|(from, to)| {
-            let (new_components, new_max) =
-                simulate_edge_removal(graph, &open_ids, metrics, from, to);
-            let parallelism_delta = if current_max > 0 {
-                (current_max as f64 - new_max as f64) / current_max as f64
+    };
+    let current_max = depths.max_depth;
+    let mut ranked = Vec::new();
+    let mut scratch = DepthScratch::default();
+    if max_items > 0 {
+        for (edge, needs_simulation) in residual.critical_edge_candidates(&depths) {
+            let new_depth = if needs_simulation {
+                residual.removed[edge] = true;
+                let depth = residual
+                    .dag_max_depth(&mut scratch)
+                    .expect("edge deletion preserves DAG");
+                residual.removed[edge] = false;
+                depth
             } else {
-                0.0
+                current_max
             };
+            ranked.push((new_depth, edge));
+        }
+    }
+    // A smaller residual depth is a larger gain. Edge indices follow complete
+    // (from, to) lexical order, so ties are independent of hash iteration.
+    ranked.sort_unstable();
+    ranked.truncate(max_items);
+    let gains = ranked
+        .into_iter()
+        .map(|(new_max_chain, edge)| {
+            residual.removed[edge] = true;
+            let new_components = residual.component_count();
+            residual.removed[edge] = false;
+            let (from, to) = residual.edges[edge];
             ParallelGainItem {
-                edge_from: from.clone(),
-                edge_to: to.clone(),
+                edge_from: residual.ids[from].clone(),
+                edge_to: residual.ids[to].clone(),
                 new_components,
-                new_max_chain: new_max,
-                parallelism_delta,
+                new_max_chain,
+                parallelism_delta: (current_max - new_max_chain) as f64 / current_max as f64,
             }
         })
         .collect();
-
-    gains.sort_by(|a, b| {
-        b.parallelism_delta
-            .total_cmp(&a.parallelism_delta)
-            .then_with(|| a.edge_from.cmp(&b.edge_from))
-    });
-    gains.truncate(max_items);
-
     ParallelGainResult {
         current_components,
         current_max_chain: current_max,
         gains,
     }
-}
-
-/// Simulate removing one edge and compute connected components + max chain length.
-fn simulate_edge_removal(
-    graph: &IssueGraph,
-    open_ids: &HashSet<String>,
-    _metrics: &GraphMetrics,
-    remove_from: &str,
-    remove_to: &str,
-) -> (usize, usize) {
-    // Build adjacency (blockers → dependents) without the removed edge.
-    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    let mut rev_adj: HashMap<String, Vec<String>> = HashMap::new();
-
-    for id in open_ids {
-        for blocker in graph.blockers(id) {
-            if !open_ids.contains(&blocker) {
-                continue;
-            }
-            if blocker == remove_from && id == remove_to {
-                continue; // Skip removed edge.
-            }
-            adj.entry(blocker.clone()).or_default().push(id.clone());
-            rev_adj.entry(id.clone()).or_default().push(blocker);
-        }
-    }
-
-    // Connected components (undirected view).
-    let mut visited = HashSet::new();
-    let mut component_count = 0usize;
-    for id in open_ids {
-        if visited.contains(id) {
-            continue;
-        }
-        component_count += 1;
-        let mut queue = VecDeque::new();
-        queue.push_back(id.clone());
-        while let Some(current) = queue.pop_front() {
-            if !visited.insert(current.clone()) {
-                continue;
-            }
-            for neighbor in adj.get(&current).into_iter().flatten() {
-                if !visited.contains(neighbor) {
-                    queue.push_back(neighbor.clone());
-                }
-            }
-            for neighbor in rev_adj.get(&current).into_iter().flatten() {
-                if !visited.contains(neighbor) {
-                    queue.push_back(neighbor.clone());
-                }
-            }
-        }
-    }
-
-    // Max chain: compute critical depth in the modified graph (longest path via BFS/topological).
-    let mut in_degree: HashMap<String, usize> = HashMap::new();
-    for id in open_ids {
-        in_degree.entry(id.clone()).or_default();
-    }
-    for deps in adj.values() {
-        for dep in deps {
-            *in_degree.entry(dep.clone()).or_default() += 1;
-        }
-    }
-
-    let mut depth: HashMap<String, usize> = HashMap::new();
-    let mut queue: VecDeque<String> = in_degree
-        .iter()
-        .filter(|(_, d)| **d == 0)
-        .map(|(id, _)| id.clone())
-        .collect();
-
-    for id in &queue {
-        depth.insert(id.clone(), 0);
-    }
-
-    while let Some(current) = queue.pop_front() {
-        let current_depth = depth.get(&current).copied().unwrap_or(0);
-        for neighbor in adj.get(&current).into_iter().flatten() {
-            let new_depth = current_depth + 1;
-            let entry = depth.entry(neighbor.clone()).or_default();
-            if new_depth > *entry {
-                *entry = new_depth;
-            }
-            if let Some(deg) = in_degree.get_mut(neighbor) {
-                *deg -= 1;
-                if *deg == 0 {
-                    queue.push_back(neighbor.clone());
-                }
-            }
-        }
-    }
-
-    let max_chain = depth.values().copied().max().unwrap_or(0);
-
-    (component_count, max_chain)
 }
 
 // ---------------------------------------------------------------------------
@@ -754,10 +866,10 @@ pub fn compute_advanced_insights_with_config(
                 .to_string(),
             "jq '.coverage_set.items' — Minimal set covering all critical paths".to_string(),
             "jq '.k_paths.paths[0].path' — Longest critical path through the graph".to_string(),
-            "jq '.cycle_break.suggestions' — Edges to remove to break dependency cycles"
+            "jq '.cycle_break' — Apply suggestions in order; estimated_cycles_after counts remaining cyclic components"
                 .to_string(),
-            "jq '.parallel_cut.cuts' — Edges to remove for maximum parallelization".to_string(),
-            "jq '.parallel_gain.gains[:3]' — Top 3 edges whose removal increases parallelism"
+            "jq '.parallel_cut.cuts' — Apply in order; depth_reduction measures that step after prior cuts".to_string(),
+            "jq '.parallel_gain.gains[:3]' — Independent removals; zero gain means the longest chain is unchanged"
                 .to_string(),
         ],
     }
@@ -1040,10 +1152,9 @@ mod tests {
         assert!(result.cycle_break.cycles_before > 0);
         assert!(!result.cycle_break.suggestions.is_empty());
 
-        // ParallelCut and ParallelGain depend on critical_depth which requires a DAG.
-        // When cycles exist (T10-T11-T12), topological sort fails and critical_depth is all
-        // zeros, so these legitimately return empty results.  Verify structural invariants
-        // instead of requiring non-empty output.
+        // ParallelCut and ParallelGain require an acyclic open graph. The
+        // T10-T11-T12 cycle makes depth unavailable; a partial traversal of the
+        // other components must not produce a misleading parallelism estimate.
         assert_eq!(
             result.parallel_cut.current_serial_depth,
             result.parallel_gain.current_max_chain
@@ -1220,19 +1331,21 @@ mod tests {
         assert!(result.usage_hints.iter().any(|h| h.contains("jq")));
     }
 
-    // -- simulate_edge_removal --
+    // -- Independent edge removal --
 
     #[test]
-    fn simulate_edge_removal_splits_components() {
-        // A -> B: removing this edge should split into 2 components
+    fn parallel_gain_edge_removal_splits_components() {
+        // A -> B has node depth 2. Removing the edge leaves two isolated
+        // nodes, each of depth 1; counting remaining edges would report 0.
         let issues = vec![make_issue("A", &[]), make_issue("B", &["A"])];
         let graph = IssueGraph::build(&issues);
         let metrics = graph.compute_metrics();
-        let open_ids: HashSet<String> = issues.iter().map(|i| i.id.clone()).collect();
-
-        let (components, max_chain) = simulate_edge_removal(&graph, &open_ids, &metrics, "A", "B");
-        assert_eq!(components, 2);
-        assert_eq!(max_chain, 0); // No edges remain, so max chain is 0
+        let result = compute_parallel_gain(&graph, &metrics, 1);
+        assert_eq!(result.current_max_chain, 2);
+        assert_eq!(result.gains.len(), 1);
+        assert_eq!(result.gains[0].new_components, 2);
+        assert_eq!(result.gains[0].new_max_chain, 1);
+        assert_eq!(result.gains[0].parallelism_delta, 0.5);
     }
 
     // -- Large acyclic graph: parallel_cut and parallel_gain require DAG --
@@ -1264,5 +1377,367 @@ mod tests {
         assert!(result.parallel_cut.current_serial_depth >= 5);
         assert!(!result.parallel_gain.gains.is_empty());
         assert!(result.parallel_gain.current_max_chain >= 5);
+    }
+
+    fn matrix_issues(edges: &[Vec<bool>]) -> Vec<Issue> {
+        (0..edges.len())
+            .map(|to| {
+                let blockers = (0..edges.len())
+                    .filter(|&from| edges[from][to])
+                    .map(|from| format!("N{from}"))
+                    .collect::<Vec<_>>();
+                let refs = blockers.iter().map(String::as_str).collect::<Vec<_>>();
+                make_issue(&format!("N{to}"), &refs)
+            })
+            .collect()
+    }
+
+    // These small-graph oracles intentionally use matrix closure and exhaustive
+    // path enumeration, independently of the production SCC/topological code.
+    fn oracle_reachable(edges: &[Vec<bool>]) -> Vec<Vec<bool>> {
+        let mut reachable = edges.to_vec();
+        for via in 0..edges.len() {
+            for from in 0..edges.len() {
+                if reachable[from][via] {
+                    for to in 0..edges.len() {
+                        let via_reaches_to = reachable[via][to];
+                        reachable[from][to] |= via_reaches_to;
+                    }
+                }
+            }
+        }
+        reachable
+    }
+
+    fn oracle_cyclic_components(edges: &[Vec<bool>]) -> usize {
+        let reachable = oracle_reachable(edges);
+        let mut seen = vec![false; edges.len()];
+        let mut count = 0;
+        for node in 0..edges.len() {
+            if seen[node] {
+                continue;
+            }
+            let members = (0..edges.len())
+                .filter(|&other| {
+                    other == node || (reachable[node][other] && reachable[other][node])
+                })
+                .collect::<Vec<_>>();
+            if members.len() > 1 || edges[node][node] {
+                count += 1;
+            }
+            for member in members {
+                seen[member] = true;
+            }
+        }
+        count
+    }
+
+    fn oracle_components(edges: &[Vec<bool>]) -> usize {
+        let mut seen = vec![false; edges.len()];
+        let mut count = 0;
+        for root in 0..edges.len() {
+            if seen[root] {
+                continue;
+            }
+            count += 1;
+            let mut stack = vec![root];
+            seen[root] = true;
+            while let Some(node) = stack.pop() {
+                for other in 0..edges.len() {
+                    if !seen[other] && (edges[node][other] || edges[other][node]) {
+                        seen[other] = true;
+                        stack.push(other);
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    fn oracle_longest_paths(edges: &[Vec<bool>]) -> Vec<Vec<usize>> {
+        fn visit(
+            node: usize,
+            edges: &[Vec<bool>],
+            path: &mut Vec<usize>,
+            longest: &mut Vec<Vec<usize>>,
+        ) {
+            path.push(node);
+            let mut leaf = true;
+            for next in 0..edges.len() {
+                if edges[node][next] {
+                    leaf = false;
+                    visit(next, edges, path, longest);
+                }
+            }
+            if leaf {
+                let best = longest.first().map_or(0, Vec::len);
+                if path.len() > best {
+                    longest.clear();
+                }
+                if path.len() >= best {
+                    longest.push(path.clone());
+                }
+            }
+            path.pop();
+        }
+        let mut longest = Vec::new();
+        for root in 0..edges.len() {
+            visit(root, edges, &mut Vec::new(), &mut longest);
+        }
+        longest
+    }
+
+    fn oracle_depth(edges: &[Vec<bool>]) -> usize {
+        oracle_longest_paths(edges).first().map_or(0, Vec::len)
+    }
+
+    fn oracle_critical_edges(edges: &[Vec<bool>]) -> std::collections::BTreeSet<(usize, usize)> {
+        oracle_longest_paths(edges)
+            .iter()
+            .flat_map(|path| path.windows(2).map(|pair| (pair[0], pair[1])))
+            .collect()
+    }
+
+    fn node_number(id: &str) -> usize {
+        id.strip_prefix('N')
+            .expect("fixture ID")
+            .parse()
+            .expect("node number")
+    }
+
+    #[test]
+    fn cycle_break_matches_replayed_scc_oracle_on_every_three_node_graph() {
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        for mask in 0..512 {
+            let mut edges = vec![vec![false; 3]; 3];
+            for from in 0..3 {
+                for to in 0..3 {
+                    edges[from][to] = mask & (1 << (from * 3 + to)) != 0;
+                }
+            }
+            let graph = IssueGraph::build(&matrix_issues(&edges));
+            for budget in [0, 1, 2, 9] {
+                let result = compute_cycle_break(&graph, &metrics, budget);
+                let mut residual = edges.clone();
+                let mut before = oracle_cyclic_components(&residual);
+                assert_eq!(result.cycles_before, before, "mask={mask}, budget={budget}");
+                assert!(result.suggestions.len() <= budget);
+                for suggestion in &result.suggestions {
+                    let from = node_number(&suggestion.from);
+                    let to = node_number(&suggestion.to);
+                    assert!(
+                        residual[from][to],
+                        "suggestion must remove a remaining edge"
+                    );
+                    assert!(
+                        oracle_reachable(&residual)[to][from],
+                        "edge must lie in a cycle"
+                    );
+                    residual[from][to] = false;
+                    let after = oracle_cyclic_components(&residual);
+                    assert_eq!(suggestion.cycles_broken, before.saturating_sub(after));
+                    before = after;
+                }
+                assert_eq!(result.estimated_cycles_after, before);
+                if budget == 9 {
+                    assert_eq!(before, 0, "full edge budget must break every cycle: {mask}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_break_reports_scc_splitting_without_claiming_resolution() {
+        // A<->Y and B<->Z, joined by A->B and Z->Y, initially form one SCC.
+        // The first lexical cut A->B leaves two cyclic SCCs, not zero cycles.
+        let issues = vec![
+            make_issue("A", &["Y"]),
+            make_issue("B", &["A", "Z"]),
+            make_issue("Y", &["A", "Z"]),
+            make_issue("Z", &["B"]),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let first = compute_cycle_break(&graph, &metrics, 1);
+        assert_eq!(first.cycles_before, 1);
+        assert_eq!(first.estimated_cycles_after, 2);
+        assert_eq!(first.suggestions[0].from, "A");
+        assert_eq!(first.suggestions[0].to, "B");
+        assert_eq!(first.suggestions[0].cycles_broken, 0);
+        let complete = compute_cycle_break(&graph, &metrics, 6);
+        assert_eq!(complete.estimated_cycles_after, 0);
+        assert_eq!(complete.suggestions.len(), 3);
+    }
+
+    #[test]
+    fn parallel_results_match_exhaustive_paths_on_every_five_node_ordered_dag() {
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let possible = (0..5)
+            .flat_map(|from| ((from + 1)..5).map(move |to| (from, to)))
+            .collect::<Vec<_>>();
+        for mask in 0..(1 << possible.len()) {
+            let mut edges = vec![vec![false; 5]; 5];
+            for (bit, &(from, to)) in possible.iter().enumerate() {
+                edges[from][to] = mask & (1 << bit) != 0;
+            }
+            let graph = IssueGraph::build(&matrix_issues(&edges));
+            let depth = oracle_depth(&edges);
+            let mut expected = oracle_critical_edges(&edges)
+                .into_iter()
+                .map(|(from, to)| {
+                    let mut residual = edges.clone();
+                    residual[from][to] = false;
+                    (
+                        oracle_depth(&residual),
+                        from,
+                        to,
+                        oracle_components(&residual),
+                    )
+                })
+                .collect::<Vec<_>>();
+            expected.sort();
+            let gains = compute_parallel_gain(&graph, &metrics, 10);
+            assert_eq!(gains.current_max_chain, depth);
+            assert_eq!(gains.current_components, oracle_components(&edges));
+            assert_eq!(gains.gains.len(), expected.len());
+            for (actual, &(after, from, to, components)) in gains.gains.iter().zip(&expected) {
+                assert_eq!(
+                    (node_number(&actual.edge_from), node_number(&actual.edge_to)),
+                    (from, to)
+                );
+                assert_eq!(actual.new_max_chain, after, "mask={mask}");
+                assert_eq!(actual.new_components, components);
+                let expected_delta = f64::from(u32::try_from(depth - after).expect("small depth"))
+                    / f64::from(u32::try_from(depth).expect("small depth"));
+                assert!((actual.parallelism_delta - expected_delta).abs() < 1e-12);
+            }
+
+            for budget in [0, 1, 3, 10] {
+                let cuts = compute_parallel_cut(&graph, &metrics, budget);
+                assert_eq!(cuts.current_serial_depth, depth);
+                let mut residual = edges.clone();
+                let mut before = depth;
+                for cut in &cuts.cuts {
+                    let best = oracle_critical_edges(&residual)
+                        .into_iter()
+                        .map(|(from, to)| {
+                            let mut trial = residual.clone();
+                            trial[from][to] = false;
+                            (oracle_depth(&trial), from, to)
+                        })
+                        .min()
+                        .expect("remaining critical edge");
+                    let from = node_number(&cut.from);
+                    let to = node_number(&cut.to);
+                    assert_eq!((from, to), (best.1, best.2), "greedy cut: mask={mask}");
+                    residual[from][to] = false;
+                    assert_eq!(cut.depth_reduction, before - best.0);
+                    before = best.0;
+                }
+                assert!(cuts.cuts.len() <= budget);
+                assert_eq!(cuts.estimated_depth_after, oracle_depth(&residual));
+                if cuts.cuts.len() < budget {
+                    assert!(oracle_critical_edges(&residual).is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_depth_uses_open_graph_even_when_closed_nodes_contain_cycles() {
+        let mut closed_c = make_issue("C", &["D"]);
+        closed_c.status = "closed".to_string();
+        let mut closed_d = make_issue("D", &["C"]);
+        closed_d.status = "tombstone".to_string();
+        let issues = vec![
+            make_issue("A", &[]),
+            make_issue("B", &["A"]),
+            closed_c,
+            closed_d,
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        assert!(metrics.critical_depth.values().all(|depth| *depth == 0));
+        let cuts = compute_parallel_cut(&graph, &metrics, 10);
+        assert_eq!(cuts.current_serial_depth, 2);
+        assert_eq!(cuts.estimated_depth_after, 1);
+        assert_eq!(cuts.cuts.len(), 1);
+        let gains = compute_parallel_gain(&graph, &metrics, 10);
+        assert_eq!(gains.current_max_chain, 2);
+        assert_eq!(gains.current_components, 1);
+        assert_eq!(gains.gains[0].new_max_chain, 1);
+        // CycleBreak intentionally diagnoses the full graph, like `Cycles`.
+        assert_eq!(compute_cycle_break(&graph, &metrics, 10).cycles_before, 1);
+    }
+
+    #[test]
+    fn cyclic_open_graph_does_not_fabricate_parallel_depth_or_gains() {
+        let graph = IssueGraph::build(&[
+            make_issue("A", &["B"]),
+            make_issue("B", &["A"]),
+            make_issue("C", &[]),
+            make_issue("D", &["C"]),
+        ]);
+        let mut metrics = IssueGraph::build(&[]).compute_metrics();
+        metrics.critical_depth.insert("A".to_string(), 100);
+        let cuts = compute_parallel_cut(&graph, &metrics, 10);
+        let gains = compute_parallel_gain(&graph, &metrics, 10);
+        assert_eq!(cuts.current_serial_depth, 0);
+        assert_eq!(cuts.estimated_depth_after, 0);
+        assert!(cuts.cuts.is_empty());
+        assert_eq!(gains.current_max_chain, 0);
+        assert_eq!(gains.current_components, 2);
+        assert!(gains.gains.is_empty());
+    }
+
+    #[test]
+    fn zero_parallel_budgets_preserve_baseline_and_return_no_suggestions() {
+        let graph = IssueGraph::build(&[make_issue("A", &[]), make_issue("B", &["A"])]);
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let cuts = compute_parallel_cut(&graph, &metrics, 0);
+        let gains = compute_parallel_gain(&graph, &metrics, 0);
+        assert_eq!(cuts.current_serial_depth, 2);
+        assert_eq!(cuts.estimated_depth_after, 2);
+        assert!(cuts.cuts.is_empty());
+        assert_eq!(gains.current_max_chain, 2);
+        assert_eq!(gains.current_components, 1);
+        assert!(gains.gains.is_empty());
+    }
+
+    #[test]
+    fn residual_cycle_and_depth_analysis_are_stack_safe_on_twenty_five_thousand_nodes() {
+        let count = 25_000;
+        let issues = (0..count)
+            .map(|node| {
+                make_issue(
+                    &format!("N{node:05}"),
+                    &[&format!("N{:05}", (node + count - 1) % count)],
+                )
+            })
+            .collect::<Vec<_>>();
+        let graph = IssueGraph::build(&issues);
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let result = compute_cycle_break(&graph, &metrics, 1);
+        assert_eq!(result.cycles_before, 1);
+        assert_eq!(result.estimated_cycles_after, 0);
+        assert_eq!(result.suggestions.len(), 1);
+        let mut residual = ResidualGraph::from_issue_graph(&graph, true);
+        let edge = residual
+            .edges
+            .iter()
+            .position(|&(from, to)| {
+                residual.ids[from] == result.suggestions[0].from
+                    && residual.ids[to] == result.suggestions[0].to
+            })
+            .expect("suggested edge in ring");
+        residual.removed[edge] = true;
+        assert_eq!(
+            residual
+                .dag_depths()
+                .expect("broken ring is a DAG")
+                .max_depth,
+            count
+        );
+        assert_eq!(residual.component_count(), 1);
     }
 }
