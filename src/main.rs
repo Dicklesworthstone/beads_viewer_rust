@@ -5605,24 +5605,31 @@ fn build_robot_capacity_output(issues: &[bvr::model::Issue], cli: &Cli) -> Robot
         .filter(|issue| !is_closed_status(&issue.status))
         .collect::<Vec<_>>();
     let capacity_graph = bvr::analysis::graph::IssueGraph::build(issues);
-    let capacity_metrics = capacity_graph.compute_metrics();
-    let now = Utc::now();
+    let capacity_metrics = capacity_graph.compute_metrics_with_config(&AnalysisConfig {
+        enable_pagerank: false,
+        enable_betweenness: false,
+        enable_eigenvector: false,
+        enable_hits: false,
+        enable_cycles: false,
+        enable_critical_path: true,
+        enable_k_core: false,
+        enable_articulation: false,
+        enable_slack: false,
+        ..AnalysisConfig::full()
+    });
+    // Capacity consumes effort, not the calendar ETA or prerequisite wait. Keep
+    // the label-scoped median and full-graph depth without traversing every
+    // prerequisite again for each issue.
+    let effort_by_issue =
+        bvr::analysis::forecast::estimate_effort_minutes(&target_issues, &capacity_metrics);
 
     let eta_by_issue = open_issues
         .iter()
         .map(|issue| {
-            let estimated = bvr::analysis::forecast::estimate_eta_for_issue(
-                &target_issues,
-                &capacity_graph,
-                &capacity_metrics,
-                &issue.id,
-                1,
-                now,
-            )
-            .map_or_else(
-                || estimate_issue_minutes(issue),
-                |eta| eta.estimated_minutes,
-            );
+            let estimated = effort_by_issue
+                .get(&issue.id)
+                .copied()
+                .unwrap_or_else(|| estimate_issue_minutes(issue));
             (issue.id.clone(), estimated)
         })
         .collect::<BTreeMap<_, _>>();
@@ -5676,19 +5683,7 @@ fn build_robot_capacity_output(issues: &[bvr::model::Issue], cli: &Cli) -> Robot
         .collect::<Vec<_>>();
     actionable.sort();
 
-    let mut longest_chain = Vec::<String>::new();
-    let mut path = Vec::<String>::new();
-    let mut visiting = BTreeSet::<String>::new();
-    for start in &actionable {
-        dfs_capacity_chain(
-            start,
-            &issue_map,
-            &blocks,
-            &mut visiting,
-            &mut path,
-            &mut longest_chain,
-        );
-    }
+    let longest_chain = longest_capacity_chain(&actionable, &issue_map, &blocks);
 
     let serial_minutes = longest_chain
         .iter()
@@ -5756,37 +5751,126 @@ fn build_robot_capacity_output(issues: &[bvr::model::Issue], cli: &Cli) -> Robot
     }
 }
 
-fn dfs_capacity_chain(
-    issue_id: &str,
+/// Find the same first longest simple path as lexical DFS, sharing acyclic
+/// suffixes instead of enumerating every path through a dependency diamond.
+/// Cyclic regions retain the existing simple-path semantics using heap frames.
+fn longest_capacity_chain(
+    actionable: &[String],
     issue_map: &BTreeMap<String, &bvr::model::Issue>,
     blocks: &BTreeMap<String, Vec<String>>,
-    visiting: &mut BTreeSet<String>,
-    path: &mut Vec<String>,
-    longest_chain: &mut Vec<String>,
-) {
-    if visiting.contains(issue_id) {
-        return;
+) -> Vec<String> {
+    let ids = issue_map.keys().map(String::as_str).collect::<Vec<_>>();
+    let indices = ids
+        .iter()
+        .enumerate()
+        .map(|(index, &id)| (id, index))
+        .collect::<HashMap<_, _>>();
+    let next = ids
+        .iter()
+        .map(|id| {
+            let mut successors = blocks
+                .get(*id)
+                .into_iter()
+                .flatten()
+                .filter(|id| {
+                    issue_map
+                        .get(*id)
+                        .is_some_and(|issue| !is_closed_status(&issue.status))
+                })
+                .filter_map(|id| indices.get(id.as_str()).copied())
+                .collect::<Vec<_>>();
+            successors.sort_unstable();
+            successors.dedup();
+            successors
+        })
+        .collect::<Vec<_>>();
+    let mut predecessors = vec![Vec::new(); ids.len()];
+    for (from, successors) in next.iter().enumerate() {
+        for &to in successors {
+            predecessors[to].push(from);
+        }
     }
-    visiting.insert(issue_id.to_string());
-    path.push(issue_id.to_string());
 
-    if path.len() > longest_chain.len() {
-        *longest_chain = path.clone();
-    }
-
-    if let Some(next_ids) = blocks.get(issue_id) {
-        for next_id in next_ids {
-            if issue_map
-                .get(next_id)
-                .is_some_and(|issue| !is_closed_status(&issue.status))
+    // Peeling sinks also identifies which suffixes are independent of an
+    // active DFS path. A node left behind can reach a cycle and must not reuse
+    // a path-dependent result. The stored next hop keeps memory linear even
+    // for very deep chains.
+    let mut pending = next.iter().map(Vec::len).collect::<Vec<_>>();
+    let mut ready = pending
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &count)| (count == 0).then_some(index))
+        .collect::<VecDeque<_>>();
+    let mut suffix_length = vec![1usize; ids.len()];
+    let mut suffix_next = vec![None; ids.len()];
+    while let Some(node) = ready.pop_front() {
+        for &predecessor in &predecessors[node] {
+            let length = suffix_length[node] + 1;
+            if length > suffix_length[predecessor]
+                || (length == suffix_length[predecessor]
+                    && suffix_next[predecessor].is_none_or(|previous| node < previous))
             {
-                dfs_capacity_chain(next_id, issue_map, blocks, visiting, path, longest_chain);
+                suffix_length[predecessor] = length;
+                suffix_next[predecessor] = Some(node);
+            }
+            pending[predecessor] -= 1;
+            if pending[predecessor] == 0 {
+                ready.push_back(predecessor);
             }
         }
     }
 
-    path.pop();
-    visiting.remove(issue_id);
+    let mut best = Vec::new();
+    let mut path = Vec::new();
+    let mut visiting = vec![false; ids.len()];
+    let mut stack = Vec::new();
+    for start in actionable {
+        let Some(&start) = indices.get(start.as_str()) else {
+            continue;
+        };
+        stack.push((start, 0));
+        path.push(start);
+        visiting[start] = true;
+
+        while let Some((node, cursor)) = stack.last_mut() {
+            let node = *node;
+            if pending[node] == 0 || *cursor == next[node].len() {
+                // A prefix cannot beat its own extension. Materialize only a
+                // completed path or cached suffix, avoiding quadratic copying
+                // along a deep chain that eventually reaches a cycle.
+                let length = if pending[node] == 0 {
+                    path.len() - 1 + suffix_length[node]
+                } else {
+                    path.len()
+                };
+                if length > best.len() {
+                    best.clone_from(&path);
+                    if pending[node] == 0 {
+                        let mut suffix = suffix_next[node];
+                        while let Some(next_node) = suffix {
+                            best.push(next_node);
+                            suffix = suffix_next[next_node];
+                        }
+                    }
+                }
+                visiting[node] = false;
+                path.pop();
+                stack.pop();
+                continue;
+            }
+            let child = next[node][*cursor];
+            *cursor += 1;
+            if !visiting[child] {
+                visiting[child] = true;
+                path.push(child);
+                stack.push((child, 0));
+            }
+        }
+    }
+
+    best.into_iter()
+        .map(|index| ids[index].to_string())
+        .collect()
 }
 
 fn estimate_issue_minutes(issue: &bvr::model::Issue) -> i64 {
@@ -8633,6 +8717,293 @@ mod tests {
                 ..Default::default()
             },
         ]
+    }
+
+    fn capacity_chain_fixture(
+        ids: &[String],
+        edges: &[(usize, usize)],
+    ) -> (
+        Vec<bvr::model::Issue>,
+        BTreeMap<String, Vec<String>>,
+        Vec<String>,
+    ) {
+        let issues = ids
+            .iter()
+            .map(|id| bvr::model::Issue {
+                id: id.clone(),
+                status: "open".to_string(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let mut blocks = BTreeMap::<String, Vec<String>>::new();
+        let mut incoming = vec![0; ids.len()];
+        for &(from, to) in edges {
+            blocks
+                .entry(ids[from].clone())
+                .or_default()
+                .push(ids[to].clone());
+            incoming[to] += 1;
+        }
+        for successors in blocks.values_mut() {
+            successors.sort();
+            successors.dedup();
+        }
+        let mut actionable = ids
+            .iter()
+            .zip(incoming)
+            .filter(|(_, count)| *count == 0)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        actionable.sort();
+        (issues, blocks, actionable)
+    }
+
+    fn reference_capacity_chain(
+        actionable: &[String],
+        issue_map: &BTreeMap<String, &bvr::model::Issue>,
+        blocks: &BTreeMap<String, Vec<String>>,
+    ) -> Vec<String> {
+        fn visit(
+            id: &str,
+            issue_map: &BTreeMap<String, &bvr::model::Issue>,
+            blocks: &BTreeMap<String, Vec<String>>,
+            path: &mut Vec<String>,
+            best: &mut Vec<String>,
+        ) {
+            if path.iter().any(|item| item == id) {
+                return;
+            }
+            path.push(id.to_string());
+            if path.len() > best.len() {
+                best.clone_from(path);
+            }
+            for next in blocks.get(id).into_iter().flatten() {
+                if issue_map
+                    .get(next)
+                    .is_some_and(|issue| !super::is_closed_status(&issue.status))
+                {
+                    visit(next, issue_map, blocks, path, best);
+                }
+            }
+            path.pop();
+        }
+
+        let mut best = Vec::new();
+        for root in actionable {
+            visit(root, issue_map, blocks, &mut Vec::new(), &mut best);
+        }
+        best
+    }
+
+    #[test]
+    fn capacity_chain_matches_simple_path_oracle_on_all_four_node_graphs() {
+        let ids = ["A", "B", "C", "D"].map(str::to_string);
+        let possible_edges = (0..ids.len())
+            .flat_map(|from| {
+                (0..ids.len())
+                    .filter(move |&to| to != from)
+                    .map(move |to| (from, to))
+            })
+            .collect::<Vec<_>>();
+        for mask in 0..(1_u32 << possible_edges.len()) {
+            let edges = possible_edges
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| mask & (1 << bit) != 0)
+                .map(|(_, &edge)| edge)
+                .collect::<Vec<_>>();
+            let (issues, blocks, actionable) = capacity_chain_fixture(&ids, &edges);
+            let issue_map = issues
+                .iter()
+                .map(|issue| (issue.id.clone(), issue))
+                .collect();
+            assert_eq!(
+                super::longest_capacity_chain(&actionable, &issue_map, &blocks),
+                reference_capacity_chain(&actionable, &issue_map, &blocks),
+                "capacity chain differs for edge mask {mask:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn capacity_chain_handles_twenty_five_thousand_dependencies_without_recursion() {
+        let ids = (0..25_000)
+            .map(|index| format!("I{index:05}"))
+            .collect::<Vec<_>>();
+        let edges = (1..ids.len())
+            .map(|index| (index - 1, index))
+            .collect::<Vec<_>>();
+        let (issues, blocks, actionable) = capacity_chain_fixture(&ids, &edges);
+        let issue_map = issues
+            .iter()
+            .map(|issue| (issue.id.clone(), issue))
+            .collect();
+        assert_eq!(
+            super::longest_capacity_chain(&actionable, &issue_map, &blocks),
+            ids
+        );
+    }
+
+    #[test]
+    fn capacity_chain_handles_deep_prefix_before_cycle() {
+        let ids = (0..25_000)
+            .map(|index| format!("I{index:05}"))
+            .collect::<Vec<_>>();
+        let mut edges = (1..ids.len())
+            .map(|index| (index - 1, index))
+            .collect::<Vec<_>>();
+        edges.push((ids.len() - 1, ids.len() - 2));
+        let (issues, blocks, actionable) = capacity_chain_fixture(&ids, &edges);
+        let issue_map = issues
+            .iter()
+            .map(|issue| (issue.id.clone(), issue))
+            .collect();
+        assert_eq!(
+            super::longest_capacity_chain(&actionable, &issue_map, &blocks),
+            ids
+        );
+    }
+
+    #[test]
+    fn capacity_chain_shares_diamond_suffixes_even_after_a_cycle() {
+        let mut ids = vec![
+            "ROOT".to_string(),
+            "CYCLE-A".to_string(),
+            "CYCLE-B".to_string(),
+        ];
+        let mut edges = vec![(0, 1), (1, 2), (2, 1)];
+        let mut previous = vec![2];
+        let mut expected = ids.clone();
+        // There are 2^32 different paths after the cycle. The selected result
+        // must retain the lexical tie break without enumerating those paths.
+        for level in 0..32 {
+            let first = ids.len();
+            ids.push(format!("L{level:02}-A"));
+            ids.push(format!("L{level:02}-B"));
+            for &from in &previous {
+                edges.push((from, first));
+                edges.push((from, first + 1));
+            }
+            expected.push(ids[first].clone());
+            previous = vec![first, first + 1];
+        }
+        let sink = ids.len();
+        ids.push("SINK".to_string());
+        expected.push("SINK".to_string());
+        for from in previous {
+            edges.push((from, sink));
+        }
+        let (issues, blocks, actionable) = capacity_chain_fixture(&ids, &edges);
+        let issue_map = issues
+            .iter()
+            .map(|issue| (issue.id.clone(), issue))
+            .collect();
+        assert_eq!(
+            super::longest_capacity_chain(&actionable, &issue_map, &blocks),
+            expected
+        );
+    }
+
+    #[test]
+    fn capacity_chain_retains_self_loop_and_closed_node_semantics() {
+        let ids = ["ROOT", "LOOP", "DONE", "TAIL"].map(str::to_string);
+        let (mut issues, blocks, _) =
+            capacity_chain_fixture(&ids, &[(0, 1), (1, 1), (1, 2), (2, 3)]);
+        issues[2].status = "closed".to_string();
+        let issue_map = issues
+            .iter()
+            .map(|issue| (issue.id.clone(), issue))
+            .collect();
+        let roots = vec!["ROOT".to_string(), "TAIL".to_string()];
+        assert_eq!(
+            super::longest_capacity_chain(&roots, &issue_map, &blocks),
+            vec!["ROOT", "LOOP"]
+        );
+        assert_eq!(
+            super::longest_capacity_chain(&roots, &issue_map, &blocks),
+            reference_capacity_chain(&roots, &issue_map, &blocks)
+        );
+    }
+
+    #[test]
+    fn capacity_chain_retains_root_admission_for_duplicate_issue_records() {
+        let issues = vec![
+            bvr::model::Issue {
+                id: "A".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                estimated_minutes: Some(80),
+                ..Default::default()
+            },
+            bvr::model::Issue {
+                id: "A".to_string(),
+                status: "closed".to_string(),
+                issue_type: "task".to_string(),
+                estimated_minutes: Some(200),
+                ..Default::default()
+            },
+        ];
+        let cli = Cli::parse_from(["bvr", "--robot-capacity"]);
+        let output = super::build_robot_capacity_output(&issues, &cli);
+        // The open record is still a root, while issue_map has the last closed
+        // record. Historical root admission does not apply the child gate.
+        assert_eq!(output.actionable, vec!["A"]);
+        assert_eq!(output.critical_path, vec!["A"]);
+        assert_eq!(output.serial_minutes, output.total_minutes);
+        assert!(output.total_minutes > 0);
+        assert_eq!(output.parallel_minutes, 0);
+    }
+
+    #[test]
+    fn capacity_effort_keeps_scoped_median_full_graph_depth_and_all_edge_types() {
+        let issues = vec![
+            bvr::model::Issue {
+                id: "A".to_string(),
+                title: "Unestimated API task".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                labels: vec!["api".to_string()],
+                ..Default::default()
+            },
+            bvr::model::Issue {
+                id: "B".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                estimated_minutes: Some(100),
+                labels: vec!["API".to_string()],
+                dependencies: vec![bvr::model::Dependency {
+                    issue_id: "B".to_string(),
+                    depends_on_id: "A".to_string(),
+                    dep_type: "related".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            bvr::model::Issue {
+                id: "C".to_string(),
+                status: "open".to_string(),
+                issue_type: "task".to_string(),
+                estimated_minutes: Some(1_000),
+                labels: vec!["external".to_string()],
+                dependencies: vec![bvr::model::Dependency {
+                    issue_id: "C".to_string(),
+                    depends_on_id: "A".to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+        let cli = Cli::parse_from(["bvr", "--robot-capacity", "--capacity-label", "Api"]);
+        let output = super::build_robot_capacity_output(&issues, &cli);
+        // Median=100 within the selected label. A retains full-graph depth2
+        // through C, while B has depth1. Capacity paths retain related edges.
+        assert_eq!(output.total_minutes, 230);
+        assert_eq!(output.serial_minutes, 230);
+        assert_eq!(output.parallel_minutes, 0);
+        assert_eq!(output.critical_path, vec!["A", "B"]);
+        assert_eq!(output.actionable, vec!["A"]);
+        assert_eq!(output.open_issue_count, 2);
     }
 
     #[test]

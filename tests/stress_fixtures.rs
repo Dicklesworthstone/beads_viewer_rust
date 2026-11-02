@@ -171,6 +171,144 @@ fn stress_large_500_capacity() {
     assert!(json["total_minutes"].is_number());
 }
 
+/// Each layer shares both prerequisites from the previous layer. There are only
+/// 53 issues, but enumerating every root-to-leaf path visits over 67 million paths.
+fn write_shared_prerequisites(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::io::Write;
+
+    let path = dir.join("shared-prerequisites.jsonl");
+    let mut file = std::fs::File::create(&path).expect("create shared-prerequisite fixture");
+    let mut previous = Vec::<String>::new();
+    for layer in 0..=26 {
+        let ids = if layer == 0 {
+            vec!["L00-root".to_string()]
+        } else {
+            vec![format!("L{layer:02}-a"), format!("L{layer:02}-b")]
+        };
+        for id in &ids {
+            let issue = serde_json::json!({
+                "id": id,
+                "title": id,
+                "status": "open",
+                "issue_type": "task",
+                "priority": 2,
+                "estimated_minutes": 60,
+                "dependencies": previous.iter().map(|blocker| serde_json::json!({
+                    "issue_id": id,
+                    "depends_on_id": blocker,
+                    "type": "blocks"
+                })).collect::<Vec<_>>()
+            });
+            writeln!(file, "{issue}").expect("write shared-prerequisite issue");
+        }
+        previous = ids;
+    }
+    path
+}
+
+fn run_shared_prerequisite_robot(args: &[&str], fixture: &std::path::Path) -> Value {
+    let output = bvr()
+        .args(args)
+        .arg("--beads-file")
+        .arg(fixture)
+        // This is a runaway-traversal guard, not a microbenchmark. The fixture
+        // is deliberately small enough that ordinary CI has ample headroom.
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).expect("shared-prerequisite robot JSON")
+}
+
+#[test]
+fn stress_shared_prerequisites_forecast_completes_with_exact_dependency_waits() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let path = write_shared_prerequisites(dir.path());
+    let all = run_shared_prerequisite_robot(&["--robot-forecast", "all"], &path);
+    assert_eq!(all["forecast_count"], 53);
+
+    // All issues in a layer have the same own effort and completion date. With
+    // no historical closures the velocity is 60 / 5 = 12 minutes per day.
+    // Parallel prerequisites contribute their maximum wait, never their sum.
+    let mut expected_days = 0.0;
+    let mut total_minutes = 0_i64;
+    for layer in 0..=26 {
+        let depth = 27 - layer;
+        let own_minutes = (60.0 * (1.0 + (f64::from(depth) / 10.0).min(1.0))) as i32;
+        expected_days += f64::from(own_minutes) / 12.0;
+        for suffix in if layer == 0 {
+            &["root"][..]
+        } else {
+            &["a", "b"][..]
+        } {
+            let id = format!("L{layer:02}-{suffix}");
+            let item = all["forecasts"]
+                .as_array()
+                .expect("forecast array")
+                .iter()
+                .find(|item| item["issue_id"] == id)
+                .expect("forecast for each issue");
+            assert_eq!(item["estimated_minutes"], own_minutes, "{id}");
+            assert!(
+                (item["estimated_days"].as_f64().unwrap() - expected_days).abs() < 1e-9,
+                "dependency wait for {id}: {item}"
+            );
+            assert_eq!(item["velocity_minutes_per_day"], 12.0);
+            total_minutes += i64::from(own_minutes);
+        }
+    }
+    assert_eq!(all["summary"]["total_minutes"], total_minutes);
+
+    let single = run_shared_prerequisite_robot(&["--robot-forecast", "L26-b"], &path);
+    assert_eq!(single["forecast_count"], 1);
+    let terminal = all["forecasts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["issue_id"] == "L26-b")
+        .unwrap();
+    for field in [
+        "estimated_minutes",
+        "estimated_days",
+        "confidence",
+        "velocity_minutes_per_day",
+        "agents",
+        "factors",
+    ] {
+        assert_eq!(single["forecasts"][0][field], terminal[field], "{field}");
+    }
+}
+
+#[test]
+fn stress_shared_prerequisites_capacity_completes_with_exact_critical_path() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let path = write_shared_prerequisites(dir.path());
+    let capacity = run_shared_prerequisite_robot(&["--robot-capacity", "--agents", "3"], &path);
+    let expected_path = std::iter::once("L00-root".to_string())
+        .chain((1..=26).map(|layer| format!("L{layer:02}-a")))
+        .collect::<Vec<_>>();
+    assert_eq!(capacity["open_issue_count"], 53);
+    assert_eq!(capacity["critical_path_length"], 27);
+    assert_eq!(capacity["critical_path"], serde_json::json!(expected_path));
+    assert_eq!(capacity["actionable"], serde_json::json!(["L00-root"]));
+
+    let mut serial_minutes = 0_i32;
+    for depth in 1..=27 {
+        serial_minutes += (60.0 * (1.0 + (f64::from(depth) / 10.0).min(1.0))) as i32;
+    }
+    let total_minutes = serial_minutes * 2 - 120;
+    let parallel_minutes = total_minutes - serial_minutes;
+    assert_eq!(capacity["serial_minutes"], serial_minutes);
+    assert_eq!(capacity["total_minutes"], total_minutes);
+    assert_eq!(capacity["parallel_minutes"], parallel_minutes);
+    assert_eq!(
+        capacity["estimated_days"],
+        f64::from(serial_minutes + parallel_minutes / 3) / 480.0
+    );
+}
+
 #[test]
 fn stress_large_500_profile() {
     let json = run_robot(&["--profile-startup", "--profile-json"], LARGE_500);

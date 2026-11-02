@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
@@ -39,7 +39,7 @@ pub struct ForecastOutput {
     pub forecasts: Vec<ForecastItem>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EtaEstimate {
     pub estimated_minutes: i64,
     pub estimated_days: f64,
@@ -62,6 +62,7 @@ pub fn estimate_forecast(
     agents: usize,
 ) -> ForecastOutput {
     let now = Utc::now();
+    let mut context = ForecastContext::new(issues, graph, metrics, agents, now);
     let mut forecasts = Vec::<ForecastItem>::new();
 
     let target_all = issue_id_or_all.eq_ignore_ascii_case("all");
@@ -77,8 +78,7 @@ pub fn estimate_forecast(
             continue;
         }
 
-        let Some(eta) = estimate_eta_for_issue(issues, graph, metrics, &issue.id, agents, now)
-        else {
+        let Some(eta) = context.estimate(&issue.id) else {
             continue;
         };
 
@@ -124,11 +124,329 @@ pub fn estimate_eta_for_issue(
     agents: usize,
     now: DateTime<Utc>,
 ) -> Option<EtaEstimate> {
-    let mut active = HashSet::<String>::new();
-    estimate_eta_for_issue_inner(issues, graph, metrics, issue_id, agents, now, &mut active)
+    ForecastContext::new(issues, graph, metrics, agents, now).estimate(issue_id)
 }
 
-fn estimate_eta_for_issue_inner(
+/// Estimate each issue's own effort without evaluating dependency wait times or dates.
+///
+/// The median comes from `issues`, while complexity uses the supplied metrics. This
+/// lets label-scoped capacity reports retain their existing full-graph depth model.
+/// Exact duplicate IDs use the first record, matching [`estimate_eta_for_issue`].
+#[must_use]
+pub fn estimate_effort_minutes(issues: &[Issue], metrics: &GraphMetrics) -> HashMap<String, i64> {
+    let median_minutes = compute_median_estimated_minutes(issues);
+    let mut estimates = HashMap::with_capacity(issues.len());
+    for issue in issues {
+        estimates
+            .entry(issue.id.clone())
+            .or_insert_with(|| estimate_complexity_minutes(issue, metrics, median_minutes).0);
+    }
+    estimates
+}
+
+/// One immutable source snapshot, clock, and agent count for an entire forecast.
+/// Cache only estimates independent of the current traversal's cycle cuts.
+struct ForecastContext<'a> {
+    nodes: Vec<ForecastNode<'a>>,
+    indices: HashMap<&'a str, usize>,
+    metrics: &'a GraphMetrics,
+    median_minutes: i64,
+    velocity: VelocityHistory,
+    agents: usize,
+    now: DateTime<Utc>,
+    active: Vec<bool>,
+}
+
+struct ForecastNode<'a> {
+    issue: &'a Issue,
+    blockers: Vec<usize>,
+    base: Option<BaseEstimate>,
+    estimate: Option<EtaEstimate>,
+}
+
+struct BaseEstimate {
+    minutes: i64,
+    days: f64,
+    confidence: f64,
+    velocity_per_day: f64,
+    factors: Vec<String>,
+}
+
+struct EstimateFrame {
+    node: usize,
+    next_blocker: usize,
+    blocker_wait_days: f64,
+    depends_on_cycle_cut: bool,
+}
+
+impl EstimateFrame {
+    const fn new(node: usize) -> Self {
+        Self {
+            node,
+            next_blocker: 0,
+            blocker_wait_days: 0.0,
+            depends_on_cycle_cut: false,
+        }
+    }
+}
+
+impl<'a> ForecastContext<'a> {
+    fn new(
+        issues: &'a [Issue],
+        graph: &IssueGraph,
+        metrics: &'a GraphMetrics,
+        agents: usize,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let median_minutes = compute_median_estimated_minutes(issues);
+        let velocity = VelocityHistory::new(issues, now, median_minutes);
+        let mut nodes = Vec::with_capacity(issues.len());
+        let mut indices = HashMap::with_capacity(issues.len());
+        for issue in issues {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                indices.entry(issue.id.as_str())
+            {
+                entry.insert(nodes.len());
+                nodes.push(ForecastNode {
+                    issue,
+                    blockers: Vec::new(),
+                    base: None,
+                    estimate: None,
+                });
+            }
+        }
+        for node in &mut nodes {
+            node.blockers = graph
+                .open_blockers(&node.issue.id)
+                .into_iter()
+                .filter_map(|id| indices.get(id.as_str()).copied())
+                .collect();
+        }
+        let active = vec![false; nodes.len()];
+        Self {
+            nodes,
+            indices,
+            metrics,
+            median_minutes,
+            velocity,
+            agents: agents.max(1),
+            now,
+            active,
+        }
+    }
+
+    fn estimate(&mut self, issue_id: &str) -> Option<EtaEstimate> {
+        let &root = self.indices.get(issue_id)?;
+        if let Some(estimate) = &self.nodes[root].estimate {
+            return Some(estimate.clone());
+        }
+
+        self.active[root] = true;
+        let mut stack = vec![EstimateFrame::new(root)];
+        while let Some(frame) = stack.last_mut() {
+            if let Some(&blocker) = self.nodes[frame.node].blockers.get(frame.next_blocker) {
+                frame.next_blocker += 1;
+                if self.active[blocker] {
+                    // Match the previous per-root recursion guard exactly. A
+                    // cut affects this frame and every ancestor, even when its
+                    // branch does not supply the maximum wait time.
+                    frame.depends_on_cycle_cut = true;
+                } else if let Some(estimate) = &self.nodes[blocker].estimate {
+                    frame.blocker_wait_days = frame.blocker_wait_days.max(estimate.estimated_days);
+                } else {
+                    self.active[blocker] = true;
+                    stack.push(EstimateFrame::new(blocker));
+                }
+                continue;
+            }
+
+            let completed = stack.pop()?;
+            self.active[completed.node] = false;
+            let estimate = self.finish_estimate(completed.node, completed.blocker_wait_days);
+            let days = estimate.estimated_days;
+            if stack.is_empty() {
+                if !completed.depends_on_cycle_cut {
+                    self.nodes[completed.node].estimate = Some(estimate.clone());
+                }
+                return Some(estimate);
+            }
+            if !completed.depends_on_cycle_cut {
+                self.nodes[completed.node].estimate = Some(estimate);
+            }
+            if let Some(parent) = stack.last_mut() {
+                parent.blocker_wait_days = parent.blocker_wait_days.max(days);
+                parent.depends_on_cycle_cut |= completed.depends_on_cycle_cut;
+            }
+        }
+        None
+    }
+
+    fn finish_estimate(&mut self, node_index: usize, blocker_wait_days: f64) -> EtaEstimate {
+        let node = &mut self.nodes[node_index];
+        let base = node.base.get_or_insert_with(|| {
+            let (minutes, mut factors) =
+                estimate_complexity_minutes(node.issue, self.metrics, self.median_minutes);
+            let (mut velocity_per_day, samples, velocity_factors) =
+                self.velocity.estimate(node.issue);
+            factors.extend(velocity_factors);
+            if velocity_per_day <= 0.0 {
+                velocity_per_day = (self.median_minutes as f64) / 5.0;
+                if velocity_per_day <= 0.0 {
+                    velocity_per_day = 60.0;
+                }
+                factors.push("velocity: no recent closures; using default".to_string());
+            }
+            let capacity_per_day = velocity_per_day * (self.agents as f64);
+            let mut days = if capacity_per_day > 0.0 {
+                (minutes as f64) / capacity_per_day
+            } else {
+                0.0
+            };
+            if days.is_sign_negative() {
+                days = 0.0;
+            }
+            BaseEstimate {
+                minutes,
+                days,
+                confidence: estimate_eta_confidence(node.issue, samples),
+                velocity_per_day,
+                factors,
+            }
+        });
+
+        let mut days = base.days;
+        let mut factors = base.factors.clone();
+        if blocker_wait_days > 0.0 {
+            days += blocker_wait_days;
+            factors.push(format!(
+                "blocked: waits {blocker_wait_days:.1}d on dependencies"
+            ));
+        }
+        let delta_days = 0.5_f64.max(days * (1.0 - base.confidence) * 0.8);
+        let eta = self.now + duration_days(days);
+        let eta_low = self.now + duration_days((days - delta_days).max(0.0));
+        let eta_high = self.now + duration_days(days + delta_days);
+        factors.push(format!("agents: {}", self.agents));
+        factors.truncate(8);
+        EtaEstimate {
+            estimated_minutes: base.minutes,
+            estimated_days: days,
+            eta_date: eta.to_rfc3339(),
+            eta_date_low: eta_low.to_rfc3339(),
+            eta_date_high: eta_high.to_rfc3339(),
+            confidence: base.confidence,
+            velocity_minutes_per_day: base.velocity_per_day,
+            agents: self.agents,
+            factors,
+        }
+    }
+}
+
+#[derive(Default)]
+struct VelocityTotals {
+    minutes: i64,
+    samples: usize,
+}
+
+impl VelocityTotals {
+    fn add(&mut self, minutes: i64) {
+        self.minutes += minutes;
+        self.samples = self.samples.saturating_add(1);
+    }
+
+    fn per_day(&self) -> f64 {
+        self.minutes as f64 / 30.0
+    }
+}
+
+struct VelocityHistory {
+    global: VelocityTotals,
+    labels: HashMap<String, VelocityTotals>,
+}
+
+impl VelocityHistory {
+    fn new(issues: &[Issue], now: DateTime<Utc>, median_minutes: i64) -> Self {
+        let since = now - Duration::days(30);
+        let mut history = Self {
+            global: VelocityTotals::default(),
+            labels: HashMap::new(),
+        };
+        for issue in issues {
+            if !issue.is_closed_like()
+                || !issue
+                    .closed_at
+                    .or(issue.updated_at)
+                    .is_some_and(|at| at >= since)
+            {
+                continue;
+            }
+            let explicit = i64::from(issue.estimated_minutes.unwrap_or(0)).max(0);
+            let minutes = if explicit > 0 {
+                explicit
+            } else if median_minutes > 0 {
+                median_minutes
+            } else {
+                DEFAULT_ESTIMATED_MINUTES
+            };
+            history.global.add(minutes);
+            // A closure contributes once per label, including records that
+            // repeat a label with another ASCII case.
+            let labels: HashSet<String> = issue
+                .labels
+                .iter()
+                .map(|label| label.to_ascii_lowercase())
+                .collect();
+            for label in labels {
+                history.labels.entry(label).or_default().add(minutes);
+            }
+        }
+        history
+    }
+
+    fn estimate(&self, issue: &Issue) -> (f64, usize, Vec<String>) {
+        let mut slowest: Option<(&str, &VelocityTotals)> = None;
+        for label in &issue.labels {
+            let Some(totals) = self.labels.get(&label.to_ascii_lowercase()) else {
+                continue;
+            };
+            let velocity = totals.per_day();
+            if totals.samples == 0 || velocity <= 0.0 {
+                continue;
+            }
+            if slowest.is_none_or(|(previous_label, previous)| {
+                velocity < previous.per_day()
+                    || ((velocity - previous.per_day()).abs() < f64::EPSILON
+                        && label.to_ascii_lowercase() < previous_label.to_ascii_lowercase())
+            }) {
+                slowest = Some((label, totals));
+            }
+        }
+        if let Some((label, totals)) = slowest {
+            let velocity = totals.per_day();
+            return (
+                velocity,
+                totals.samples,
+                vec![format!(
+                    "velocity: label={label} ({velocity:.0} min/day, {} samples/30d)",
+                    totals.samples
+                )],
+            );
+        }
+        (
+            self.global.per_day(),
+            self.global.samples,
+            vec![format!(
+                "velocity: global ({} samples/30d)",
+                self.global.samples
+            )],
+        )
+    }
+}
+
+// Retain the previous evaluator only as an independent small-graph regression
+// oracle. Production traversal above never recurses or rescans closure history.
+#[cfg(test)]
+fn estimate_eta_reference(
     issues: &[Issue],
     graph: &IssueGraph,
     metrics: &GraphMetrics,
@@ -178,7 +496,7 @@ fn estimate_eta_for_issue_inner(
         .open_blockers(issue_id)
         .into_iter()
         .filter_map(|blocker_id| {
-            estimate_eta_for_issue_inner(issues, graph, metrics, &blocker_id, agents, now, active)
+            estimate_eta_reference(issues, graph, metrics, &blocker_id, agents, now, active)
         })
         .map(|eta| eta.estimated_days)
         .fold(0.0_f64, f64::max);
@@ -270,6 +588,7 @@ fn estimate_complexity_minutes(
     (derived.max(1), factors)
 }
 
+#[cfg(test)]
 fn estimate_velocity_minutes_per_day(
     issues: &[Issue],
     issue: &Issue,
@@ -330,6 +649,7 @@ fn estimate_velocity_minutes_per_day(
     )
 }
 
+#[cfg(test)]
 fn velocity_minutes_per_day_for_label(
     issues: &[Issue],
     label: Option<&str>,
@@ -460,12 +780,334 @@ fn truncate_f64_to_i64(value: f64) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use std::collections::HashSet;
 
-    use crate::analysis::graph::IssueGraph;
-    use crate::model::Issue;
+    use chrono::{DateTime, Utc};
 
-    use super::{estimate_eta_for_issue, estimate_forecast, velocity_minutes_per_day_for_label};
+    use crate::analysis::graph::{GraphMetrics, IssueGraph};
+    use crate::model::{Dependency, Issue};
+
+    use super::{
+        ForecastContext, VelocityHistory, estimate_effort_minutes, estimate_eta_for_issue,
+        estimate_eta_reference, estimate_forecast, velocity_minutes_per_day_for_label,
+    };
+
+    fn fixed_clock() -> DateTime<Utc> {
+        "2026-01-20T12:34:56Z".parse().expect("fixed clock")
+    }
+
+    fn dependency_issue(id: &str, blockers: &[&str]) -> Issue {
+        Issue {
+            id: id.to_string(),
+            title: format!("Issue {id}"),
+            status: "open".to_string(),
+            issue_type: "task".to_string(),
+            estimated_minutes: Some(60),
+            dependencies: blockers
+                .iter()
+                .map(|blocker| Dependency {
+                    issue_id: id.to_string(),
+                    depends_on_id: (*blocker).to_string(),
+                    dep_type: "blocks".to_string(),
+                    ..Dependency::default()
+                })
+                .collect(),
+            ..Issue::default()
+        }
+    }
+
+    fn assert_matches_reference(
+        issues: &[Issue],
+        graph: &IssueGraph,
+        metrics: &GraphMetrics,
+        order: &[&str],
+        agents: usize,
+    ) {
+        let now = fixed_clock();
+        let mut context = ForecastContext::new(issues, graph, metrics, agents, now);
+        // Reuse the same context in both directions. A cycle-truncated result
+        // must never contaminate a later root or a repeated request.
+        for &id in order.iter().chain(order.iter().rev()) {
+            let expected = estimate_eta_reference(
+                issues,
+                graph,
+                metrics,
+                id,
+                agents,
+                now,
+                &mut HashSet::new(),
+            );
+            assert_eq!(context.estimate(id), expected, "forecast for {id}");
+        }
+    }
+
+    #[test]
+    fn iterative_forecasts_match_recursive_oracle_on_generated_dags() {
+        for case in 0_u64..128 {
+            let mut issues = Vec::new();
+            for node in 0..8 {
+                let id = format!("N{node}");
+                let blockers = (0..node)
+                    .filter(|&earlier| {
+                        case.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                            .rotate_left((node * 8 + earlier) as u32)
+                            & 1
+                            != 0
+                    })
+                    .map(|earlier| format!("N{earlier}"))
+                    .collect::<Vec<_>>();
+                let blocker_refs = blockers.iter().map(String::as_str).collect::<Vec<_>>();
+                let mut issue = dependency_issue(&id, &blocker_refs);
+                issue.estimated_minutes =
+                    [None, Some(0), Some(-10), Some(30), Some(240)][(node + case as usize) % 5];
+                issue.issue_type = ["task", " Feature ", "epic", "chore"][node % 4].to_string();
+                issue.description = "évidence ".repeat(node * 43);
+                issue.labels = match node % 4 {
+                    0 => vec!["API".to_string(), "api".to_string()],
+                    1 => vec!["Web".to_string(), "API".to_string()],
+                    2 => vec!["unseen".to_string()],
+                    _ => Vec::new(),
+                };
+                if node % 4 == 0 {
+                    issue.status = "closed".to_string();
+                    issue.closed_at = Some(fixed_clock() - chrono::Duration::days(3));
+                }
+                issues.push(issue);
+            }
+            let graph = IssueGraph::build(&issues);
+            let metrics = graph.compute_metrics();
+            assert_matches_reference(
+                &issues,
+                &graph,
+                &metrics,
+                &["N7", "N2", "N5", "N0", "N3", "N6", "N1", "N4", "missing"],
+                case as usize % 4,
+            );
+        }
+    }
+
+    #[test]
+    fn shared_dependency_diamonds_are_evaluated_without_enumerating_paths() {
+        // Sixty-five issues contain over four billion root-to-leaf paths.
+        // Each level adds exactly one issue's five-day effort to every ETA.
+        let levels = 32;
+        let mut issues = vec![dependency_issue("ROOT", &[])];
+        let mut previous = vec!["ROOT".to_string()];
+        for level in 0..levels {
+            let next = [format!("L{level:02}A"), format!("L{level:02}B")];
+            let blockers = previous.iter().map(String::as_str).collect::<Vec<_>>();
+            for id in &next {
+                issues.push(dependency_issue(id, &blockers));
+            }
+            previous = next.to_vec();
+        }
+        let graph = IssueGraph::build(&issues);
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let eta = estimate_eta_for_issue(&issues, &graph, &metrics, "L31B", 1, fixed_clock())
+            .expect("diamond target");
+        assert_eq!(eta.estimated_days, 5.0 * (levels + 1) as f64);
+        assert_eq!(eta.estimated_minutes, 60);
+
+        let forecasts = estimate_forecast(&issues, &graph, &metrics, "all", None, 1);
+        assert_eq!(forecasts.forecasts.len(), issues.len());
+        for (index, item) in forecasts.forecasts.iter().enumerate() {
+            assert_eq!(item.id, issues[index].id);
+            assert_eq!(item.estimated_days, 5.0 * ((index + 1) / 2 + 1) as f64);
+            assert_eq!(item.eta_minutes, 60);
+        }
+    }
+
+    #[test]
+    fn deep_forecast_chain_does_not_use_the_process_stack() {
+        let count = 25_000;
+        let mut issues = Vec::with_capacity(count);
+        issues.push(dependency_issue("N00000", &[]));
+        for index in 1..count {
+            issues.push(dependency_issue(
+                &format!("N{index:05}"),
+                &[&format!("N{:05}", index - 1)],
+            ));
+        }
+        let graph = IssueGraph::build(&issues);
+        // Exercise forecasting rather than unrelated centrality algorithms.
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let eta = estimate_eta_for_issue(&issues, &graph, &metrics, "N24999", 1, fixed_clock())
+            .expect("deep chain target");
+        assert_eq!(eta.estimated_minutes, 60);
+        assert_eq!(eta.estimated_days, count as f64 * 5.0);
+        assert!(
+            eta.factors
+                .iter()
+                .any(|factor| factor == "blocked: waits 124995.0d on dependencies")
+        );
+    }
+
+    #[test]
+    fn cycle_cuts_do_not_leak_between_roots_or_acyclic_ancestors() {
+        let cases = [
+            vec![
+                dependency_issue("A", &["B"]),
+                dependency_issue("B", &["A"]),
+                dependency_issue("C", &["A", "FREE"]),
+                dependency_issue("D", &["B", "C"]),
+                dependency_issue("FREE", &[]),
+            ],
+            vec![
+                dependency_issue("A", &["B", "C"]),
+                dependency_issue("B", &["A", "C", "FREE"]),
+                dependency_issue("C", &["A", "B"]),
+                dependency_issue("D", &["A", "C", "FREE"]),
+                dependency_issue("FREE", &[]),
+            ],
+            vec![
+                dependency_issue("A", &["A", "FREE"]),
+                dependency_issue("B", &["A"]),
+                dependency_issue("C", &["B", "FREE"]),
+                dependency_issue("D", &["C"]),
+                dependency_issue("FREE", &[]),
+            ],
+        ];
+        for mut issues in cases {
+            for (index, issue) in issues.iter_mut().enumerate() {
+                issue.estimated_minutes = Some((index as i32 + 1) * 30);
+            }
+            let graph = IssueGraph::build(&issues);
+            let metrics = graph.compute_metrics();
+            for order in [
+                ["D", "C", "B", "A", "FREE"],
+                ["A", "B", "D", "FREE", "C"],
+                ["FREE", "C", "A", "B", "D"],
+            ] {
+                assert_matches_reference(&issues, &graph, &metrics, &order, 3);
+            }
+        }
+    }
+
+    #[test]
+    fn cached_forecasts_match_oracle_for_every_three_node_directed_graph() {
+        let metrics = IssueGraph::build(&[]).compute_metrics();
+        let ids = ["A", "B", "C"];
+        // All 512 graphs, including self-loops and every overlapping cycle.
+        for mask in 0..(1 << 9) {
+            let issues = ids
+                .iter()
+                .enumerate()
+                .map(|(node, id)| {
+                    let blockers = ids
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(blocker, id)| {
+                            (mask & (1 << (node * 3 + blocker)) != 0).then_some(*id)
+                        })
+                        .collect::<Vec<_>>();
+                    let mut issue = dependency_issue(id, &blockers);
+                    issue.estimated_minutes = Some((node as i32 + 1) * 30);
+                    issue
+                })
+                .collect::<Vec<_>>();
+            let graph = IssueGraph::build(&issues);
+            assert_matches_reference(&issues, &graph, &metrics, &["A", "B", "C"], 1);
+            assert_matches_reference(&issues, &graph, &metrics, &["C", "A", "B"], 2);
+        }
+    }
+
+    #[test]
+    fn indexed_lookup_preserves_missing_closed_and_duplicate_id_behavior() {
+        let mut issues = vec![
+            dependency_issue("A", &[]),
+            dependency_issue("A", &[]),
+            dependency_issue("CLOSED", &[]),
+            dependency_issue("TARGET", &["A", "CLOSED", "OUTSIDE"]),
+            dependency_issue("OUTSIDE", &[]),
+        ];
+        issues[1].estimated_minutes = Some(600);
+        issues[2].status = "tombstone".to_string();
+        issues[2].updated_at = Some(fixed_clock());
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        // OUTSIDE exists in the graph but not in this caller's source slice.
+        let selected = &issues[..4];
+        assert_matches_reference(
+            selected,
+            &graph,
+            &metrics,
+            &["TARGET", "A", "CLOSED", "OUTSIDE", "missing"],
+            1,
+        );
+        let efforts = estimate_effort_minutes(selected, &metrics);
+        let first = estimate_eta_for_issue(selected, &graph, &metrics, "A", 1, fixed_clock())
+            .expect("first duplicate issue");
+        assert_eq!(efforts["A"], first.estimated_minutes);
+        assert!(efforts["A"] < 600);
+        assert!(!efforts.contains_key("OUTSIDE"));
+    }
+
+    #[test]
+    fn indexed_velocity_preserves_closure_boundaries_label_case_and_fallbacks() {
+        let now = fixed_clock();
+        let mut issues = Vec::new();
+        for (id, status, labels, age, minutes) in [
+            ("one", "closed", vec!["API", "api", "Web"], 2, Some(120)),
+            ("two", "tombstone", vec!["WEB", "Api"], 30, None),
+            ("three", "closed", vec!["legacy"], 31, Some(900)),
+            ("four", "open", vec!["API"], 1, Some(1200)),
+            ("five", "closed", vec![" Api "], -1, Some(240)),
+        ] {
+            let mut issue = dependency_issue(id, &[]);
+            issue.status = status.to_string();
+            issue.labels = labels.into_iter().map(str::to_string).collect();
+            issue.closed_at = Some(now - chrono::Duration::days(age));
+            issue.estimated_minutes = minutes;
+            issues.push(issue);
+        }
+        // updated_at is used only when closed_at is absent.
+        issues[1].updated_at = issues[1].closed_at.take();
+        let median = super::compute_median_estimated_minutes(&issues);
+        let indexed = VelocityHistory::new(&issues, now, median);
+        for labels in [
+            vec![],
+            vec!["api"],
+            vec!["Web", "API"],
+            vec!["WEB", "api", "Api"],
+            vec![" Api "],
+            vec!["absent", "legacy"],
+        ] {
+            let mut target = dependency_issue("target", &[]);
+            target.labels = labels.into_iter().map(str::to_string).collect();
+            assert_eq!(
+                indexed.estimate(&target),
+                super::estimate_velocity_minutes_per_day(&issues, &target, now, median),
+                "labels {:?}",
+                target.labels
+            );
+        }
+        assert_eq!(indexed.labels["api"].samples, 2);
+        assert_eq!(indexed.labels["web"].samples, 2);
+        assert_eq!(indexed.global.samples, 3);
+    }
+
+    #[test]
+    fn effort_batch_uses_selected_median_and_supplied_graph_depth() {
+        let mut issues = vec![
+            dependency_issue("SMALL", &[]),
+            dependency_issue("LARGE", &[]),
+            dependency_issue("UNESTIMATED", &["SMALL"]),
+        ];
+        issues[0].estimated_minutes = Some(30);
+        issues[1].estimated_minutes = Some(90);
+        issues[2].estimated_minutes = None;
+        let mut metrics = IssueGraph::build(&[]).compute_metrics();
+        metrics.critical_depth.insert("UNESTIMATED".to_string(), 4);
+        let estimates = estimate_effort_minutes(&issues, &metrics);
+        assert_eq!(estimates["SMALL"], 30);
+        assert_eq!(estimates["LARGE"], 90);
+        assert_eq!(estimates["UNESTIMATED"], 84);
+        assert_eq!(
+            estimate_effort_minutes(&issues[1..], &metrics)["UNESTIMATED"],
+            125
+        );
+        assert!(estimate_effort_minutes(&[], &metrics).is_empty());
+    }
 
     #[test]
     fn forecast_for_all_open_issues() {
