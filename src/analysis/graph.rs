@@ -578,28 +578,23 @@ impl IssueGraph {
 
         // Phase 3: Propagate blocked status through parent-child relationships.
         // If a parent is blocked, its children are also blocked (transitively).
-        let mut blocked = directly_blocked.clone();
-        let max_depth = 50;
-        for _ in 0..max_depth {
-            let mut newly_blocked = Vec::<String>::new();
-            for parent_id in &blocked {
-                if let Some(children) = children_of.get(parent_id) {
-                    for child_id in children {
-                        if !blocked.contains(child_id)
-                            && self
-                                .issue(child_id)
-                                .is_some_and(|issue| !issue.is_closed_like())
-                        {
-                            newly_blocked.push(child_id.clone());
-                        }
+        // Visit each blocked parent once instead of limiting hierarchy depth
+        // or repeatedly rescanning its descendants. Mark children when queued
+        // so cycles and shared descendants cannot keep the worklist alive.
+        let mut pending = directly_blocked.iter().cloned().collect::<Vec<_>>();
+        let mut blocked = directly_blocked;
+        while let Some(parent_id) = pending.pop() {
+            if let Some(children) = children_of.get(&parent_id) {
+                for child_id in children {
+                    if !blocked.contains(child_id)
+                        && self
+                            .issue(child_id)
+                            .is_some_and(|issue| !issue.is_closed_like())
+                    {
+                        blocked.insert(child_id.clone());
+                        pending.push(child_id.clone());
                     }
                 }
-            }
-            if newly_blocked.is_empty() {
-                break;
-            }
-            for id in newly_blocked {
-                blocked.insert(id);
             }
         }
 
@@ -1789,6 +1784,124 @@ mod tests {
         let actionable = graph.actionable_ids();
 
         assert_eq!(actionable, vec!["C".to_string(), "E".to_string()]);
+    }
+
+    fn hierarchy_issue(id: &str, status: &str, dependencies: &[(&str, &str)]) -> Issue {
+        Issue {
+            id: id.to_string(),
+            title: id.to_string(),
+            status: status.to_string(),
+            issue_type: "task".to_string(),
+            dependencies: dependencies
+                .iter()
+                .map(|(kind, target)| Dependency {
+                    issue_id: id.to_string(),
+                    depends_on_id: (*target).to_string(),
+                    dep_type: (*kind).to_string(),
+                    ..Dependency::default()
+                })
+                .collect(),
+            ..Issue::default()
+        }
+    }
+
+    #[test]
+    fn inherited_blocking_reaches_beyond_fifty_parent_levels() {
+        let mut issues = vec![
+            hierarchy_issue("Z-READY", "open", &[]),
+            hierarchy_issue("BLOCKER", "open", &[]),
+            hierarchy_issue("A-READY", "open", &[]),
+        ];
+        for depth in 0..=128 {
+            let id = format!("LEVEL-{depth:03}");
+            let (kind, parent) = if depth == 0 {
+                ("blocks", "BLOCKER".to_string())
+            } else {
+                ("parent-child", format!("LEVEL-{:03}", depth - 1))
+            };
+            issues.push(hierarchy_issue(&id, "open", &[(kind, &parent)]));
+        }
+
+        // The former fifty-round propagation only reached LEVEL-050; every
+        // deeper child was incorrectly ready regardless of insertion order.
+        for reverse in [false, true] {
+            if reverse {
+                issues.reverse();
+            }
+            let graph = IssueGraph::build(&issues);
+            let expected = vec!["A-READY", "BLOCKER", "Z-READY"];
+            assert_eq!(graph.dependency_unblocked_ids(), expected);
+            assert_eq!(graph.actionable_ids(), expected);
+        }
+
+        issues
+            .iter_mut()
+            .find(|issue| issue.id == "BLOCKER")
+            .expect("root prerequisite")
+            .status = "closed".to_string();
+        let graph = IssueGraph::build(&issues);
+        let mut released = (0..=128)
+            .map(|depth| format!("LEVEL-{depth:03}"))
+            .collect::<Vec<_>>();
+        released.extend(["A-READY".to_string(), "Z-READY".to_string()]);
+        released.sort();
+        assert_eq!(graph.actionable_ids(), released);
+    }
+
+    #[test]
+    fn inherited_blocking_handles_parent_cycles_and_shared_descendants() {
+        let mut issues = vec![
+            hierarchy_issue("BLOCKER", "open", &[]),
+            hierarchy_issue("A", "open", &[("blocks", "BLOCKER"), ("parent-child", "C")]),
+            hierarchy_issue("C", "open", &[("parent-child", "A")]),
+            hierarchy_issue(
+                "SHARED",
+                "open",
+                &[
+                    ("parent-child", "C"),
+                    ("parent-child", "A"),
+                    ("parent-child", "A"),
+                ],
+            ),
+            hierarchy_issue("LEAF", "open", &[("parent-child", "SHARED")]),
+            hierarchy_issue("UNBLOCKED-A", "open", &[("parent-child", "UNBLOCKED-B")]),
+            hierarchy_issue("UNBLOCKED-B", "open", &[("parent-child", "UNBLOCKED-A")]),
+            hierarchy_issue("READY", "open", &[]),
+        ];
+        for reverse in [false, true] {
+            if reverse {
+                issues.reverse();
+            }
+            let graph = IssueGraph::build(&issues);
+            // Parent edges alone do not block work. Only the cycle connected
+            // to an open prerequisite, and its descendants, inherit blocking.
+            assert_eq!(
+                graph.actionable_ids(),
+                vec!["BLOCKER", "READY", "UNBLOCKED-A", "UNBLOCKED-B"]
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_blocking_preserves_closed_and_non_parent_boundaries() {
+        for terminal_status in ["closed", "tombstone"] {
+            let issues = vec![
+                hierarchy_issue("BLOCKER", "open", &[]),
+                hierarchy_issue("ROOT", "open", &[("blocks", "BLOCKER")]),
+                hierarchy_issue("TERMINAL", terminal_status, &[("parent-child", "ROOT")]),
+                hierarchy_issue("AFTER-TERMINAL", "open", &[("parent-child", "TERMINAL")]),
+                hierarchy_issue("PARKED", "deferred", &[(" Parent-Child ", "ROOT")]),
+                hierarchy_issue("AFTER-PARKED", "open", &[("parent-child", "PARKED")]),
+                hierarchy_issue("RELATED", "open", &[("related", "ROOT")]),
+                hierarchy_issue("UNKNOWN-PARENT", "open", &[("parent-child", "MISSING")]),
+            ];
+            let graph = IssueGraph::build(&issues);
+            // Closed/tombstone nodes stop inheritance, while nonterminal
+            // parked nodes still pass it to their open descendants.
+            let expected = vec!["AFTER-TERMINAL", "BLOCKER", "RELATED", "UNKNOWN-PARENT"];
+            assert_eq!(graph.dependency_unblocked_ids(), expected);
+            assert_eq!(graph.actionable_ids(), expected);
+        }
     }
 
     #[test]
