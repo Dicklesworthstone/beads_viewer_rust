@@ -2244,6 +2244,26 @@ mod preview_transfers {
     }
 
     fn read_response(stream: &mut TcpStream, head: bool, paced: bool) -> BinaryResponse {
+        let response = read_complete_response(stream, head, paced);
+        assert!(
+            response.headers.starts_with("HTTP/1.1 200 OK\r\n"),
+            "unexpected headers: {}",
+            response.headers
+        );
+        response
+    }
+
+    fn read_error_response(stream: &mut TcpStream, status: &str) -> BinaryResponse {
+        let response = read_complete_response(stream, false, false);
+        assert!(
+            response.headers.starts_with(&format!("HTTP/1.1 {status} ")),
+            "unexpected error response: {}",
+            response.headers
+        );
+        response
+    }
+
+    fn read_complete_response(stream: &mut TcpStream, head: bool, paced: bool) -> BinaryResponse {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut response = Vec::new();
         let mut buffer = [0_u8; 16 * 1024];
@@ -2270,10 +2290,6 @@ mod preview_transfers {
             + 4;
         let body = response.split_off(header_end);
         let headers = String::from_utf8(response).expect("UTF-8 HTTP headers");
-        assert!(
-            headers.starts_with("HTTP/1.1 200 OK\r\n"),
-            "unexpected headers: {headers}"
-        );
         let response = BinaryResponse { headers, body };
         let advertised: usize = response
             .header("Content-Length")
@@ -2285,6 +2301,33 @@ mod preview_transfers {
             "advertised Content-Length does not match the delivered body"
         );
         response
+    }
+
+    fn expect_no_response(stream: &mut TcpStream) {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("short response probe timeout");
+        let mut byte = [0];
+        let result = stream.read(&mut byte);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .expect("restore response timeout");
+        assert!(
+            matches!(result, Err(ref error)
+                if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+            "preview replied before the request headers were complete: {result:?}, byte={byte:?}"
+        );
+    }
+
+    fn fragmented_request(port: u16, fragments: &[&[u8]]) -> TcpStream {
+        let mut stream = connect(port);
+        let (last, prefix) = fragments.split_last().expect("request fragments");
+        for fragment in prefix {
+            stream.write_all(fragment).expect("send request fragment");
+            expect_no_response(&mut stream);
+        }
+        stream.write_all(last).expect("complete request headers");
+        stream
     }
 
     fn write_bundle(bundle: &Path) {
@@ -2339,6 +2382,174 @@ mod preview_transfers {
             header.push(byte[0]);
         }
         assert!(header.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    }
+
+    #[test]
+    fn preview_pages_waits_for_complete_fragmented_get_head_and_status_requests() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = payload(64 * 1024 + 17);
+        fs::write(temp.path().join("chunks/fragmented.bin"), &expected).expect("write asset");
+        let mut server = PreviewProcess::start(temp.path(), 3);
+
+        let mut get = fragmented_request(
+            server.port,
+            &[
+                b"G",
+                b"ET /chunks/frag",
+                b"mented.bin HT",
+                b"TP/1.1\r\nHost: local",
+                b"host\r\n\r",
+                b"\n",
+            ],
+        );
+        read_response(&mut get, false, false).assert_body(&expected);
+
+        let mut head = fragmented_request(
+            server.port,
+            &[
+                b"H",
+                b"EAD /chunks/fragmented.bin HTTP/1.",
+                b"0\r\nHost: localhost\r\n",
+                b"\r",
+                b"\n",
+            ],
+        );
+        let head = read_response(&mut head, true, false);
+        assert_eq!(head.header("Content-Length"), expected.len().to_string());
+
+        let mut status = fragmented_request(
+            server.port,
+            &[
+                b"GET /__preview__/sta",
+                b"tus HTTP/1.1\r",
+                b"\nHost: localhost\r\n",
+                b"\r",
+                b"\n",
+            ],
+        );
+        let status = read_response(&mut status, false, false);
+        let status: serde_json::Value =
+            serde_json::from_slice(&status.body).expect("status response JSON");
+        assert_eq!(status["status"], "running");
+        assert_eq!(status["port"], server.port);
+        assert_eq!(status["live_reload"], false);
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_rejects_malformed_and_incomplete_requests_then_recovers() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = fs::read(temp.path().join("index.html")).expect("index");
+        let cases: &[(&[u8], &str)] = &[
+            (b"GET /\r\n\r\n", "400"),
+            (b"GET / HTTP/1.1 extra\r\n\r\n", "400"),
+            (b"GET http://localhost/ HTTP/1.1\r\n\r\n", "400"),
+            (b"GET / HTTP/2.0\r\n\r\n", "400"),
+            (b"GET / HTTP/1.1\r\nBad Header: value\r\n\r\n", "400"),
+            (b"GET / HTTP/1.1\r\nMissing-Colon\r\n\r\n", "400"),
+            (b"POST / HTTP/1.1\r\nHost: localhost\r\n\r\n", "405"),
+            (b"POST /\r\n\r\n", "400"),
+        ];
+        let mut server = PreviewProcess::start(temp.path(), cases.len() * 2 + 2);
+        for &(bytes, status) in cases {
+            let mut stream = connect(server.port);
+            stream.write_all(bytes).expect("send invalid request");
+            read_error_response(&mut stream, status);
+            read_response(&mut request(server.port, "GET", "/"), false, false)
+                .assert_body(&expected);
+        }
+
+        let mut incomplete = connect(server.port);
+        incomplete
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .expect("send incomplete headers");
+        incomplete
+            .shutdown(Shutdown::Write)
+            .expect("finish incomplete request");
+        read_error_response(&mut incomplete, "400");
+        read_response(&mut request(server.port, "GET", "/"), false, false).assert_body(&expected);
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_enforces_header_limit_without_rejecting_http10_or_obs_text() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = fs::read(temp.path().join("index.html")).expect("index");
+        let mut server = PreviewProcess::start(temp.path(), 3);
+
+        // The cap includes the terminator, and opaque header values must not
+        // force the entire HTTP header block to be valid UTF-8.
+        let mut at_limit = b"GET / HTTP/1.0\r\nX-Bytes: \xff\x80\r\nX-Pad: ".to_vec();
+        at_limit.resize(8192 - 4, b'x');
+        at_limit.extend_from_slice(b"\r\n\r\n");
+        let mut valid = connect(server.port);
+        valid.write_all(&at_limit).expect("send headers at limit");
+        read_response(&mut valid, false, false).assert_body(&expected);
+
+        // An unterminated block at the cap can no longer fit its terminator.
+        // Send no surplus bytes that would turn connection close into a reset.
+        let mut oversized = b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Pad: ".to_vec();
+        oversized.resize(8192, b'x');
+        let mut invalid = connect(server.port);
+        invalid
+            .write_all(&oversized)
+            .expect("send oversized headers");
+        read_error_response(&mut invalid, "431");
+        read_response(&mut request(server.port, "GET", "/"), false, false).assert_body(&expected);
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_fragmented_headers_share_one_read_deadline() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = fs::read(temp.path().join("index.html")).expect("index");
+        let mut server = PreviewProcess::start(temp.path(), 2);
+        let mut drip = connect(server.port);
+        let started = Instant::now();
+        drip.write_all(b"GET / HTTP/1.1\r\nX-Drip: ")
+            .expect("start incomplete headers");
+        for _ in 0..3 {
+            thread::sleep(Duration::from_secs(1));
+            drip.write_all(b"x").expect("send another header fragment");
+            expect_no_response(&mut drip);
+        }
+        // A per-read reset would extend the server deadline to more than eight
+        // seconds. The original five-second budget must expire first.
+        drip.set_read_timeout(Some(Duration::from_secs(4)))
+            .expect("bounded deadline response");
+        read_error_response(&mut drip, "408");
+        assert!(
+            started.elapsed() >= Duration::from_secs(4)
+                && started.elapsed() < Duration::from_secs(8),
+            "fragments changed the five-second request deadline: {:?}",
+            started.elapsed()
+        );
+        read_response(&mut request(server.port, "GET", "/"), false, false).assert_body(&expected);
+        server.finish_requests();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_pages_sigterm_interrupts_incomplete_request_headers() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let mut server = PreviewProcess::start(temp.path(), 0);
+        let mut incomplete = connect(server.port);
+        incomplete
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .expect("send incomplete headers");
+        expect_no_response(&mut incomplete);
+        server.terminate();
+        drop(incomplete);
     }
 
     #[test]

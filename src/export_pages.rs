@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -29,6 +29,8 @@ const DEFAULT_PREVIEW_PORT: u16 = 9000;
 const MAX_PREVIEW_PORT_ATTEMPTS: u16 = 32;
 const PREVIEW_MAX_REQUESTS_ENV: &str = "BVR_PREVIEW_MAX_REQUESTS";
 const PREVIEW_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const PREVIEW_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+const PREVIEW_MAX_HEADER_BYTES: usize = 8192;
 const PREVIEW_STATUS_PATH: &str = "/__preview__/status";
 const PREVIEW_RELOAD_PATH: &str = "/.bvr/livereload";
 
@@ -591,19 +593,31 @@ fn handle_preview_request(
     // write_all needs blocking I/O here or a full send buffer truncates the
     // response with WouldBlock after we have already advertised HTTP 200.
     stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(PREVIEW_HEADER_TIMEOUT))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let mut buffer = [0_u8; 8192];
-    let bytes = stream.read(&mut buffer)?;
-    if bytes == 0 {
-        return Ok(false);
-    }
-
-    let request = String::from_utf8_lossy(&buffer[..bytes]);
-    let request_line = request.lines().next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let target = parts.next().unwrap_or("/");
+    let mut buffer = [0_u8; PREVIEW_MAX_HEADER_BYTES];
+    let (header_len, rejection) = match read_preview_headers(&mut stream, &mut buffer)? {
+        PreviewHeaderRead::Empty => return Ok(false),
+        PreviewHeaderRead::Complete(len) => (len, None),
+        PreviewHeaderRead::Rejected { len, status } => (len, Some(status)),
+    };
+    let headers = &buffer[..header_len];
+    let (method, target) = match (rejection, parse_preview_request(headers)) {
+        (None, Some(request)) => request,
+        (status, _) => {
+            let status = status.unwrap_or("400 Bad Request");
+            let head_only =
+                headers.split(|byte| byte.is_ascii_whitespace()).next() == Some(&b"HEAD"[..]);
+            write_http_response(
+                &mut stream,
+                status,
+                "text/plain; charset=utf-8",
+                format!("{status}\n").as_bytes(),
+                head_only,
+            )?;
+            return Ok(true);
+        }
+    };
     let head_only = method == "HEAD";
 
     if method != "GET" && method != "HEAD" {
@@ -683,6 +697,149 @@ fn handle_preview_request(
 
     write_http_response(&mut stream, "200 OK", mime, &body, head_only)?;
     Ok(true)
+}
+
+enum PreviewHeaderRead {
+    Empty,
+    Complete(usize),
+    Rejected { len: usize, status: &'static str },
+}
+
+fn read_preview_headers(
+    stream: &mut TcpStream,
+    buffer: &mut [u8; PREVIEW_MAX_HEADER_BYTES],
+) -> std::io::Result<PreviewHeaderRead> {
+    let deadline = Instant::now() + PREVIEW_HEADER_TIMEOUT;
+    let mut used = 0usize;
+    loop {
+        if used == buffer.len() {
+            return Ok(PreviewHeaderRead::Rejected {
+                len: used,
+                status: "431 Request Header Fields Too Large",
+            });
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            if used == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "preview request headers timed out",
+                ));
+            }
+            return Ok(PreviewHeaderRead::Rejected {
+                len: used,
+                status: "408 Request Timeout",
+            });
+        }
+        // A peer sending fragments must share one budget; a fresh five-second
+        // timeout for every read would let it monopolize the serial server.
+        stream.set_read_timeout(Some(remaining))?;
+        let previous_len = used;
+        match stream.read(&mut buffer[used..]) {
+            Ok(0) if used == 0 => return Ok(PreviewHeaderRead::Empty),
+            Ok(0) => {
+                return Ok(PreviewHeaderRead::Rejected {
+                    len: used,
+                    status: "400 Bad Request",
+                });
+            }
+            Ok(bytes) => {
+                used += bytes;
+                if Instant::now() >= deadline {
+                    return Ok(PreviewHeaderRead::Rejected {
+                        len: used,
+                        status: "408 Request Timeout",
+                    });
+                }
+                // Only the final three old bytes can begin a delimiter that
+                // crosses this read. Do not rescan the whole growing header.
+                let start = previous_len.saturating_sub(3);
+                if let Some(offset) = buffer[start..used]
+                    .windows(4)
+                    .position(|bytes| bytes == b"\r\n\r\n")
+                {
+                    return Ok(PreviewHeaderRead::Complete(start + offset + 4));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error)
+                if used > 0
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                return Ok(PreviewHeaderRead::Rejected {
+                    len: used,
+                    status: "408 Request Timeout",
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn parse_preview_request(headers: &[u8]) -> Option<(&str, &str)> {
+    let line_end = headers.windows(2).position(|bytes| bytes == b"\r\n")?;
+    let request_line = std::str::from_utf8(&headers[..line_end]).ok()?;
+    let mut parts = request_line.split(' ');
+    let method = parts.next()?;
+    let target = parts.next()?;
+    let version = parts.next()?;
+    if parts.next().is_some()
+        || method.is_empty()
+        || !method.bytes().all(is_http_token_byte)
+        || target.is_empty()
+        || (matches!(method, "GET" | "HEAD") && !target.starts_with('/'))
+        || !target
+            .bytes()
+            .all(|byte| matches!(byte, b'!'..=b'~') && byte != b'#')
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+    {
+        return None;
+    }
+
+    // Header values are opaque bytes, not necessarily UTF-8. Validate their
+    // HTTP syntax without lossy decoding or accepting folded/control lines.
+    let mut fields = &headers[line_end + 2..];
+    loop {
+        let end = fields.windows(2).position(|bytes| bytes == b"\r\n")?;
+        if end == 0 {
+            return (fields.len() == 2).then_some((method, target));
+        }
+        let line = &fields[..end];
+        let colon = line.iter().position(|byte| *byte == b':')?;
+        if colon == 0
+            || !line[..colon].iter().copied().all(is_http_token_byte)
+            || !line[colon + 1..]
+                .iter()
+                .all(|byte| matches!(byte, b'\t' | b' '..=b'~' | 0x80..=0xff))
+        {
+            return None;
+        }
+        fields = &fields[end + 2..];
+    }
+}
+
+fn is_http_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'\''
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'^'
+                | b'_'
+                | b'`'
+                | b'|'
+                | b'~'
+        )
 }
 
 fn normalize_request_path(route: &str) -> Result<PathBuf> {
@@ -1266,6 +1423,109 @@ mod tests {
     fn normalize_request_path_rejects_parent_segments() {
         let result = normalize_request_path("/../../etc/passwd");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn preview_request_parser_accepts_http_versions_and_opaque_header_values() {
+        for (request, method, target) in [
+            (&b"GET / HTTP/1.0\r\n\r\n"[..], "GET", "/"),
+            (
+                &b"HEAD /assets/viewer.js?version=1 HTTP/1.1\r\n\r\n"[..],
+                "HEAD",
+                "/assets/viewer.js?version=1",
+            ),
+            (
+                &b"GET / HTTP/1.1\r\nX-!#$%&'*+-.^_`|~: \t\xff\x80\r\nEmpty:\r\n\r\n"[..],
+                "GET",
+                "/",
+            ),
+            (&b"OPTIONS * HTTP/1.1\r\n\r\n"[..], "OPTIONS", "*"),
+            (
+                &b"CONNECT localhost:443 HTTP/1.1\r\n\r\n"[..],
+                "CONNECT",
+                "localhost:443",
+            ),
+        ] {
+            assert_eq!(parse_preview_request(request), Some((method, target)));
+        }
+    }
+
+    #[test]
+    fn preview_request_parser_rejects_malformed_request_lines() {
+        for line in [
+            "GET /",
+            "GET / HTTP/1.1 extra",
+            "GET  / HTTP/1.1",
+            "GET /  HTTP/1.1",
+            "GET / HTTP/1.1 ",
+            " GET / HTTP/1.1",
+            "GET\t/\tHTTP/1.1",
+            "G(ET / HTTP/1.1",
+            "GET * HTTP/1.1",
+            "HEAD http://localhost/ HTTP/1.1",
+            "GET /#fragment HTTP/1.1",
+            "GET /\u{7f} HTTP/1.1",
+            "GET /\u{0} HTTP/1.1",
+            "GET /é HTTP/1.1",
+            "GET / HTTP/2.0",
+            "POST  HTTP/1.1",
+        ] {
+            let request = format!("{line}\r\n\r\n");
+            assert!(
+                parse_preview_request(request.as_bytes()).is_none(),
+                "accepted malformed request line {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_request_parser_rejects_malformed_header_fields() {
+        for field in [
+            &b": value"[..],
+            &b"Bad Header: value"[..],
+            &b"Bad:Name: value\x00"[..],
+            &b"Name : value"[..],
+            &b"Missing-Colon"[..],
+            &b"\tFolded: value"[..],
+            &b"Name: value\x7f"[..],
+            &b"Name: value\x0b"[..],
+            &b"Name: value\x0c"[..],
+            &b"Name: value\nnext"[..],
+            &b"Name: value\rnext"[..],
+            &b"N\xffme: value"[..],
+        ] {
+            let mut request = b"GET / HTTP/1.1\r\n".to_vec();
+            request.extend_from_slice(field);
+            request.extend_from_slice(b"\r\n\r\n");
+            assert!(
+                parse_preview_request(&request).is_none(),
+                "accepted malformed header field {field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_request_header_reader_stops_at_first_complete_request() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let mut client = TcpStream::connect(listener.local_addr().expect("listener address"))
+            .expect("connect client");
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("client write timeout");
+        let (mut server, _) = listener.accept().expect("accept client");
+        let first = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let mut requests = first.to_vec();
+        requests.extend_from_slice(b"POST /bad HTTP/2.0\r\nInvalid Header\r\n\r\n\xff");
+        client.write_all(&requests).expect("send requests");
+
+        let mut buffer = [0_u8; PREVIEW_MAX_HEADER_BYTES];
+        let PreviewHeaderRead::Complete(len) =
+            read_preview_headers(&mut server, &mut buffer).expect("read header")
+        else {
+            panic!("first request did not complete");
+        };
+        assert_eq!(&buffer[..len], first);
+        assert_eq!(parse_preview_request(&buffer[..len]), Some(("GET", "/")));
     }
 
     #[test]
