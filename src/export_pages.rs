@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -19,7 +19,7 @@ use crate::analysis::triage::TriageOptions;
 use crate::export_sqlite::{
     SQLITE_EXPORT_CONFIG_FILENAME, SQLITE_EXPORT_FILENAME, SqliteBootstrapOptions,
     SqliteBundleOptions, bootstrap_export_database, emit_bootstrap_config,
-    populate_export_database,
+    populate_export_database, snapshot_export_database,
 };
 use crate::model::Issue;
 use crate::{BvrError, Result};
@@ -214,6 +214,27 @@ pub fn export_pages_bundle(
     output_dir: &Path,
     options: &ExportPagesOptions,
 ) -> Result<ExportPagesSummary> {
+    let mut publication = PagesPublication::new(output_dir)?;
+    let database_guard =
+        snapshot_export_database(&publication.output_dir, &publication.staged_dir)?;
+    let summary = build_pages_bundle(issues, &publication.staged_dir, output_dir, options)?;
+    publication.prepare(&summary.files)?;
+
+    // Keep SQLite's writer guard through construction and metadata preflight.
+    // Drop it before opening the original database for comparison or backup:
+    // closing another descriptor for that file can release POSIX SQLite locks.
+    drop(database_guard);
+    publication.back_up_existing()?;
+    publication.publish()?;
+    Ok(summary)
+}
+
+fn build_pages_bundle(
+    issues: &[Issue],
+    output_dir: &Path,
+    logical_output_dir: &Path,
+    options: &ExportPagesOptions,
+) -> Result<ExportPagesSummary> {
     let title = options
         .title
         .as_deref()
@@ -234,23 +255,7 @@ pub fn export_pages_bundle(
         .cloned()
         .collect::<Vec<_>>();
 
-    // Pre-flight validation: ensure output directory is accessible.
-    if let Some(parent) = output_dir.parent() {
-        if !parent.as_os_str().is_empty() && !parent.exists() {
-            fs::create_dir_all(parent).map_err(|error| {
-                BvrError::InvalidArgument(format!(
-                    "cannot create export directory {}: {error}",
-                    output_dir.display()
-                ))
-            })?;
-        }
-    }
-    fs::create_dir_all(output_dir.join("data")).map_err(|error| {
-        BvrError::InvalidArgument(format!(
-            "cannot prepare export directory {}: {error}",
-            output_dir.display()
-        ))
-    })?;
+    fs::create_dir_all(output_dir.join("data"))?;
 
     let analyzer = Analyzer::new(filtered.clone());
     let triage = analyzer.triage(TriageOptions {
@@ -353,8 +358,6 @@ pub fn export_pages_bundle(
             .collect();
         write_json(history_path.clone(), &history_compat)?;
         files.push("data/history.json".to_string());
-    } else if history_path.exists() {
-        fs::remove_file(&history_path)?;
     }
 
     // Deploy-facing README so the bundle is self-describing.
@@ -371,7 +374,7 @@ pub fn export_pages_bundle(
     files.push("data/export_summary.json".to_string());
 
     let summary = ExportPagesSummary {
-        export_path: output_dir.to_string_lossy().to_string(),
+        export_path: logical_output_dir.to_string_lossy().to_string(),
         generated_at,
         issue_count: filtered.len(),
         include_closed: options.include_closed,
@@ -382,6 +385,489 @@ pub fn export_pages_bundle(
     write_json(output_dir.join("data/export_summary.json"), &summary)?;
 
     Ok(summary)
+}
+
+#[derive(Clone)]
+struct PublicationChange {
+    relative_path: PathBuf,
+    install: bool,
+    existed: bool,
+}
+
+struct PagesPublication {
+    output_dir: PathBuf,
+    staging: tempfile::TempDir,
+    staged_dir: PathBuf,
+    changes: Vec<PublicationChange>,
+    applied: usize,
+    created_dirs: Vec<PathBuf>,
+}
+
+impl PagesPublication {
+    fn new(output_dir: &Path) -> Result<Self> {
+        let output_dir = resolve_export_output_dir(output_dir)?;
+        let parent = output_dir.parent().ok_or_else(|| {
+            BvrError::InvalidArgument(
+                "cannot create sibling staging directory for a filesystem root".to_string(),
+            )
+        })?;
+        let staging = create_publication_staging(&output_dir, parent, &std::env::temp_dir())?;
+        let staged_dir = staging.path().join("bundle");
+        fs::create_dir(&staged_dir)?;
+        Ok(Self {
+            output_dir,
+            staging,
+            staged_dir,
+            changes: Vec::new(),
+            applied: 0,
+            created_dirs: Vec::new(),
+        })
+    }
+
+    fn prepare(&mut self, files: &[String]) -> Result<()> {
+        export_directory_exists(&self.output_dir)?;
+        let new_files = files.iter().map(PathBuf::from).collect::<BTreeSet<_>>();
+        let mut managed = new_files.clone();
+        managed.insert(PathBuf::from("data/history.json"));
+        let chunks_dir = self.output_dir.join("chunks");
+        if export_directory_exists(&chunks_dir)? {
+            for entry in fs::read_dir(&chunks_dir)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if is_numbered_database_chunk(&name) {
+                    managed.insert(Path::new("chunks").join(name));
+                }
+            }
+        }
+
+        for relative_path in managed {
+            let existed = managed_export_file_exists(&self.output_dir, &relative_path)?;
+            let install = new_files.contains(&relative_path);
+            if install && !managed_export_file_exists(&self.staged_dir, &relative_path)? {
+                return Err(BvrError::InvalidArgument(format!(
+                    "staged export file is missing: {}",
+                    relative_path.display()
+                )));
+            }
+            if install || existed {
+                self.changes.push(PublicationChange {
+                    relative_path,
+                    install,
+                    existed,
+                });
+            }
+        }
+        self.changes.sort_by(|left, right| {
+            publication_order(&left.relative_path)
+                .cmp(&publication_order(&right.relative_path))
+                .then_with(|| left.relative_path.cmp(&right.relative_path))
+        });
+        Ok(())
+    }
+
+    fn back_up_existing(&mut self) -> Result<()> {
+        let mut changed = Vec::with_capacity(self.changes.len());
+        for change in self.changes.drain(..) {
+            if managed_export_file_exists(&self.output_dir, &change.relative_path)?
+                != change.existed
+            {
+                return Err(BvrError::InvalidArgument(format!(
+                    "export target changed before backup: {}",
+                    change.relative_path.display()
+                )));
+            }
+            let published = self.output_dir.join(&change.relative_path);
+            let staged = self.staged_dir.join(&change.relative_path);
+            if change.existed && change.install && export_files_equal(&published, &staged)? {
+                continue;
+            }
+            if change.existed {
+                let backup = self
+                    .staging
+                    .path()
+                    .join("backups")
+                    .join(&change.relative_path);
+                create_private_parent(&backup)?;
+                fs::copy(&published, backup)?;
+                if change.install {
+                    // Replacing by rename must not widen the permissions that
+                    // an in-place write to the existing managed file retained.
+                    fs::set_permissions(&staged, fs::symlink_metadata(&published)?.permissions())?;
+                }
+            }
+            // Stale files move here during publication; installed files move
+            // back here during rollback. These parents remain private.
+            create_private_parent(&staged)?;
+            changed.push(change);
+        }
+        self.changes = changed;
+        Ok(())
+    }
+
+    fn apply_next(&mut self) -> Result<bool> {
+        let Some(change) = self.changes.get(self.applied).cloned() else {
+            return Ok(false);
+        };
+        let exists = managed_export_file_exists(&self.output_dir, &change.relative_path)?;
+        if exists != change.existed {
+            return Err(BvrError::InvalidArgument(format!(
+                "export target changed during publication: {}",
+                change.relative_path.display()
+            )));
+        }
+        let published = self.output_dir.join(&change.relative_path);
+        let staged = self.staged_dir.join(&change.relative_path);
+        let result = if change.install {
+            self.create_output_parents(&change.relative_path)?;
+            fs::rename(staged, &published)
+        } else {
+            fs::rename(&published, staged)
+        };
+        result.map_err(|error| {
+            BvrError::InvalidArgument(format!(
+                "cannot publish export file {}: {error}",
+                published.display()
+            ))
+        })?;
+        self.applied += 1;
+        Ok(true)
+    }
+
+    fn create_output_parents(&mut self, relative_path: &Path) -> Result<()> {
+        let mut path = self.output_dir.clone();
+        self.create_output_directory(&path)?;
+        if let Some(parent) = relative_path.parent() {
+            for component in parent.components() {
+                path.push(component);
+                self.create_output_directory(&path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn create_output_directory(&mut self, path: &Path) -> Result<()> {
+        if !export_directory_exists(path)? {
+            match fs::create_dir(path) {
+                Ok(()) => self.created_dirs.push(path.to_path_buf()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    export_directory_exists(path)?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_change(&self, change: &PublicationChange) -> Result<()> {
+        let exists = managed_export_file_exists(&self.output_dir, &change.relative_path)?;
+        if exists != change.install {
+            return Err(BvrError::InvalidArgument(format!(
+                "export target changed before rollback: {}",
+                change.relative_path.display()
+            )));
+        }
+        let published = self.output_dir.join(&change.relative_path);
+        if change.install {
+            let staged = self.staged_dir.join(&change.relative_path);
+            match fs::symlink_metadata(&staged) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return Err(BvrError::InvalidArgument(format!(
+                        "rollback destination is occupied: {}",
+                        staged.display()
+                    )));
+                }
+            }
+            fs::rename(&published, staged)?;
+        }
+        if change.existed {
+            let backup = self
+                .staging
+                .path()
+                .join("backups")
+                .join(&change.relative_path);
+            // Restore without allocating another full file: publication may
+            // have failed because the disk is full. A successful rename leaves
+            // the old copy published; a failure leaves its backup available.
+            fs::rename(backup, published)?;
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for change in self.changes[..self.applied].iter().rev() {
+            if let Err(error) = self.restore_change(change) {
+                failures.push(format!("{}: {error}", change.relative_path.display()));
+            }
+        }
+        for path in self.created_dirs.iter().rev() {
+            if let Err(error) = fs::remove_dir(path) {
+                failures.push(format!("{}: {error}", path.display()));
+            }
+        }
+        failures
+    }
+
+    fn publish(mut self) -> Result<()> {
+        // Individual renames and reverse rollback handle ordinary I/O errors.
+        // This is not a multi-file transaction for independent readers, nor a
+        // crash-atomic operation; configuration and summary are installed last.
+        if let Err(error) = self.apply_all() {
+            let failures = self.rollback();
+            if failures.is_empty() {
+                close_publication_staging(self.staging);
+                return Err(BvrError::InvalidArgument(format!(
+                    "pages publication failed; previous bundle restored: {error}"
+                )));
+            }
+            let recovery = self.staging.keep();
+            return Err(BvrError::InvalidArgument(format!(
+                "pages publication failed: {error}; rollback incomplete: {}; recovery files retained at {}",
+                failures.join("; "),
+                recovery.display()
+            )));
+        }
+        if let Err(error) = remove_empty_chunks_directory(&self.output_dir) {
+            eprintln!("warning: cannot clean up empty export chunks directory: {error}");
+        }
+        close_publication_staging(self.staging);
+        Ok(())
+    }
+
+    fn apply_all(&mut self) -> Result<()> {
+        while self.apply_next()? {}
+        Ok(())
+    }
+}
+
+fn resolve_export_output_dir(output_dir: &Path) -> Result<PathBuf> {
+    match fs::metadata(output_dir) {
+        Ok(metadata) if metadata.is_dir() => return Ok(fs::canonicalize(output_dir)?),
+        Ok(_) => {
+            return Err(BvrError::InvalidArgument(format!(
+                "export output must be a directory: {}",
+                output_dir.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    match fs::symlink_metadata(output_dir) {
+        Ok(_) => {
+            return Err(BvrError::InvalidArgument(format!(
+                "export output is a dangling symlink: {}",
+                output_dir.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let name = output_dir.file_name().ok_or_else(|| {
+        BvrError::InvalidArgument(format!(
+            "invalid export directory: {}",
+            output_dir.display()
+        ))
+    })?;
+    let parent = output_dir
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    Ok(fs::canonicalize(parent)?.join(name))
+}
+
+fn create_publication_staging(
+    output_dir: &Path,
+    sibling_parent: &Path,
+    temporary_dir: &Path,
+) -> Result<tempfile::TempDir> {
+    let sibling_error = match try_publication_staging(output_dir, sibling_parent) {
+        Ok(staging) => return Ok(staging),
+        Err(error) => error,
+    };
+    #[cfg(unix)]
+    let fallback = try_publication_staging(output_dir, temporary_dir);
+    #[cfg(not(unix))]
+    let fallback: Result<tempfile::TempDir> = Err(BvrError::InvalidArgument(
+        "cannot verify the filesystem of an external temporary directory on this platform"
+            .to_string(),
+    ));
+    fallback.map_err(|error| {
+        BvrError::InvalidArgument(format!(
+            "cannot create safe export staging for {}: sibling location {}: {sibling_error}; temporary location {}: {error}",
+            output_dir.display(),
+            sibling_parent.display(),
+            temporary_dir.display()
+        ))
+    })
+}
+
+fn try_publication_staging(output_dir: &Path, location: &Path) -> Result<tempfile::TempDir> {
+    let location = fs::canonicalize(location)?;
+    ensure_staging_location(output_dir, &location)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".bvr-pages-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        // TempDir otherwise follows the process umask. Keep staged assets and
+        // retained recovery copies private from the instant the directory exists.
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let staging = builder.tempdir_in(location)?;
+    // Verify the actual directory as well as its proposed parent before any
+    // bundle construction or published-file mutation can take place.
+    ensure_staging_location(output_dir, &fs::canonicalize(staging.path())?)?;
+    Ok(staging)
+}
+
+fn ensure_staging_location(output_dir: &Path, location: &Path) -> Result<()> {
+    if location.starts_with(output_dir) {
+        return Err(BvrError::InvalidArgument(format!(
+            "staging location must be outside the export output tree: {}",
+            location.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let output_metadata = match fs::metadata(output_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent = output_dir.parent().ok_or_else(|| {
+                    BvrError::InvalidArgument(format!(
+                        "export output has no filesystem parent: {}",
+                        output_dir.display()
+                    ))
+                })?;
+                fs::metadata(parent)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if output_metadata.dev() != fs::metadata(location)?.dev() {
+            return Err(BvrError::InvalidArgument(format!(
+                "staging location must share the export output filesystem: {}",
+                location.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn export_directory_exists(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err(BvrError::InvalidArgument(format!(
+            "managed export directory must be a directory without symlinks: {}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn managed_export_file_exists(root: &Path, relative_path: &Path) -> Result<bool> {
+    if relative_path.as_os_str().is_empty()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(BvrError::InvalidArgument(format!(
+            "invalid managed export path: {}",
+            relative_path.display()
+        )));
+    }
+    if !export_directory_exists(root)? {
+        return Ok(false);
+    }
+    let mut path = root.to_path_buf();
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
+        path.push(component);
+        if components.peek().is_some() {
+            if !export_directory_exists(&path)? {
+                return Ok(false);
+            }
+        } else {
+            return match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+                Ok(_) => Err(BvrError::InvalidArgument(format!(
+                    "managed export file must be a regular file without symlinks: {}",
+                    path.display()
+                ))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error.into()),
+            };
+        }
+    }
+    Ok(false)
+}
+
+fn is_numbered_database_chunk(name: &OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_suffix(".bin"))
+        .is_some_and(|digits| digits.len() >= 5 && digits.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn publication_order(relative_path: &Path) -> u8 {
+    if relative_path == Path::new("data/export_summary.json") {
+        2
+    } else if relative_path == Path::new(SQLITE_EXPORT_CONFIG_FILENAME) {
+        1
+    } else {
+        0
+    }
+}
+
+fn create_private_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn export_files_equal(left: &Path, right: &Path) -> Result<bool> {
+    let mut left = fs::File::open(left)?;
+    let mut right = fs::File::open(right)?;
+    let mut remaining = left.metadata()?.len();
+    if remaining != right.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut left_bytes = vec![0; 64 * 1024];
+    let mut right_bytes = vec![0; left_bytes.len()];
+    while remaining > 0 {
+        let amount = usize::try_from(remaining.min(left_bytes.len() as u64))
+            .expect("comparison buffer length fits usize");
+        left.read_exact(&mut left_bytes[..amount])?;
+        right.read_exact(&mut right_bytes[..amount])?;
+        if left_bytes[..amount] != right_bytes[..amount] {
+            return Ok(false);
+        }
+        remaining -= amount as u64;
+    }
+    Ok(left.read(&mut left_bytes[..1])? == 0 && right.read(&mut right_bytes[..1])? == 0)
+}
+
+fn remove_empty_chunks_directory(output_dir: &Path) -> Result<()> {
+    let chunks = output_dir.join("chunks");
+    if export_directory_exists(&chunks)? && fs::read_dir(&chunks)?.next().is_none() {
+        fs::remove_dir(chunks)?;
+    }
+    Ok(())
+}
+
+fn close_publication_staging(staging: tempfile::TempDir) {
+    let path = staging.path().to_path_buf();
+    if let Err(error) = staging.close() {
+        eprintln!(
+            "warning: export finished but staging cleanup failed at {}: {error}",
+            path.display()
+        );
+    }
 }
 
 fn generate_deploy_readme(title: &str, meta: &PagesMeta) -> String {
@@ -1353,6 +1839,267 @@ mod tests {
             content_hash: None,
             external_ref: None,
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn publication_falls_back_to_an_external_temporary_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for existing_output in [false, true] {
+            let temp = tempdir().expect("tempdir");
+            let root = fs::canonicalize(temp.path()).expect("resolved temporary root");
+            let output = root.join("published");
+            if existing_output {
+                fs::create_dir(&output).expect("existing output directory");
+            }
+            let unusable = root.join("unusable-parent");
+            fs::write(&unusable, b"not a directory").expect("unusable first location");
+            let fallback = root.join("temporary");
+            fs::create_dir(&fallback).expect("same-filesystem fallback");
+
+            // A file deterministically prevents sibling creation even when
+            // tests run as root, unlike a chmod-based permission failure.
+            let staging = create_publication_staging(&output, &unusable, &fallback)
+                .expect("use verified fallback");
+
+            assert_eq!(staging.path().parent(), Some(fallback.as_path()));
+            assert!(!staging.path().starts_with(&output));
+            assert_eq!(output.exists(), existing_output);
+            assert_eq!(
+                fs::metadata(staging.path())
+                    .expect("private staging metadata")
+                    .permissions()
+                    .mode()
+                    & 0o077,
+                0
+            );
+            assert_eq!(
+                fs::read(&unusable).expect("unchanged file"),
+                b"not a directory"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn publication_rejects_a_temporary_alias_inside_the_output_tree() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().expect("tempdir");
+        let root = fs::canonicalize(temp.path()).expect("resolved temporary root");
+        let output = root.join("published");
+        let inside = output.join("temporary");
+        fs::create_dir_all(&inside).expect("inside-output temporary directory");
+        let unusable = root.join("unusable-parent");
+        fs::write(&unusable, b"not a directory").expect("unusable first location");
+        let alias = root.join("temporary-alias");
+        symlink(&inside, &alias).expect("temporary alias into output");
+
+        let error = create_publication_staging(&output, &unusable, &alias)
+            .expect_err("no safe external staging location");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("outside the export output tree"),
+            "{message}"
+        );
+        assert!(message.contains("sibling location"), "{message}");
+        assert!(message.contains("temporary location"), "{message}");
+        assert!(
+            fs::read_dir(&inside)
+                .expect("unchanged output tree")
+                .next()
+                .is_none()
+        );
+        assert_eq!(fs::read_link(alias).expect("unchanged alias"), inside);
+    }
+
+    #[test]
+    fn publication_rolls_back_installed_and_removed_files_after_late_failure() {
+        let temp = tempdir().expect("tempdir");
+        let output = temp.path().join("published");
+        fs::create_dir_all(output.join("data")).expect("published directories");
+        fs::write(output.join("a-existing.txt"), b"old existing bytes").expect("old file");
+        fs::write(output.join("data/history.json"), b"old history").expect("old history");
+        fs::write(output.join("z-fail.txt"), b"old final bytes").expect("old final file");
+        fs::write(output.join("data/custom.json"), b"user content").expect("custom file");
+
+        let mut publication = PagesPublication::new(&output).expect("private staging");
+        let staging_path = publication.staging.path().to_path_buf();
+        let staged = publication.staged_dir.clone();
+        fs::create_dir(staged.join("b-new")).expect("new staged directory");
+        fs::write(staged.join("a-existing.txt"), b"new existing bytes").expect("replacement");
+        fs::write(staged.join("b-new/added.txt"), b"newly added file").expect("addition");
+        fs::write(staged.join("z-fail.txt"), b"new final bytes").expect("final replacement");
+        publication
+            .prepare(&[
+                "a-existing.txt".to_string(),
+                "b-new/added.txt".to_string(),
+                "z-fail.txt".to_string(),
+            ])
+            .expect("preflight");
+        publication.back_up_existing().expect("complete backups");
+        assert_eq!(
+            fs::read(staging_path.join("backups/z-fail.txt")).expect("final file backed up"),
+            b"old final bytes"
+        );
+
+        assert!(publication.apply_next().expect("install replacement"));
+        assert!(publication.apply_next().expect("install new file"));
+        assert!(publication.apply_next().expect("remove stale history"));
+        assert_eq!(
+            fs::read(output.join("a-existing.txt")).expect("installed replacement"),
+            b"new existing bytes"
+        );
+        assert!(output.join("b-new/added.txt").is_file());
+        assert!(!output.join("data/history.json").exists());
+        // A real rename failure after three completed changes, with all old
+        // files already backed up. No injected success/failure mock is used.
+        fs::rename(
+            staged.join("z-fail.txt"),
+            staging_path.join("withheld-final"),
+        )
+        .expect("withhold final staged source");
+
+        let error = publication.publish().expect_err("late publication failure");
+        assert!(error.to_string().contains("previous bundle restored"));
+        assert_eq!(
+            fs::read(output.join("a-existing.txt")).expect("restored replacement"),
+            b"old existing bytes"
+        );
+        assert_eq!(
+            fs::read(output.join("data/history.json")).expect("restored stale history"),
+            b"old history"
+        );
+        assert_eq!(
+            fs::read(output.join("z-fail.txt")).expect("untouched final file"),
+            b"old final bytes"
+        );
+        assert_eq!(
+            fs::read(output.join("data/custom.json")).expect("preserved custom file"),
+            b"user content"
+        );
+        assert!(!output.join("b-new").exists());
+        assert!(!staging_path.exists());
+    }
+
+    #[test]
+    fn publication_retains_backups_when_rollback_cannot_restore_a_file() {
+        let temp = tempdir().expect("tempdir");
+        let output = temp.path().join("published");
+        fs::create_dir(&output).expect("published directory");
+        fs::write(output.join("a-existing.txt"), b"original bytes").expect("original file");
+        fs::write(output.join("z-fail.txt"), b"original final bytes").expect("final file");
+        let mut publication = PagesPublication::new(&output).expect("private staging");
+        let recovery = publication.staging.path().to_path_buf();
+        let staged = publication.staged_dir.clone();
+        fs::write(staged.join("a-existing.txt"), b"replacement bytes").expect("replacement");
+        fs::write(staged.join("z-fail.txt"), b"replacement final bytes")
+            .expect("final replacement");
+        publication
+            .prepare(&["a-existing.txt".to_string(), "z-fail.txt".to_string()])
+            .expect("preflight");
+        publication.back_up_existing().expect("complete backups");
+        assert!(publication.apply_next().expect("install first replacement"));
+        fs::rename(staged.join("z-fail.txt"), recovery.join("withheld-final"))
+            .expect("withhold final staged source");
+        fs::create_dir(staged.join("a-existing.txt")).expect("obstruct rollback destination");
+        fs::write(
+            staged.join("a-existing.txt/keep.txt"),
+            b"retain this content",
+        )
+        .expect("rollback obstruction contents");
+
+        let error = publication
+            .publish()
+            .expect_err("publication and rollback fail");
+        let message = error.to_string();
+        assert!(message.contains("rollback incomplete"), "{message}");
+        assert!(
+            message.contains(&recovery.display().to_string()),
+            "{message}"
+        );
+        assert_eq!(
+            fs::read(recovery.join("backups/a-existing.txt")).expect("retained original backup"),
+            b"original bytes"
+        );
+        assert_eq!(
+            fs::read(recovery.join("backups/z-fail.txt")).expect("retained final backup"),
+            b"original final bytes"
+        );
+        assert_eq!(
+            fs::read(output.join("a-existing.txt")).expect("retained installed version"),
+            b"replacement bytes"
+        );
+        assert_eq!(
+            fs::read(staged.join("a-existing.txt/keep.txt")).expect("retained obstruction"),
+            b"retain this content"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn publication_preserves_file_permissions_and_skips_unchanged_files() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp = tempdir().expect("tempdir");
+        let output = temp.path().join("published");
+        fs::create_dir(&output).expect("published directory");
+        fs::write(output.join("private.txt"), b"old private bytes").expect("private file");
+        fs::set_permissions(
+            output.join("private.txt"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .expect("private permissions");
+        fs::write(output.join("unchanged.txt"), b"stable bytes").expect("unchanged file");
+        let root_inode = fs::metadata(&output).expect("root metadata").ino();
+        let unchanged_inode = fs::metadata(output.join("unchanged.txt"))
+            .expect("unchanged metadata")
+            .ino();
+        let mut publication = PagesPublication::new(&output).expect("private staging");
+        fs::write(
+            publication.staged_dir.join("private.txt"),
+            b"new private bytes",
+        )
+        .expect("private replacement");
+        fs::write(
+            publication.staged_dir.join("unchanged.txt"),
+            b"stable bytes",
+        )
+        .expect("unchanged staged content");
+        publication
+            .prepare(&["private.txt".to_string(), "unchanged.txt".to_string()])
+            .expect("preflight");
+        publication
+            .back_up_existing()
+            .expect("back up changed file");
+        assert_eq!(publication.changes.len(), 1);
+
+        publication.publish().expect("successful publication");
+
+        assert_eq!(
+            fs::metadata(output.join("private.txt"))
+                .expect("private metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::read(output.join("private.txt")).expect("replacement bytes"),
+            b"new private bytes"
+        );
+        assert_eq!(
+            fs::metadata(&output).expect("root metadata").ino(),
+            root_inode
+        );
+        assert_eq!(
+            fs::metadata(output.join("unchanged.txt"))
+                .expect("unchanged metadata")
+                .ino(),
+            unchanged_inode
+        );
     }
 
     #[test]

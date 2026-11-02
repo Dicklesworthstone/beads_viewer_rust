@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OpenFlags, Transaction, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -108,6 +109,80 @@ pub fn export_database_path(output_dir: &Path) -> PathBuf {
 #[must_use]
 pub fn export_config_path(output_dir: &Path) -> PathBuf {
     output_dir.join(SQLITE_EXPORT_CONFIG_FILENAME)
+}
+
+/// Seed a staged bundle from the existing database without modifying it.
+///
+/// The returned connection keeps other SQLite writers out while the staged
+/// bundle is prepared. Drop it before publishing files, since Windows may not
+/// permit replacing an open database. Bootstrap and migration still run on the
+/// snapshot, so staging does not bypass the existing database contract.
+pub(crate) fn snapshot_export_database(
+    output_dir: &Path,
+    staging_dir: &Path,
+) -> Result<Option<Connection>> {
+    ensure_no_export_database_sidecars(output_dir)?;
+    let database_path = export_database_path(output_dir);
+    let metadata = match fs::symlink_metadata(&database_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(BvrError::InvalidArgument(format!(
+            "existing export database must be a regular file, not a symlink or directory: {}",
+            database_path.display()
+        )));
+    }
+
+    // A SQLite connection can create WAL sidecars just by reading a WAL-mode
+    // database. Check its documented format-version bytes before opening it,
+    // rather than changing the published journal mode or checkpointing it.
+    if metadata.len() >= 20 {
+        let mut header = [0; 20];
+        File::open(&database_path)?.read_exact(&mut header)?;
+        if &header[..16] == b"SQLite format 3\0" && (header[18] == 2 || header[19] == 2) {
+            return Err(BvrError::InvalidArgument(format!(
+                "existing export database uses WAL journal mode; pages publication requires DELETE journal mode: {}",
+                database_path.display()
+            )));
+        }
+    }
+
+    let connection = Connection::open_with_flags(
+        &database_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    connection.execute_batch("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; ROLLBACK;")?;
+    // EXCLUSIVE locking mode retains the lock after ROLLBACK. Ending the write
+    // transaction allows SQLite's backup API to read the guarded connection.
+    let journal_mode = query_pragma_string(&connection, "journal_mode")?;
+    if journal_mode != "delete" {
+        return Err(BvrError::InvalidArgument(format!(
+            "existing export database uses {journal_mode} journal mode; pages publication requires DELETE journal mode"
+        )));
+    }
+    ensure_no_export_database_sidecars(output_dir)?;
+    connection.backup(rusqlite::MAIN_DB, export_database_path(staging_dir), None)?;
+    Ok(Some(connection))
+}
+
+fn ensure_no_export_database_sidecars(output_dir: &Path) -> Result<()> {
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let path = output_dir.join(format!("{SQLITE_EXPORT_FILENAME}{suffix}"));
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                return Err(BvrError::InvalidArgument(format!(
+                    "cannot stage export database while SQLite sidecar exists: {}; close database users and recover the database in DELETE journal mode before retrying",
+                    path.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 pub fn bootstrap_export_database(
@@ -1067,6 +1142,86 @@ mod tests {
     use crate::model::{Comment, Dependency, Issue, ts};
 
     use super::*;
+
+    #[test]
+    fn snapshot_export_database_preserves_contents_and_holds_writer_lock() {
+        let output = tempdir().expect("output directory");
+        let staging = tempdir().expect("staging directory");
+        bootstrap_export_database(output.path(), &SqliteBootstrapOptions::default())
+            .expect("original export database");
+        let original =
+            Connection::open(export_database_path(output.path())).expect("open original database");
+        original.execute_batch(
+            "CREATE TABLE custom_metadata(value TEXT); INSERT INTO custom_metadata VALUES ('retained');",
+        ).expect("existing custom database contents");
+        drop(original);
+        let before =
+            fs::read(export_database_path(output.path())).expect("original database bytes");
+
+        let guard = snapshot_export_database(output.path(), staging.path())
+            .expect("snapshot database")
+            .expect("existing database guard");
+        let snapshot =
+            Connection::open(export_database_path(staging.path())).expect("open staged database");
+        let value: String = snapshot
+            .query_row("SELECT value FROM custom_metadata", [], |row| row.get(0))
+            .expect("preserved custom database row");
+        assert_eq!(value, "retained");
+        assert_eq!(
+            query_pragma_i64(&snapshot, "user_version").expect("snapshot schema version"),
+            i64::from(SQLITE_EXPORT_SCHEMA_VERSION)
+        );
+
+        let competing = Connection::open(export_database_path(output.path()))
+            .expect("competing database writer");
+        competing
+            .busy_timeout(Duration::from_millis(10))
+            .expect("bounded lock probe");
+        let error = competing
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect_err("snapshot must hold the writer lock");
+        assert!(
+            matches!(error, rusqlite::Error::SqliteFailure(error, _) if error.code == rusqlite::ErrorCode::DatabaseBusy)
+        );
+        drop(guard);
+        competing
+            .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+            .expect("guard releases writer lock");
+        drop(competing);
+        assert_eq!(
+            fs::read(export_database_path(output.path())).expect("unchanged original database"),
+            before
+        );
+    }
+
+    #[test]
+    fn snapshot_export_database_rejects_sidecars_without_recovering_or_removing_them() {
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let output = tempdir().expect("output directory");
+            let staging = tempdir().expect("staging directory");
+            bootstrap_export_database(output.path(), &SqliteBootstrapOptions::default())
+                .expect("original export database");
+            let database_path = export_database_path(output.path());
+            let before = fs::read(&database_path).expect("original database bytes");
+            let sidecar = output
+                .path()
+                .join(format!("{SQLITE_EXPORT_FILENAME}{suffix}"));
+            fs::write(&sidecar, b"unrecovered sidecar contents").expect("existing sidecar");
+
+            let error = snapshot_export_database(output.path(), staging.path())
+                .expect_err("sidecar must block replacement");
+            assert!(error.to_string().contains("SQLite sidecar exists"));
+            assert_eq!(
+                fs::read(&database_path).expect("unchanged database"),
+                before
+            );
+            assert_eq!(
+                fs::read(sidecar).expect("unchanged sidecar"),
+                b"unrecovered sidecar contents"
+            );
+            assert!(!export_database_path(staging.path()).exists());
+        }
+    }
 
     #[test]
     fn bootstrap_export_database_creates_expected_schema_inventory() {

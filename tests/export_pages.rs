@@ -2044,6 +2044,291 @@ fn preview_pages_handles_sigterm_gracefully() {
     assert!(stdout.contains("Preview server stopped: received shutdown signal."));
 }
 
+mod publication {
+    use super::*;
+    use bvr::export_sqlite::{SqliteBootstrapConfig, SqliteBundleOptions, emit_bootstrap_config};
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+
+    fn export_command(root: &Path) -> Command {
+        let mut command = bvr_cmd(root);
+        command
+            .args(["--export-pages", "pages-out"])
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .timeout(Duration::from_secs(20));
+        command
+    }
+
+    fn update_source(root: &Path) {
+        fs::write(
+            root.join(".beads/beads.jsonl"),
+            "{\"id\":\"NEW-1\",\"title\":\"Updated issue\",\"description\":\"New export contents\",\"status\":\"open\",\"priority\":1,\"issue_type\":\"task\"}\n",
+        )
+        .expect("update export source");
+    }
+
+    fn snapshot_files(bundle: &Path) -> BTreeMap<String, Vec<u8>> {
+        let mut paths = BTreeSet::new();
+        collect_files_recursive(bundle, bundle, &mut paths);
+        paths
+            .into_iter()
+            .map(|path| {
+                let bytes = fs::read(bundle.join(&path)).expect("snapshot published file");
+                (path, bytes)
+            })
+            .collect()
+    }
+
+    fn assert_unchanged(bundle: &Path, before: &BTreeMap<String, Vec<u8>>) {
+        let after = snapshot_files(bundle);
+        assert_eq!(
+            after.keys().collect::<Vec<_>>(),
+            before.keys().collect::<Vec<_>>(),
+            "a failed export changed the published file inventory"
+        );
+        for (path, bytes) in before {
+            assert!(
+                after.get(path) == Some(bytes),
+                "a failed export changed published bytes in {path}"
+            );
+        }
+    }
+
+    fn assert_updated_bundle(bundle: &Path) {
+        let issues: Value = serde_json::from_slice(
+            &fs::read(bundle.join("data/issues.json")).expect("published issue JSON"),
+        )
+        .expect("valid published issues");
+        assert_eq!(issues.as_array().expect("issue list").len(), 1);
+        assert_eq!(issues[0]["id"], "NEW-1");
+        let connection =
+            Connection::open(bundle.join("beads.sqlite3")).expect("published database");
+        let id: String = connection
+            .query_row("SELECT id FROM issues", [], |row| row.get(0))
+            .expect("published issue row");
+        assert_eq!(id, "NEW-1");
+        let integrity: String = connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("database integrity check");
+        assert_eq!(integrity, "ok");
+        drop(connection);
+
+        let bytes = fs::read(bundle.join("beads.sqlite3")).expect("complete database bytes");
+        let config: SqliteBootstrapConfig = serde_json::from_slice(
+            &fs::read(bundle.join("beads.sqlite3.config.json")).expect("database config"),
+        )
+        .expect("valid database config");
+        assert_eq!(
+            config.total_size,
+            u64::try_from(bytes.len()).expect("database size")
+        );
+        assert_eq!(config.hash, format!("{:x}", Sha256::digest(&bytes)));
+        assert!(
+            !config.chunked,
+            "small replacement database should be a single file"
+        );
+        let summary: Value = serde_json::from_slice(
+            &fs::read(bundle.join("data/export_summary.json")).expect("published summary"),
+        )
+        .expect("valid published summary");
+        assert_eq!(summary["export_path"].as_str(), bundle.to_str());
+    }
+
+    #[test]
+    fn export_pages_locked_database_preserves_bundle_and_recovers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        write_test_beads(root);
+        export_command(root).arg("--no-hooks").assert().success();
+        let bundle = root.join("pages-out");
+        let before = snapshot_files(&bundle);
+        let database = Connection::open(bundle.join("beads.sqlite3")).expect("lock database");
+        database
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("hold database lock");
+        update_source(root);
+
+        export_command(root)
+            .arg("--no-hooks")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("database is locked"));
+        assert_unchanged(&bundle, &before);
+
+        database
+            .execute_batch("ROLLBACK")
+            .expect("release database lock");
+        drop(database);
+        export_command(root).arg("--no-hooks").assert().success();
+        assert_updated_bundle(&bundle);
+    }
+
+    #[test]
+    fn export_pages_unsupported_schema_preserves_bundle() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        write_test_beads(root);
+        export_command(root).arg("--no-hooks").assert().success();
+        let bundle = root.join("pages-out");
+        let database = Connection::open(bundle.join("beads.sqlite3")).expect("existing database");
+        database
+            .pragma_update(None, "user_version", 99)
+            .expect("unsupported schema version");
+        drop(database);
+        let before = snapshot_files(&bundle);
+        update_source(root);
+
+        export_command(root)
+            .arg("--no-hooks")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("schema version 99"));
+        assert_unchanged(&bundle, &before);
+    }
+
+    #[test]
+    fn export_pages_wal_database_is_rejected_without_changing_published_bytes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        write_test_beads(root);
+        export_command(root).arg("--no-hooks").assert().success();
+        let bundle = root.join("pages-out");
+        let database = Connection::open(bundle.join("beads.sqlite3")).expect("existing database");
+        database
+            .pragma_update(None, "journal_mode", "WAL")
+            .expect("external WAL conversion");
+        drop(database);
+        let before = snapshot_files(&bundle);
+        update_source(root);
+
+        export_command(root)
+            .arg("--no-hooks")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("requires DELETE journal mode"));
+        assert_unchanged(&bundle, &before);
+    }
+
+    #[test]
+    fn export_pages_regeneration_preserves_custom_files_and_removes_stale_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        write_test_beads(root);
+        write_hooks(
+            root,
+            "hooks:\n  pre-export:\n    - name: preserve-user-file\n      command: 'mkdir -p \"$BV_EXPORT_PATH\" && printf preserved > \"$BV_EXPORT_PATH/pre-hook.txt\"'\n",
+        );
+        export_command(root).assert().success();
+        let bundle = root.join("pages-out");
+        assert!(bundle.join("data/history.json").is_file());
+        // Exercise a real prior chunk inventory while keeping the fixture small.
+        let old_config = emit_bootstrap_config(
+            &bundle,
+            &SqliteBundleOptions {
+                chunk_threshold_bytes: 0,
+                chunk_size_bytes: 4096,
+            },
+        )
+        .expect("emit prior chunked database");
+        assert!(old_config.chunked);
+        assert!(!old_config.chunks.is_empty());
+        fs::create_dir_all(bundle.join(".git")).expect("output repository metadata");
+        let custom_files = [
+            (".git/config", "repository metadata"),
+            ("CNAME", "issues.example.test"),
+            ("data/custom.json", "{\"user\":true}"),
+            ("assets/custom.css", "body { color: teal; }"),
+            ("chunks/custom.bin", "unrelated chunk-directory content"),
+            ("pre-hook.txt", "preserved"),
+        ];
+        for (path, bytes) in custom_files {
+            if path != "pre-hook.txt" {
+                fs::write(bundle.join(path), bytes).expect("write custom output file");
+            }
+        }
+        let wasm =
+            fs::read(bundle.join("vendor/sql-wasm.wasm")).expect("original SQLite WebAssembly");
+        update_source(root);
+
+        export_command(root)
+            .arg("--pages-include-history=false")
+            .assert()
+            .success();
+
+        for (path, bytes) in custom_files {
+            assert_eq!(
+                fs::read(bundle.join(path)).expect("preserved custom output file"),
+                bytes.as_bytes(),
+                "regeneration must preserve {path}"
+            );
+        }
+        assert!(!bundle.join("data/history.json").exists());
+        for chunk in old_config.chunks {
+            assert!(
+                !bundle.join(&chunk.path).exists(),
+                "stale chunk {} survived",
+                chunk.path
+            );
+        }
+        assert_eq!(
+            fs::read(bundle.join("vendor/sql-wasm.wasm")).expect("published WebAssembly"),
+            wasm
+        );
+        assert_updated_bundle(&bundle);
+    }
+
+    #[test]
+    fn export_pages_directory_collision_preserves_existing_bundle() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        write_test_beads(root);
+        export_command(root).arg("--no-hooks").assert().success();
+        let bundle = root.join("pages-out");
+        fs::rename(bundle.join("README.md"), root.join("saved-readme.md"))
+            .expect("retain original readme");
+        fs::create_dir(bundle.join("README.md")).expect("conflicting user directory");
+        fs::write(bundle.join("README.md/user-file.txt"), b"keep this file")
+            .expect("conflicting directory contents");
+        let before = snapshot_files(&bundle);
+        update_source(root);
+
+        export_command(root).arg("--no-hooks").assert().failure();
+        assert_unchanged(&bundle, &before);
+        assert!(bundle.join("README.md").is_dir());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn export_pages_managed_symlinks_do_not_modify_external_paths() {
+        use std::os::unix::fs::symlink;
+
+        for relative in ["data", "beads.sqlite3", "viewer.js"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path();
+            write_test_beads(root);
+            export_command(root).arg("--no-hooks").assert().success();
+            let bundle = root.join("pages-out");
+            let outside = root.join("outside");
+            fs::create_dir(&outside).expect("outside directory");
+            let target = outside.join("original");
+            fs::rename(bundle.join(relative), &target).expect("retain original managed path");
+            let before = snapshot_files(&outside);
+            symlink(&target, bundle.join(relative)).expect("managed symlink");
+            update_source(root);
+
+            export_command(root).arg("--no-hooks").assert().failure();
+            assert_unchanged(&outside, &before);
+            assert_eq!(
+                fs::read_link(bundle.join(relative)).expect("retained symlink"),
+                target
+            );
+        }
+    }
+}
+
 mod preview_transfers {
     use super::*;
     use sha2::{Digest, Sha256};

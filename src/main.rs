@@ -2689,9 +2689,7 @@ fn main() -> ExitCode {
                     }
                     Err(error) => {
                         last_outcome = "export failed";
-                        eprintln!(
-                            "warning: export failed: {error} (last good export still served)"
-                        );
+                        eprintln!("warning: export failed: {error}");
                     }
                 }
             }
