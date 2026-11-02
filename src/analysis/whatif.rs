@@ -1,3 +1,6 @@
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use serde::Serialize;
 
 use crate::model::Issue;
@@ -9,15 +12,19 @@ use super::graph::{GraphMetrics, IssueGraph};
 pub struct WhatIfDelta {
     pub issue_id: String,
     pub title: String,
-    /// Issues immediately unblocked (their only remaining blocker was this issue).
+    /// Immediate blocking dependents that become dependency-unblocked.
     pub direct_unblocks: Vec<String>,
-    /// All downstream issues transitively unblocked.
+    /// All issues newly dependency-unblocked, including inherited parent blocking.
+    /// Only the target is completed; newly unblocked issues remain open.
     pub transitive_unblocks: Vec<String>,
-    /// Estimated days saved based on transitive unblock count and average depth.
+    /// Heuristic of two days saved per newly dependency-unblocked issue.
     pub estimated_days_saved: f64,
-    /// Change in sum-of-pagerank for remaining open issues (positive = graph got healthier).
+    /// Before-minus-after PageRank sum over remaining open issues, with the
+    /// completed node removed from the counterfactual dependency graph.
+    /// Zero when baseline PageRank is disabled or unavailable.
     pub pagerank_delta: f64,
-    /// Number of dependency cycles broken by completing this issue.
+    /// Original cyclic components made entirely acyclic by removing this node.
+    /// A component with a surviving subcycle is not counted as broken.
     pub cycles_broken: usize,
 }
 
@@ -29,88 +36,12 @@ pub fn compute_what_if(
     issue_id: &str,
 ) -> Option<WhatIfDelta> {
     let issue = graph.issue(issue_id)?;
-    let title = issue.title.clone();
-
-    // Direct unblocks: issues where this is the sole open blocker.
-    let dependents = graph.dependents(issue_id);
-    let mut direct_unblocks = Vec::new();
-    for dep_id in &dependents {
-        let blockers = graph.open_blockers(dep_id);
-        // If the only open blocker is the target issue, it gets unblocked.
-        if blockers.len() == 1 && blockers[0] == issue_id {
-            direct_unblocks.push(dep_id.clone());
-        }
+    let original_unblocked = graph.dependency_unblocked_ids().into_iter().collect();
+    let mut delta = completion_unblocks(graph, &original_unblocked, issue);
+    if issue.is_open_like() {
+        refine_metrics(issues, graph, metrics, &mut delta);
     }
-    direct_unblocks.sort();
-
-    // Transitive unblocks: simulate removing the issue and see which issues
-    // lose their last open blocker. This is the dependency-structural view
-    // (`dependency_unblocked_ids`), not the status-gated `actionable_ids`: a
-    // dependent parked as `blocked`/`deferred` is still "unblocked" by closing
-    // its blocker even though it needs a status change before it is ready.
-    // Build a modified issue list with the target marked as closed.
-    let modified_issues: Vec<Issue> = issues
-        .iter()
-        .map(|i| {
-            if i.id == issue_id {
-                let mut closed = i.clone();
-                closed.status = "closed".to_string();
-                closed
-            } else {
-                i.clone()
-            }
-        })
-        .collect();
-
-    let modified_graph = IssueGraph::build(&modified_issues);
-    let modified_actionable: std::collections::HashSet<String> = modified_graph
-        .dependency_unblocked_ids()
-        .into_iter()
-        .collect();
-    let original_actionable: std::collections::HashSet<String> =
-        graph.dependency_unblocked_ids().into_iter().collect();
-
-    let mut transitive_unblocks: Vec<String> = modified_actionable
-        .difference(&original_actionable)
-        .filter(|id| *id != issue_id)
-        .cloned()
-        .collect();
-    transitive_unblocks.sort();
-
-    // Estimated days saved: heuristic based on unblock depth.
-    // Each transitively unblocked issue saves ~2 days of blocked time (conservative estimate).
-    let estimated_days_saved = transitive_unblocks.len() as f64 * 2.0;
-
-    // PageRank delta: compare sum of pagerank for open issues before/after.
-    let modified_metrics = modified_graph.compute_metrics();
-    let before_pr_sum: f64 = issues
-        .iter()
-        .filter(|i| i.is_open_like() && i.id != issue_id)
-        .map(|i| metrics.pagerank.get(&i.id).copied().unwrap_or(0.0))
-        .sum();
-    let after_pr_sum: f64 = modified_issues
-        .iter()
-        .filter(|i| i.is_open_like() && i.id != issue_id)
-        .map(|i| modified_metrics.pagerank.get(&i.id).copied().unwrap_or(0.0))
-        .sum();
-    let pagerank_delta = before_pr_sum - after_pr_sum;
-
-    // Cycles broken: how many cycles contained this issue.
-    let cycles_broken = metrics
-        .cycles
-        .iter()
-        .filter(|cycle| cycle.contains(&issue_id.to_string()))
-        .count();
-
-    Some(WhatIfDelta {
-        issue_id: issue_id.to_string(),
-        title,
-        direct_unblocks,
-        transitive_unblocks,
-        estimated_days_saved,
-        pagerank_delta,
-        cycles_broken,
-    })
+    Some(delta)
 }
 
 /// Compute what-if deltas for all open issues and return the top N by impact.
@@ -124,22 +55,159 @@ pub fn top_what_if_deltas(
         return Vec::new();
     }
 
-    let mut deltas: Vec<WhatIfDelta> = issues
+    let original_unblocked = graph.dependency_unblocked_ids().into_iter().collect();
+    let mut best = BTreeMap::new();
+    for issue in issues
         .iter()
         .filter(|i| i.is_open_like())
-        .filter_map(|i| compute_what_if(issues, graph, metrics, &i.id))
-        .collect();
+        .filter_map(|issue| graph.issue(&issue.id))
+    {
+        let delta = completion_unblocks(graph, &original_unblocked, issue);
+        let rank = (
+            Reverse(delta.transitive_unblocks.len()),
+            Reverse(delta.direct_unblocks.len()),
+            delta.issue_id.clone(),
+        );
+        best.insert(rank, delta);
+        // A deep hierarchy can give every candidate a large released-ID list.
+        // Retain only the requested results instead of all those lists at once.
+        if best.len() > top_n {
+            best.pop_last();
+        }
+    }
+    let mut deltas: Vec<WhatIfDelta> = best.into_values().collect();
 
-    // Sort by transitive unblocks (desc), then direct unblocks (desc), then id (asc).
-    deltas.sort_by(|a, b| {
-        b.transitive_unblocks
-            .len()
-            .cmp(&a.transitive_unblocks.len())
-            .then_with(|| b.direct_unblocks.len().cmp(&a.direct_unblocks.len()))
-            .then_with(|| a.issue_id.cmp(&b.issue_id))
-    });
-    deltas.truncate(top_n);
+    // Ranking depends only on the readiness changes above. Compute the actual
+    // counterfactual metrics only for results the caller will receive.
+    for delta in &mut deltas {
+        refine_metrics(issues, graph, metrics, delta);
+    }
     deltas
+}
+
+fn completion_unblocks(
+    graph: &IssueGraph,
+    original_unblocked: &HashSet<String>,
+    issue: &Issue,
+) -> WhatIfDelta {
+    let mut delta = WhatIfDelta {
+        issue_id: issue.id.clone(),
+        title: issue.title.clone(),
+        direct_unblocks: Vec::new(),
+        transitive_unblocks: Vec::new(),
+        estimated_days_saved: 0.0,
+        pagerank_delta: 0.0,
+        cycles_broken: 0,
+    };
+    if issue.is_closed_like() {
+        return delta;
+    }
+
+    // This is dependency readiness, not the status-gated actionable set: a
+    // blocked/deferred issue can lose its prerequisites without changing status.
+    // The shared graph algorithm also accounts for inherited parent blocking.
+    delta.transitive_unblocks = graph
+        .dependency_unblocked_ids_after_closing(&issue.id)
+        .into_iter()
+        .filter(|id| id != &issue.id && !original_unblocked.contains(id))
+        .collect();
+    delta.transitive_unblocks.sort();
+    delta.direct_unblocks = graph
+        .dependents(&issue.id)
+        .into_iter()
+        .filter(|id| delta.transitive_unblocks.binary_search(id).is_ok())
+        .collect();
+    delta.direct_unblocks.sort();
+    delta.estimated_days_saved = delta.transitive_unblocks.len() as f64 * 2.0;
+    delta
+}
+
+fn refine_metrics(
+    issues: &[Issue],
+    graph: &IssueGraph,
+    metrics: &GraphMetrics,
+    delta: &mut WhatIfDelta,
+) {
+    delta.cycles_broken = metrics
+        .cycles
+        .iter()
+        .filter(|component| {
+            component.contains(&delta.issue_id)
+                && residual_component_is_acyclic(graph, component, &delta.issue_id)
+        })
+        .count();
+
+    if !metrics.config.enable_pagerank || metrics.pagerank.is_empty() {
+        return;
+    }
+    let before_sum: Option<f64> = issues
+        .iter()
+        .filter(|issue| issue.is_open_like() && issue.id != delta.issue_id)
+        .map(|issue| metrics.pagerank.get(&issue.id).copied())
+        .sum();
+    let Some(before_sum) = before_sum else {
+        // An incomplete baseline is unavailable, not a set of zero scores.
+        return;
+    };
+
+    // Merely changing status leaves the PageRank topology unchanged. Removing
+    // the completed node measures the centrality redistribution requested by
+    // this counterfactual, without computing unrelated expensive metrics.
+    let remaining: Vec<Issue> = issues
+        .iter()
+        .filter(|issue| issue.id != delta.issue_id)
+        .cloned()
+        .collect();
+    let after = IssueGraph::build(&remaining).compute_pagerank();
+    let after_sum: f64 = remaining
+        .iter()
+        .filter(|issue| issue.is_open_like())
+        .map(|issue| after.get(&issue.id).copied().unwrap_or(0.0))
+        .sum();
+    delta.pagerank_delta = before_sum - after_sum;
+}
+
+fn residual_component_is_acyclic(
+    graph: &IssueGraph,
+    component: &[String],
+    completed: &str,
+) -> bool {
+    let remaining: HashSet<&str> = component
+        .iter()
+        .map(String::as_str)
+        .filter(|id| *id != completed)
+        .collect();
+    let mut pending_blockers: HashMap<&str, usize> = remaining
+        .iter()
+        .map(|&id| {
+            let blockers = graph
+                .blockers(id)
+                .iter()
+                .filter(|blocker| remaining.contains(blocker.as_str()))
+                .count();
+            (id, blockers)
+        })
+        .collect();
+    let mut ready = pending_blockers
+        .iter()
+        .filter_map(|(&id, &count)| (count == 0).then_some(id))
+        .collect::<Vec<_>>();
+    let mut visited = 0usize;
+    while let Some(id) = ready.pop() {
+        visited += 1;
+        for dependent in graph.dependents(id) {
+            if let Some(&dependent) = remaining.get(dependent.as_str()) {
+                let count = pending_blockers
+                    .get_mut(dependent)
+                    .expect("component member");
+                *count -= 1;
+                if *count == 0 {
+                    ready.push(dependent);
+                }
+            }
+        }
+    }
+    visited == remaining.len()
 }
 
 #[cfg(test)]
@@ -176,6 +244,25 @@ mod tests {
         }
     }
 
+    fn add_dependency(issue: &mut Issue, target: &str, kind: &str) {
+        issue.dependencies.push(Dependency {
+            issue_id: issue.id.clone(),
+            depends_on_id: target.to_string(),
+            dep_type: kind.to_string(),
+            ..Dependency::default()
+        });
+    }
+
+    fn assert_same_delta(actual: &WhatIfDelta, expected: &WhatIfDelta) {
+        assert_eq!(actual.issue_id, expected.issue_id);
+        assert_eq!(actual.title, expected.title);
+        assert_eq!(actual.direct_unblocks, expected.direct_unblocks);
+        assert_eq!(actual.transitive_unblocks, expected.transitive_unblocks);
+        assert_eq!(actual.cycles_broken, expected.cycles_broken);
+        assert!((actual.estimated_days_saved - expected.estimated_days_saved).abs() < 1e-12);
+        assert!((actual.pagerank_delta - expected.pagerank_delta).abs() < 1e-12);
+    }
+
     #[test]
     fn what_if_single_blocker_unblocks_dependent() {
         let issues = vec![make_issue("A", "open"), make_blocked("B", "A")];
@@ -185,7 +272,7 @@ mod tests {
         let delta = compute_what_if(&issues, &graph, &metrics, "A").unwrap();
         assert_eq!(delta.issue_id, "A");
         assert_eq!(delta.direct_unblocks, vec!["B"]);
-        assert!(delta.transitive_unblocks.contains(&"B".to_string()));
+        assert_eq!(delta.transitive_unblocks, vec!["B"]);
         assert!(delta.estimated_days_saved >= 2.0);
     }
 
@@ -216,7 +303,221 @@ mod tests {
         let delta = compute_what_if(&issues, &graph, &metrics, "A").unwrap();
         assert_eq!(delta.direct_unblocks, vec!["B"]);
         // B becomes actionable (not C yet, since B still needs to be completed)
-        assert!(delta.transitive_unblocks.contains(&"B".to_string()));
+        assert_eq!(delta.transitive_unblocks, vec!["B"]);
+    }
+
+    #[test]
+    fn what_if_direct_unblocks_require_resolved_inherited_and_own_blockers() {
+        let mut inherited = make_blocked("INHERITED", "A");
+        add_dependency(&mut inherited, "PARENT", "parent-child");
+        let mut multiple = make_blocked("MULTIPLE", "A");
+        add_dependency(&mut multiple, "OTHER", "waits-for");
+        let mut closed = make_blocked("CLOSED", "A");
+        closed.status = "closed".to_string();
+        let mut tombstone = make_blocked("TOMBSTONE", "A");
+        tombstone.status = "tombstone".to_string();
+        let mut deferred = make_blocked("DEFERRED", "A");
+        deferred.status = "deferred".to_string();
+        let issues = vec![
+            make_issue("A", "open"),
+            make_issue("OTHER", "open"),
+            make_blocked("PARENT", "OTHER"),
+            inherited,
+            multiple,
+            closed,
+            tombstone,
+            deferred,
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+
+        let delta = compute_what_if(&issues, &graph, &metrics, "A").expect("known target");
+        assert_eq!(delta.direct_unblocks, vec!["DEFERRED"]);
+        assert_eq!(delta.transitive_unblocks, vec!["DEFERRED"]);
+        assert_eq!(delta.estimated_days_saved, 2.0);
+        assert_eq!(graph.issue("A").expect("original target").status, "open");
+    }
+
+    #[test]
+    fn what_if_inherited_descendants_are_released_without_completing_their_parent() {
+        let mut child = make_issue("CHILD", "deferred");
+        add_dependency(&mut child, "PARENT", "parent-child");
+        let mut grandchild = make_issue("GRANDCHILD", "blocked");
+        add_dependency(&mut grandchild, "CHILD", "parent-child");
+        let issues = vec![
+            make_issue("A", "open"),
+            make_blocked("PARENT", "A"),
+            child,
+            grandchild,
+            make_blocked("STILL-WAITING", "PARENT"),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+
+        let delta = compute_what_if(&issues, &graph, &metrics, "A").expect("known target");
+        assert_eq!(delta.direct_unblocks, vec!["PARENT"]);
+        assert_eq!(
+            delta.transitive_unblocks,
+            vec!["CHILD", "GRANDCHILD", "PARENT"]
+        );
+        assert_eq!(delta.estimated_days_saved, 6.0);
+    }
+
+    #[test]
+    fn what_if_already_closed_targets_are_noops_even_in_structural_cycles() {
+        for status in ["closed", "tombstone"] {
+            let mut target = make_issue("A", status);
+            add_dependency(&mut target, "B", "blocks");
+            let issues = vec![target, make_blocked("B", "A")];
+            let graph = IssueGraph::build(&issues);
+            let metrics = graph.compute_metrics();
+            assert_eq!(metrics.cycles, vec![vec!["A", "B"]]);
+
+            let delta = compute_what_if(&issues, &graph, &metrics, "A").expect("known target");
+            assert!(delta.direct_unblocks.is_empty());
+            assert!(delta.transitive_unblocks.is_empty());
+            assert_eq!(delta.estimated_days_saved, 0.0);
+            assert_eq!(delta.pagerank_delta, 0.0);
+            assert_eq!(delta.cycles_broken, 0);
+        }
+    }
+
+    #[test]
+    fn what_if_pagerank_matches_an_independent_removed_node_graph() {
+        let issues = vec![
+            make_issue("A", "open"),
+            make_blocked("B", "A"),
+            make_issue("C", "closed"),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        // The independently constructed residual graph has two isolated nodes:
+        // B's old dependency is dangling after A is removed, and each rank is 1/2.
+        let residual = vec![make_issue("B", "blocked"), make_issue("C", "closed")];
+        let residual_metrics = IssueGraph::build(&residual).compute_metrics();
+        let expected = metrics.pagerank["B"] - residual_metrics.pagerank["B"];
+
+        let delta = compute_what_if(&issues, &graph, &metrics, "A").expect("known target");
+        assert!((delta.pagerank_delta - expected).abs() < 1e-9);
+        // Analytic PageRank with damping 0.85 gives B = 20/77 before removal.
+        assert!((delta.pagerank_delta - (20.0 / 77.0 - 0.5)).abs() < 1e-6);
+        assert!(delta.pagerank_delta.abs() > 0.2);
+    }
+
+    #[test]
+    fn what_if_does_not_compare_missing_pagerank_to_computed_scores() {
+        let issues = vec![make_issue("A", "open"), make_blocked("B", "A")];
+        let graph = IssueGraph::build(&issues);
+        let mut disabled_config = super::super::graph::AnalysisConfig::fast_phase();
+        disabled_config.enable_pagerank = false;
+        let disabled = graph.compute_metrics_with_config(&disabled_config);
+        assert!(disabled.pagerank.is_empty());
+        let delta = compute_what_if(&issues, &graph, &disabled, "A").expect("known target");
+        assert_eq!(delta.pagerank_delta, 0.0);
+        assert_eq!(delta.direct_unblocks, vec!["B"]);
+
+        let mut unavailable = graph.compute_metrics();
+        unavailable.pagerank.remove("B");
+        let delta = compute_what_if(&issues, &graph, &unavailable, "A").expect("known target");
+        assert_eq!(delta.pagerank_delta, 0.0);
+        unavailable.pagerank.clear();
+        let delta = compute_what_if(&issues, &graph, &unavailable, "A").expect("known target");
+        assert_eq!(delta.pagerank_delta, 0.0);
+    }
+
+    #[test]
+    fn what_if_does_not_claim_a_component_with_a_surviving_cycle_is_broken() {
+        let mut middle = make_blocked("B", "A");
+        add_dependency(&mut middle, "C", "blocks");
+        let issues = vec![
+            make_blocked("A", "B"),
+            middle,
+            make_blocked("C", "B"),
+            make_blocked("SELF", "SELF"),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        assert_eq!(metrics.cycles, vec![vec!["A", "B", "C"], vec!["SELF"]]);
+
+        // Removing an end of the figure-eight leaves the other two-node cycle.
+        for id in ["A", "C"] {
+            let delta = compute_what_if(&issues, &graph, &metrics, id).expect("known target");
+            assert_eq!(
+                delta.cycles_broken, 0,
+                "surviving cycle after removing {id}"
+            );
+        }
+        let middle = compute_what_if(&issues, &graph, &metrics, "B").expect("known target");
+        assert_eq!(middle.cycles_broken, 1);
+        let self_loop = compute_what_if(&issues, &graph, &metrics, "SELF").expect("known target");
+        assert_eq!(self_loop.cycles_broken, 1);
+    }
+
+    #[test]
+    fn what_if_splitting_one_cyclic_component_into_two_does_not_break_it() {
+        let mut target = make_blocked("A", "B");
+        add_dependency(&mut target, "D", "blocks");
+        let mut left = make_blocked("B", "C");
+        add_dependency(&mut left, "A", "blocks");
+        let mut right = make_blocked("D", "E");
+        add_dependency(&mut right, "A", "blocks");
+        let issues = vec![
+            target,
+            left,
+            make_blocked("C", "B"),
+            right,
+            make_blocked("E", "D"),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        assert_eq!(metrics.cycles, vec![vec!["A", "B", "C", "D", "E"]]);
+
+        let delta = compute_what_if(&issues, &graph, &metrics, "A").expect("known target");
+        assert_eq!(delta.cycles_broken, 0);
+    }
+
+    #[test]
+    fn top_what_ifs_match_single_simulations_and_ignore_input_order() {
+        let mut inherited = make_issue("CHILD", "open");
+        add_dependency(&mut inherited, "PARENT", "parent-child");
+        let mut issues = vec![
+            make_issue("A", "open"),
+            make_issue("B", "open"),
+            make_issue("C", "open"),
+            make_issue("Z", "open"),
+            make_blocked("PARENT", "A"),
+            inherited,
+            make_blocked("SECOND", "B"),
+            make_blocked("THIRD", "C"),
+            make_blocked("FOURTH", "Z"),
+            make_blocked("FIFTH", "Z"),
+        ];
+        let graph = IssueGraph::build(&issues);
+        let metrics = graph.compute_metrics();
+        let expected = top_what_if_deltas(&issues, &graph, &metrics, 3);
+        // Z and A release the same total, but Z has more direct unblocks.
+        // B and C tie on both counts, so their IDs decide the final slot.
+        assert_eq!(
+            expected
+                .iter()
+                .map(|delta| delta.issue_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Z", "A", "B"]
+        );
+        for delta in &expected {
+            let single = compute_what_if(&issues, &graph, &metrics, &delta.issue_id)
+                .expect("selected candidate");
+            assert_same_delta(delta, &single);
+        }
+
+        issues.reverse();
+        let reversed_graph = IssueGraph::build(&issues);
+        let reversed_metrics = reversed_graph.compute_metrics();
+        let reversed = top_what_if_deltas(&issues, &reversed_graph, &reversed_metrics, 3);
+        assert_eq!(reversed.len(), expected.len());
+        for (actual, expected) in reversed.iter().zip(&expected) {
+            assert_same_delta(actual, expected);
+        }
     }
 
     #[test]

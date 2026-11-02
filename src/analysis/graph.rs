@@ -546,22 +546,38 @@ impl IssueGraph {
     /// simulations; use [`Self::actionable_ids`] for "ready to work on".
     #[must_use]
     pub fn dependency_unblocked_ids(&self) -> Vec<String> {
+        self.dependency_unblocked_ids_with_closed(None)
+    }
+
+    /// Evaluate the same dependency readiness rules with one issue treated as
+    /// closed, without cloning issue records or rebuilding graph topology.
+    #[must_use]
+    pub(crate) fn dependency_unblocked_ids_after_closing(&self, issue_id: &str) -> Vec<String> {
+        self.dependency_unblocked_ids_with_closed(Some(issue_id))
+    }
+
+    fn dependency_unblocked_ids_with_closed(&self, completed: Option<&str>) -> Vec<String> {
+        let is_open = |issue: &Issue| issue.is_open_like() && completed != Some(issue.id.as_str());
         // Phase 1: Compute directly blocked issues (open blocking dependencies).
-        let mut directly_blocked = HashSet::<String>::new();
+        let mut directly_blocked = HashSet::<&str>::new();
         for issue in &self.issues {
-            let id = &issue.id;
-            if issue.is_closed_like() {
+            let id = issue.id.as_str();
+            if !is_open(issue) {
                 continue;
             }
-            if !self.open_blockers(id).is_empty() {
-                directly_blocked.insert(id.clone());
+            if self.blockers_by_issue.get(id).is_some_and(|blockers| {
+                blockers
+                    .iter()
+                    .any(|blocker| self.issue(blocker).is_some_and(is_open))
+            }) {
+                directly_blocked.insert(id);
             }
         }
 
         // Phase 2: Build parent->children index from parent-child dependencies.
         // A child has a dep with dep_type="parent-child" and depends_on_id pointing
         // to the parent. We invert: parent -> [children].
-        let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
+        let mut children_of: HashMap<&str, Vec<&str>> = HashMap::new();
         for issue in &self.issues {
             for dep in &issue.dependencies {
                 if dep.is_parent_child()
@@ -569,9 +585,9 @@ impl IssueGraph {
                     && self.id_to_index.contains_key(&dep.depends_on_id)
                 {
                     children_of
-                        .entry(dep.depends_on_id.clone())
+                        .entry(dep.depends_on_id.as_str())
                         .or_default()
-                        .push(issue.id.clone());
+                        .push(issue.id.as_str());
                 }
             }
         }
@@ -581,18 +597,14 @@ impl IssueGraph {
         // Visit each blocked parent once instead of limiting hierarchy depth
         // or repeatedly rescanning its descendants. Mark children when queued
         // so cycles and shared descendants cannot keep the worklist alive.
-        let mut pending = directly_blocked.iter().cloned().collect::<Vec<_>>();
+        let mut pending = directly_blocked.iter().copied().collect::<Vec<_>>();
         let mut blocked = directly_blocked;
         while let Some(parent_id) = pending.pop() {
-            if let Some(children) = children_of.get(&parent_id) {
-                for child_id in children {
-                    if !blocked.contains(child_id)
-                        && self
-                            .issue(child_id)
-                            .is_some_and(|issue| !issue.is_closed_like())
-                    {
-                        blocked.insert(child_id.clone());
-                        pending.push(child_id.clone());
+            if let Some(children) = children_of.get(parent_id) {
+                for &child_id in children {
+                    if !blocked.contains(child_id) && self.issue(child_id).is_some_and(is_open) {
+                        blocked.insert(child_id);
+                        pending.push(child_id);
                     }
                 }
             }
@@ -615,7 +627,7 @@ impl IssueGraph {
         // enforced via `parents_with_open_children` at the recommendation
         // chokepoint, not here.
         let mut ids = self.issue_ids_sorted();
-        ids.retain(|id| self.issue(id).is_some_and(Issue::is_open_like) && !blocked.contains(id));
+        ids.retain(|id| self.issue(id).is_some_and(is_open) && !blocked.contains(id.as_str()));
         ids
     }
 
@@ -840,7 +852,7 @@ impl IssueGraph {
         }
     }
 
-    fn compute_pagerank(&self) -> HashMap<String, f64> {
+    pub(crate) fn compute_pagerank(&self) -> HashMap<String, f64> {
         let node_count = self.node_to_id.len();
         if node_count == 0 {
             return HashMap::new();
@@ -1947,6 +1959,86 @@ mod tests {
                 })
                 .collect(),
             ..Issue::default()
+        }
+    }
+
+    #[test]
+    fn completion_readiness_view_matches_rebuilt_closed_snapshots() {
+        let mut issues = vec![
+            hierarchy_issue("BLOCKER", "open", &[]),
+            hierarchy_issue("OTHER", "deferred", &[]),
+            hierarchy_issue(
+                "ROOT",
+                "blocked",
+                &[("blocks", "BLOCKER"), ("parent-child", "PARENT-CYCLE")],
+            ),
+            hierarchy_issue("PARENT-CYCLE", "open", &[("parent-child", "ROOT")]),
+            hierarchy_issue("SECOND-PARENT", "blocked", &[("waits-for", "OTHER")]),
+            hierarchy_issue(
+                "SHARED",
+                "deferred",
+                &[
+                    ("parent-child", "ROOT"),
+                    ("parent-child", "SECOND-PARENT"),
+                    ("parent-child", "ROOT"),
+                ],
+            ),
+            hierarchy_issue("GRANDCHILD", "blocked", &[("parent-child", "SHARED")]),
+            hierarchy_issue("EXPLICIT", "open", &[("blocks", "ROOT")]),
+            hierarchy_issue("CLOSED", "closed", &[("parent-child", "ROOT")]),
+            hierarchy_issue("AFTER-CLOSED", "open", &[("parent-child", "CLOSED")]),
+            hierarchy_issue("TOMBSTONE", "tombstone", &[("blocks", "BLOCKER")]),
+            hierarchy_issue(
+                "DEPENDENCY-A",
+                "open",
+                &[("blocks", "DEPENDENCY-B"), ("parent-child", "ROOT")],
+            ),
+            hierarchy_issue("DEPENDENCY-B", "open", &[("blocks", "DEPENDENCY-A")]),
+            hierarchy_issue("MISSING-PARENT", "open", &[("parent-child", "ABSENT")]),
+            hierarchy_issue("RELATED", "open", &[("related", "ROOT")]),
+            hierarchy_issue("SELF-PARENT", "open", &[("parent-child", "SELF-PARENT")]),
+            hierarchy_issue("SELF-BLOCKER", "open", &[("blocks", "SELF-BLOCKER")]),
+        ];
+
+        for reverse in [false, true] {
+            if reverse {
+                issues.reverse();
+            }
+            let graph = IssueGraph::build(&issues);
+            let original = graph.dependency_unblocked_ids();
+            assert_eq!(
+                original,
+                vec![
+                    "AFTER-CLOSED",
+                    "BLOCKER",
+                    "MISSING-PARENT",
+                    "OTHER",
+                    "RELATED",
+                    "SELF-PARENT",
+                ]
+            );
+
+            for target in issues
+                .iter()
+                .map(|issue| issue.id.as_str())
+                .chain(std::iter::once("UNKNOWN"))
+            {
+                // The oracle changes the actual snapshot and rebuilds all
+                // indexes. It does not use the hypothetical-closure helper.
+                let mut completed = issues.clone();
+                for issue in &mut completed {
+                    if issue.id == target {
+                        issue.status = "closed".to_string();
+                    }
+                }
+                let expected = IssueGraph::build(&completed).dependency_unblocked_ids();
+                assert_eq!(
+                    graph.dependency_unblocked_ids_after_closing(target),
+                    expected,
+                    "closure view differs for {target} (reverse={reverse})"
+                );
+                assert_eq!(graph.dependency_unblocked_ids(), original);
+            }
         }
     }
 
