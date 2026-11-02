@@ -7,6 +7,13 @@ pub enum BvrError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("git history: could not start {operation}: {source}")]
+    GitUnavailable {
+        operation: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("json parse error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -48,6 +55,22 @@ mod tests {
         let err = BvrError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
         assert!(err.to_string().contains("io error"));
         assert!(err.to_string().contains("gone"));
+    }
+
+    #[test]
+    fn git_unavailable_identifies_the_operation_and_preserves_the_source() {
+        let error = BvrError::GitUnavailable {
+            operation: "git rev-parse --show-toplevel".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "Git executable missing"),
+        };
+        assert_eq!(
+            error.to_string(),
+            "git history: could not start git rev-parse --show-toplevel: Git executable missing"
+        );
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "Git executable missing"
+        );
     }
 
     #[test]

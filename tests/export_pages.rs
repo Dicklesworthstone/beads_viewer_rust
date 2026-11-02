@@ -2044,6 +2044,591 @@ fn preview_pages_handles_sigterm_gracefully() {
     assert!(stdout.contains("Preview server stopped: received shutdown signal."));
 }
 
+mod git_timeline {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SOURCE: &str = ".beads/beads.jsonl";
+    const ID: &str = "Issue-A";
+
+    fn git_command(root: &Path) -> ProcessCommand {
+        let mut command = ProcessCommand::new("git");
+        command
+            .current_dir(root)
+            .arg("--literal-pathspecs")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", root.join("empty-git-config"))
+            .env("GIT_AUTHOR_NAME", "Timeline Author")
+            .env("GIT_AUTHOR_EMAIL", "timeline@example.test")
+            .env("GIT_COMMITTER_NAME", "Timeline Committer")
+            .env("GIT_COMMITTER_EMAIL", "committer@example.test");
+        command
+    }
+
+    fn git(root: &Path, args: &[&str]) -> String {
+        let output = git_command(root)
+            .args(args)
+            .output()
+            .expect("run git fixture");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git UTF-8 output")
+            .trim()
+            .to_string()
+    }
+
+    fn init(root: &Path) {
+        fs::write(root.join("empty-git-config"), "").expect("isolated git config");
+        git(root, &["init", "-q", "-b", "main"]);
+    }
+
+    fn write_issue(root: &Path, source: &str, status: &str, title: &str) {
+        let path = root.join(source);
+        fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
+        let record = serde_json::json!({
+            "id": ID, "title": title, "status": status,
+            "priority": 2, "issue_type": "task",
+            "created_at": "2000-01-01T00:00:00Z"
+        });
+        fs::write(path, format!("{record}\n")).expect("write issue source");
+    }
+
+    fn commit(root: &Path, source: &str, message: &str, day: u8) -> String {
+        git(root, &["add", "--", source]);
+        let date = format!("2026-08-{day:02}T12:00:00Z");
+        let output = git_command(root)
+            .args(["commit", "-q", "-m", message])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .output()
+            .expect("commit fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    fn export(root: &Path) -> Command {
+        let mut command = bvr_cmd(root);
+        command
+            .arg("--export-pages")
+            .arg(root.join("pages-out"))
+            .arg("--no-hooks")
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .timeout(Duration::from_secs(30));
+        command
+    }
+
+    fn history(root: &Path) -> Value {
+        serde_json::from_slice(
+            &fs::read(root.join("pages-out/data/history.json")).expect("history file"),
+        )
+        .expect("history JSON")
+    }
+
+    fn events_by_commit(entry: &Value) -> BTreeMap<String, String> {
+        entry["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .map(|event| {
+                (
+                    event["commit_sha"]
+                        .as_str()
+                        .expect("commit SHA")
+                        .to_string(),
+                    event["event_type"]
+                        .as_str()
+                        .expect("event type")
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pages_history_reads_real_transitions_not_commit_messages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        let mut expected = BTreeMap::new();
+        for (day, status, title, message, kind) in [
+            (
+                1,
+                "open",
+                "Original title",
+                "close Issue-A immediately",
+                "created",
+            ),
+            (
+                2,
+                "open",
+                "Edited title",
+                "claim and close Issue-A",
+                "modified",
+            ),
+            (
+                3,
+                "in_progress",
+                "Edited title",
+                "routine update",
+                "claimed",
+            ),
+            (4, "closed", "Edited title", "routine update", "closed"),
+            (5, "open", "Current title", "routine update", "reopened"),
+        ] {
+            write_issue(root, SOURCE, status, title);
+            expected.insert(commit(root, SOURCE, message, day), kind.to_string());
+        }
+
+        export(root).assert().success();
+
+        let history = history(root);
+        let entry = &history[ID];
+        assert_eq!(events_by_commit(entry), expected);
+        assert_eq!(entry["events"].as_array().expect("events").len(), 5);
+        assert_eq!(entry["title"], "Current title");
+        assert_eq!(entry["status"], "open");
+        for event in entry["events"].as_array().expect("events") {
+            assert_eq!(event["bead_id"], ID);
+            assert_eq!(event["author"], "Timeline Author");
+            assert_eq!(event["author_email"], "timeline@example.test");
+            assert!(
+                event["timestamp"]
+                    .as_str()
+                    .expect("timestamp")
+                    .starts_with("2026-08-")
+            );
+        }
+        assert_eq!(
+            entry["commits"].as_array().expect("observed commits").len(),
+            5
+        );
+        assert_eq!(entry["milestones"]["created"]["event_type"], "created");
+        assert_eq!(entry["milestones"]["reopened"]["event_type"], "reopened");
+    }
+
+    #[test]
+    fn pages_history_bounds_by_revision_and_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        write_issue(root, SOURCE, "open", "Initial title");
+        let created = commit(root, SOURCE, "initial record", 1);
+        write_issue(root, SOURCE, "open", "Edited title");
+        let edited = commit(root, SOURCE, "close Issue-A (message only)", 2);
+        write_issue(root, SOURCE, "closed", "Edited title");
+        let closed = commit(root, SOURCE, "actual closure", 3);
+
+        export(root)
+            .args(["--as-of", "HEAD~1", "--history-limit", "1"])
+            .assert()
+            .success();
+
+        let history = history(root);
+        assert_eq!(history[ID]["status"], "open");
+        assert_eq!(
+            events_by_commit(&history[ID]),
+            BTreeMap::from([(edited, "modified".to_string())])
+        );
+        assert!(history[ID]["milestones"].get("created").is_none());
+        assert!(history[ID]["milestones"].get("closed").is_none());
+        let serialized = history.to_string();
+        assert!(!serialized.contains(&created));
+        assert!(!serialized.contains(&closed));
+    }
+
+    #[test]
+    fn pages_history_uses_last_record_wins_and_ignores_compaction() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        write_issue(root, SOURCE, "open", "Original record");
+        let created = commit(root, SOURCE, "initial record", 1);
+        let original = fs::read(root.join(SOURCE)).expect("original row");
+        write_issue(root, SOURCE, "closed", "Appended update");
+        let closed_row = fs::read(root.join(SOURCE)).expect("updated row");
+        let mut appended = original;
+        appended.extend_from_slice(&closed_row);
+        fs::write(root.join(SOURCE), appended).expect("append-only update");
+        let closed = commit(root, SOURCE, "append updated record", 2);
+        fs::write(root.join(SOURCE), closed_row).expect("compacted source");
+        let compacted = commit(root, SOURCE, "compact historical rows", 3);
+
+        export(root).assert().success();
+
+        let history = history(root);
+        assert_eq!(history[ID]["title"], "Appended update");
+        assert_eq!(history[ID]["status"], "closed");
+        assert_eq!(
+            events_by_commit(&history[ID]),
+            BTreeMap::from([
+                (created, "created".to_string()),
+                (closed, "closed".to_string()),
+            ])
+        );
+        assert_eq!(history[ID]["events"].as_array().expect("events").len(), 2);
+        assert!(!history.to_string().contains(&compacted));
+    }
+
+    #[test]
+    fn pages_history_selects_literal_source_and_filters_closed_ids() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let selected = "trackers/live [selected].jsonl";
+        init(root);
+        write_issue(root, SOURCE, "closed", "Unselected collision");
+        let unrelated = commit(root, SOURCE, "unrelated source", 1);
+        write_issue(root, selected, "open", "Selected issue");
+        let mut source = fs::OpenOptions::new()
+            .append(true)
+            .open(root.join(selected))
+            .expect("append source");
+        writeln!(source, "{{\"id\":\"Hidden\",\"title\":\"Hidden closed issue\",\"status\":\"closed\",\"priority\":2,\"issue_type\":\"task\"}}")
+            .expect("closed row");
+        drop(source);
+        let selected_commit = commit(root, selected, "selected source", 2);
+
+        export(root)
+            .args(["--beads-file", selected, "--pages-include-closed=false"])
+            .assert()
+            .success();
+
+        let history = history(root);
+        assert_eq!(history.as_object().expect("map").len(), 1);
+        assert_eq!(
+            events_by_commit(&history[ID]),
+            BTreeMap::from([(selected_commit, "created".to_string())])
+        );
+        assert!(!history.to_string().contains(&unrelated));
+        assert!(!history.to_string().contains("Hidden"));
+    }
+
+    #[test]
+    fn pages_history_nongit_fallback_and_disabled_history() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        write_issue(root, SOURCE, "open", "Uncommitted issue");
+        export(root).assert().success();
+        let recorded = history(root);
+        assert_eq!(recorded[ID]["events"][0]["commit_sha"], "");
+        assert_eq!(
+            recorded[ID]["events"][0]["timestamp"],
+            "2000-01-01T00:00:00Z"
+        );
+
+        init(root);
+        fs::write(root.join(SOURCE), "not valid JSONL\n").expect("malformed historical row");
+        commit(root, SOURCE, "malformed committed source", 1);
+        write_issue(root, SOURCE, "open", "Valid working tree");
+        export(root)
+            .arg("--pages-include-history=false")
+            .assert()
+            .success();
+        assert!(!root.join("pages-out/data/history.json").exists());
+    }
+
+    #[test]
+    fn pages_history_error_keeps_previous_bundle_intact() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        write_issue(root, SOURCE, "open", "Original published issue");
+        commit(root, SOURCE, "initial record", 1);
+        export(root).assert().success();
+        let bundle = root.join("pages-out");
+        let mut paths = BTreeSet::new();
+        collect_files_recursive(&bundle, &bundle, &mut paths);
+        let original: BTreeMap<_, _> = paths
+            .into_iter()
+            .map(|path| {
+                let bytes = fs::read(bundle.join(&path)).expect("original bundle bytes");
+                (path, bytes)
+            })
+            .collect();
+        fs::write(root.join(SOURCE), "not valid JSONL\n").expect("malformed historical row");
+        commit(root, SOURCE, "broken history", 2);
+        write_issue(root, SOURCE, "open", "New working-tree issue");
+
+        export(root).assert().failure();
+
+        let mut after = BTreeSet::new();
+        collect_files_recursive(&bundle, &bundle, &mut after);
+        assert_eq!(after, original.keys().cloned().collect());
+        for (path, bytes) in original {
+            assert_eq!(
+                fs::read(bundle.join(&path)).expect("retained bundle bytes"),
+                bytes,
+                "changed {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn pages_history_keeps_exports_portable_when_git_is_unavailable() {
+        for tracked in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path();
+            write_issue(root, SOURCE, "open", "Portable issue");
+            if tracked {
+                init(root);
+                commit(root, SOURCE, "initial record", 1);
+            }
+
+            export(root)
+                .env("PATH", root.join("no-external-tools"))
+                .assert()
+                .success();
+
+            let history = history(root);
+            assert_eq!(history[ID]["events"][0]["commit_sha"], "");
+            assert_eq!(
+                history[ID]["events"][0]["timestamp"],
+                "2000-01-01T00:00:00Z"
+            );
+            assert!(root.join("pages-out/beads.sqlite3").is_file());
+        }
+    }
+
+    #[test]
+    fn pages_history_scopes_ids_by_workspace_source() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        let alpha = "alpha/.beads/beads.jsonl";
+        let beta = "beta/.beads/beads.jsonl";
+        write_issue(root, alpha, "open", "Alpha issue");
+        let alpha_commit = commit(root, alpha, "alpha change", 1);
+        write_issue(root, beta, "in_progress", "Beta issue");
+        let beta_commit = commit(root, beta, "beta change", 2);
+        fs::write(root.join("workspace.yaml"), "name: history-fixture\nrepos:\n  - name: same\n    path: alpha\n    prefix: 'alpha-'\n  - name: same\n    path: beta\n    prefix: 'beta-'\n")
+            .expect("workspace config");
+
+        export(root)
+            .args(["--workspace", "workspace.yaml"])
+            .assert()
+            .success();
+
+        let history = history(root);
+        assert_eq!(history.as_object().expect("map").len(), 2);
+        assert_eq!(
+            events_by_commit(&history["alpha-Issue-A"]),
+            BTreeMap::from([(alpha_commit, "created".to_string())])
+        );
+        assert_eq!(
+            events_by_commit(&history["beta-Issue-A"]),
+            BTreeMap::from([(beta_commit, "created".to_string())])
+        );
+        assert_eq!(
+            history["alpha-Issue-A"]["events"][0]["bead_id"],
+            "alpha-Issue-A"
+        );
+        assert_eq!(
+            history["beta-Issue-A"]["events"][0]["bead_id"],
+            "beta-Issue-A"
+        );
+
+        export(root)
+            .args(["--workspace", "workspace.yaml", "--as-of", "HEAD"])
+            .assert()
+            .success();
+        assert_eq!(self::history(root), history);
+    }
+
+    #[test]
+    fn pages_history_stays_pinned_when_a_hook_advances_head() {
+        for historical in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let root = temp.path();
+            init(root);
+            write_issue(root, SOURCE, "open", "Historical title");
+            let initial = commit(root, SOURCE, "initial record", 1);
+            write_issue(root, ".beads/future.jsonl", "closed", "Future title");
+            write_hooks(
+                root,
+                "hooks:\n  pre-export:\n    - name: advance-head\n      command: cp .beads/future.jsonl .beads/beads.jsonl && git add -- .beads/beads.jsonl && git -c user.name=Hook -c user.email=hook@example.test commit -qm 'future record'\n",
+            );
+
+            let mut command = bvr_cmd(root);
+            command.args(["--export-pages", "pages-out"]);
+            if historical {
+                command.args(["--as-of", "HEAD"]);
+            }
+            command
+                .env_remove("BEADS_DIR")
+                .env_remove("BEADS_DB")
+                .env_remove("BD_DB")
+                .env_remove("BV_DATA_SOURCE")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", root.join("empty-git-config"))
+                .env("GIT_AUTHOR_DATE", "2026-08-02T12:00:00Z")
+                .env("GIT_COMMITTER_DATE", "2026-08-02T12:00:00Z")
+                .timeout(Duration::from_secs(30))
+                .assert()
+                .success();
+
+            let advanced = git(root, &["rev-parse", "HEAD"]);
+            assert_ne!(advanced, initial, "pre-export hook must advance HEAD");
+            let history = history(root);
+            assert_eq!(history[ID]["title"], "Historical title");
+            assert_eq!(history[ID]["status"], "open");
+            assert_eq!(
+                events_by_commit(&history[ID]),
+                BTreeMap::from([(initial, "created".to_string())])
+            );
+            assert!(!history.to_string().contains(&advanced));
+        }
+    }
+
+    #[test]
+    fn pages_history_keeps_the_loaded_source_when_a_hook_changes_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        write_issue(root, SOURCE, "open", "Selected issue");
+        fs::write(
+            root.join(".beads/metadata.json"),
+            r#"{"jsonl_export":"beads.jsonl"}"#,
+        )
+        .expect("initial source metadata");
+        let initial = commit(root, ".beads", "selected source", 1);
+        write_issue(
+            root,
+            ".beads/alternate.jsonl",
+            "closed",
+            "Unselected collision",
+        );
+        let unrelated = commit(root, ".beads/alternate.jsonl", "alternate source", 2);
+        write_hooks(
+            root,
+            r#"hooks:
+  pre-export:
+    - name: change-source
+      command: |
+        printf '%s\n' '{"jsonl_export":"alternate.jsonl"}' > .beads/metadata.json
+"#,
+        );
+
+        bvr_cmd(root)
+            .args(["--export-pages", "pages-out"])
+            .env_remove("BEADS_DIR")
+            .env_remove("BEADS_DB")
+            .env_remove("BD_DB")
+            .env_remove("BV_DATA_SOURCE")
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+
+        assert!(
+            fs::read_to_string(root.join(".beads/metadata.json"))
+                .expect("changed metadata")
+                .contains("alternate.jsonl")
+        );
+        let history = history(root);
+        assert_eq!(history[ID]["title"], "Selected issue");
+        assert_eq!(history[ID]["status"], "open");
+        assert_eq!(
+            events_by_commit(&history[ID]),
+            BTreeMap::from([(initial, "created".to_string())])
+        );
+        assert!(!history.to_string().contains(&unrelated));
+    }
+
+    #[test]
+    fn pages_history_as_of_uses_the_source_selected_at_that_revision() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        write_issue(root, ".beads/archive.jsonl", "open", "Historical source");
+        fs::write(
+            root.join(".beads/metadata.json"),
+            r#"{"jsonl_export":"archive.jsonl"}"#,
+        )
+        .expect("historical metadata");
+        let historical = commit(root, ".beads", "initial selected source", 1);
+        write_issue(root, ".beads/live.jsonl", "closed", "Current source");
+        fs::write(
+            root.join(".beads/metadata.json"),
+            r#"{"jsonl_export":"live.jsonl"}"#,
+        )
+        .expect("current metadata");
+        let current = commit(root, ".beads", "change selected source", 2);
+
+        export(root).args(["--as-of", "HEAD~1"]).assert().success();
+
+        let history = history(root);
+        assert_eq!(history[ID]["title"], "Historical source");
+        assert_eq!(history[ID]["status"], "open");
+        assert_eq!(
+            events_by_commit(&history[ID]),
+            BTreeMap::from([(historical, "created".to_string())])
+        );
+        assert!(!history.to_string().contains(&current));
+    }
+
+    #[test]
+    fn pages_history_watch_observes_commits_without_source_file_changes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        init(root);
+        write_issue(root, SOURCE, "open", "Initial committed title");
+        let initial = commit(root, SOURCE, "initial record", 1);
+        write_issue(root, SOURCE, "open", "Already exported working-tree title");
+        let source_path = root.join(SOURCE);
+        let bytes = fs::read(&source_path).expect("source bytes");
+        let modified = fs::metadata(&source_path)
+            .expect("source metadata")
+            .modified()
+            .expect("source modification time");
+        let mut committed = String::new();
+
+        let stderr = run_watch_export_with_update(root, &[], || {
+            let initial_history = history(root);
+            assert_eq!(
+                initial_history[ID]["title"],
+                "Already exported working-tree title"
+            );
+            assert_eq!(
+                events_by_commit(&initial_history[ID]),
+                BTreeMap::from([(initial.clone(), "created".to_string())])
+            );
+            committed = commit(root, SOURCE, "commit already exported bytes", 2);
+        });
+
+        assert_eq!(
+            fs::read(&source_path).expect("unchanged source bytes"),
+            bytes
+        );
+        assert_eq!(
+            fs::metadata(&source_path)
+                .expect("source metadata")
+                .modified()
+                .expect("source modification time"),
+            modified
+        );
+        assert!(
+            stderr.contains("watch: regenerated"),
+            "Git-only change did not refresh history: {stderr}"
+        );
+        assert_eq!(
+            events_by_commit(&history(root)[ID]),
+            BTreeMap::from([
+                (initial, "created".to_string()),
+                (committed, "modified".to_string()),
+            ])
+        );
+    }
+}
+
 mod publication {
     use super::*;
     use bvr::export_sqlite::{SqliteBootstrapConfig, SqliteBundleOptions, emit_bootstrap_config};
@@ -2234,7 +2819,7 @@ mod publication {
         )
         .expect("emit prior chunked database");
         assert!(old_config.chunked);
-        assert!(!old_config.chunks.is_empty());
+        assert_ne!(old_config.chunks.len(), 0);
         fs::create_dir_all(bundle.join(".git")).expect("output repository metadata");
         let custom_files = [
             (".git/config", "repository metadata"),

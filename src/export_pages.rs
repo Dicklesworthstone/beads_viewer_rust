@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -15,6 +15,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::analysis::Analyzer;
+use crate::analysis::git_history::HistoryBeadCompat;
 use crate::analysis::triage::TriageOptions;
 use crate::export_sqlite::{
     SQLITE_EXPORT_CONFIG_FILENAME, SQLITE_EXPORT_FILENAME, SqliteBootstrapOptions,
@@ -214,10 +215,31 @@ pub fn export_pages_bundle(
     output_dir: &Path,
     options: &ExportPagesOptions,
 ) -> Result<ExportPagesSummary> {
+    export_pages_bundle_with_history(issues, output_dir, options, &BTreeMap::new())
+}
+
+/// Publish a bundle with factual history prepared from the selected sources.
+///
+/// Entries are scoped to the exported issues and use their current titles and
+/// statuses. Issues without observed events retain the recorded-timestamp
+/// fallback. Resolve Git history before calling this function so a failed scan
+/// cannot modify the published bundle.
+pub fn export_pages_bundle_with_history(
+    issues: &[Issue],
+    output_dir: &Path,
+    options: &ExportPagesOptions,
+    history: &BTreeMap<String, HistoryBeadCompat>,
+) -> Result<ExportPagesSummary> {
     let mut publication = PagesPublication::new(output_dir)?;
     let database_guard =
         snapshot_export_database(&publication.output_dir, &publication.staged_dir)?;
-    let summary = build_pages_bundle(issues, &publication.staged_dir, output_dir, options)?;
+    let summary = build_pages_bundle(
+        issues,
+        &publication.staged_dir,
+        output_dir,
+        options,
+        history,
+    )?;
     publication.prepare(&summary.files)?;
 
     // Keep SQLite's writer guard through construction and metadata preflight.
@@ -234,6 +256,7 @@ fn build_pages_bundle(
     output_dir: &Path,
     logical_output_dir: &Path,
     options: &ExportPagesOptions,
+    prepared_history: &BTreeMap<String, HistoryBeadCompat>,
 ) -> Result<ExportPagesSummary> {
     let title = options
         .title
@@ -322,9 +345,19 @@ fn build_pages_bundle(
         let histories = analyzer.history(None, history_limit);
         // Convert to the richer HistoryBeadCompat format that matches
         // --robot-history output shape (with commits/cycle_time/milestones).
-        let history_compat: std::collections::BTreeMap<String, _> = histories
+        let history_compat: BTreeMap<String, _> = histories
             .iter()
             .map(|h| {
+                if let Some(observed) = prepared_history
+                    .get(&h.id)
+                    .filter(|entry| !entry.events.is_empty())
+                {
+                    let mut entry = observed.clone();
+                    entry.bead_id.clone_from(&h.id);
+                    entry.title.clone_from(&h.title);
+                    entry.status.clone_from(&h.status);
+                    return (h.id.clone(), entry);
+                }
                 (
                     h.id.clone(),
                     crate::analysis::git_history::HistoryBeadCompat {
@@ -595,7 +628,7 @@ impl PagesPublication {
         Ok(())
     }
 
-    fn rollback(&mut self) -> Vec<String> {
+    fn rollback(&self) -> Vec<String> {
         let mut failures = Vec::new();
         for change in self.changes[..self.applied].iter().rev() {
             if let Err(error) = self.restore_change(change) {
@@ -816,10 +849,8 @@ fn is_numbered_database_chunk(name: &OsStr) -> bool {
 fn publication_order(relative_path: &Path) -> u8 {
     if relative_path == Path::new("data/export_summary.json") {
         2
-    } else if relative_path == Path::new(SQLITE_EXPORT_CONFIG_FILENAME) {
-        1
     } else {
-        0
+        u8::from(relative_path == Path::new(SQLITE_EXPORT_CONFIG_FILENAME))
     }
 }
 
@@ -2169,6 +2200,81 @@ mod tests {
         let exported = fs::read_to_string(out.join("data/issues.json")).expect("read issues.json");
         assert!(exported.contains("\"A\""));
         assert!(!exported.contains("\"B\""));
+    }
+
+    #[test]
+    fn prepared_history_preserves_facts_and_scopes_entries_to_exported_issues() {
+        use crate::analysis::git_history::{HistoryEventCompat, HistoryMilestonesCompat};
+
+        let temp = tempdir().expect("tempdir");
+        let out = temp.path().join("pages");
+        let mut fallback = make_issue("C", "open");
+        fallback.created_at = crate::model::ts("2020-01-02T03:04:05Z");
+        let issues = vec![make_issue("A", "open"), make_issue("B", "closed"), fallback];
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let history = ["A", "B", "NOT-EXPORTED"]
+            .into_iter()
+            .map(|id| {
+                let event = HistoryEventCompat {
+                    bead_id: id.to_string(),
+                    event_type: "reopened".to_string(),
+                    timestamp: "2026-09-10T11:12:13Z".to_string(),
+                    commit_sha: sha.to_string(),
+                    commit_message: "Recorded state change".to_string(),
+                    author: "History Author".to_string(),
+                    author_email: "history@example.test".to_string(),
+                };
+                (
+                    id.to_string(),
+                    HistoryBeadCompat {
+                        bead_id: id.to_string(),
+                        title: "Historical title".to_string(),
+                        status: "Historical status".to_string(),
+                        events: vec![event.clone()],
+                        milestones: HistoryMilestonesCompat {
+                            reopened: Some(event),
+                            ..HistoryMilestonesCompat::default()
+                        },
+                        commits: None,
+                        cycle_time: None,
+                        last_author: "History Author".to_string(),
+                    },
+                )
+            })
+            .collect();
+
+        export_pages_bundle_with_history(
+            &issues,
+            &out,
+            &ExportPagesOptions {
+                title: None,
+                subtitle: None,
+                include_closed: false,
+                include_history: true,
+            },
+            &history,
+        )
+        .expect("export prepared history");
+
+        let exported: serde_json::Value = serde_json::from_slice(
+            &fs::read(out.join("data/history.json")).expect("history bytes"),
+        )
+        .expect("history JSON");
+        assert_eq!(exported.as_object().expect("per-issue map").len(), 2);
+        assert!(exported.get("B").is_none());
+        assert!(exported.get("NOT-EXPORTED").is_none());
+        assert_eq!(exported["A"]["title"], "Issue A");
+        assert_eq!(exported["A"]["status"], "open");
+        assert_eq!(exported["A"]["events"].as_array().expect("events").len(), 1);
+        assert_eq!(exported["A"]["events"][0]["commit_sha"], sha);
+        assert_eq!(exported["A"]["events"][0]["author"], "History Author");
+        assert_eq!(exported["A"]["milestones"]["reopened"]["commit_sha"], sha);
+        assert_eq!(exported["C"]["events"][0]["event_type"], "created");
+        assert_eq!(
+            exported["C"]["events"][0]["timestamp"],
+            "2020-01-02T03:04:05Z"
+        );
+        assert_eq!(exported["C"]["events"][0]["commit_sha"], "");
     }
 
     #[test]

@@ -227,9 +227,11 @@ pub struct Cli {
     #[arg(long)]
     pub bead_history: Option<String>,
 
+    /// Maximum commits for robot history or Pages history (0 scans all).
     #[arg(long, default_value_t = 500)]
     pub history_limit: usize,
 
+    /// Include commits since this date in robot history or Pages history.
     #[arg(long)]
     pub history_since: Option<String>,
 

@@ -178,15 +178,25 @@ fn validate_orphaned_modifier_flags(cli: &Cli) -> Option<String> {
         return Some("error: --search <query> requires --robot-search".to_string());
     }
 
-    let history_flags = ["--history-limit", "--history-since", "--min-confidence"];
+    let history_flags = ["--history-limit", "--history-since"];
     if !cli.robot_history
         && cli.bead_history.is_none()
+        && cli.export_pages.is_none()
+        && !cli.pages
         && history_flags
             .iter()
             .any(|flag| arg_flag_was_explicit_in_args(&raw_args, flag))
     {
         return Some(
-            "error: history modifiers require --robot-history or --bead-history <id>".to_string(),
+            "error: history modifiers require --robot-history or --bead-history <id>, or a Pages export (--export-pages <dir> / --pages)".to_string(),
+        );
+    }
+    if !cli.robot_history
+        && cli.bead_history.is_none()
+        && arg_flag_was_explicit_in_args(&raw_args, "--min-confidence")
+    {
+        return Some(
+            "error: --min-confidence requires --robot-history or --bead-history <id>".to_string(),
         );
     }
 
@@ -719,13 +729,14 @@ fn main() -> ExitCode {
                     .output_path
                     .as_deref()
                     .unwrap_or(Path::new("./bv-pages"));
-                let issues = load_issues(&cli)?;
                 let options = bvr::export_pages::ExportPagesOptions {
                     title: config.title.clone(),
                     subtitle: config.subtitle.clone(),
                     include_closed: config.include_closed,
                     include_history: config.include_history,
                 };
+                let (issues, history_context) =
+                    load_issues_for_pages(&cli, options.include_history)?;
                 let count = count_pages_export_issues(&issues, &options);
                 let hook_project_dir = project_dir_for_export_hooks(&cli)?;
                 bvr::export_md::run_export_with_hooks(
@@ -735,7 +746,13 @@ fn main() -> ExitCode {
                     no_hooks,
                     Some(hook_project_dir.as_path()),
                     |resolved_output| {
-                        bvr::export_pages::export_pages_bundle(&issues, resolved_output, &options)
+                        export_pages_for_cli(
+                            &cli,
+                            &issues,
+                            resolved_output,
+                            &options,
+                            &history_context,
+                        )
                     },
                 )?;
                 Ok(())
@@ -826,10 +843,24 @@ fn main() -> ExitCode {
     } else {
         Vec::new()
     };
+    let initial_watch_history_revisions = if cli.watch_export {
+        match capture_pages_history_revisions(&cli) {
+            Ok(revisions) => revisions,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        BTreeMap::new()
+    };
 
     let load_start = std::time::Instant::now();
-    let mut issues = match load_issues(&cli) {
-        Ok(issues) => issues,
+    let (mut issues, pages_history_context) = match load_issues_for_pages(
+        &cli,
+        cli.export_pages.is_some() && cli.pages_include_history,
+    ) {
+        Ok(loaded) => loaded,
         Err(error) => {
             eprintln!("error: {error}");
             return ExitCode::from(1);
@@ -2486,7 +2517,13 @@ fn main() -> ExitCode {
             cli.no_hooks,
             Some(hook_project_dir.as_path()),
             |resolved_export_path| {
-                bvr::export_pages::export_pages_bundle(&issues, resolved_export_path, &options)
+                export_pages_for_cli(
+                    &cli,
+                    &issues,
+                    resolved_export_path,
+                    &options,
+                    &pages_history_context,
+                )
             },
         ) {
             Ok(summary) => {
@@ -2503,6 +2540,7 @@ fn main() -> ExitCode {
 
         if cli.watch_export {
             let mut watched_mtimes = initial_watch_tokens;
+            let mut watched_history_revisions = initial_watch_history_revisions;
             for (path, token) in &mut watched_mtimes {
                 if path.is_dir() {
                     // The initial load populated the live Dolt cache. Use
@@ -2560,6 +2598,17 @@ fn main() -> ExitCode {
                     }
                 };
                 let mut changed_files: Vec<String> = Vec::new();
+                match capture_pages_history_revisions(&cli) {
+                    Ok(revisions) if revisions != watched_history_revisions => {
+                        watched_history_revisions = revisions;
+                        changed_files.push("Git history revision changed".to_string());
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("warning: cannot refresh Git history revisions: {error}");
+                        regeneration_pending = true;
+                    }
+                }
                 for (path, last_token) in &mut watched_mtimes {
                     let current_token = match file_watch_token(path) {
                         Ok(value) => value,
@@ -2605,6 +2654,18 @@ fn main() -> ExitCode {
                 }
                 // Wait the debounce period, then re-scan to capture any trailing writes.
                 std::thread::sleep(std::time::Duration::from_millis(debounce_ms));
+                match capture_pages_history_revisions(&cli) {
+                    Ok(revisions) => {
+                        if revisions != watched_history_revisions {
+                            watched_history_revisions = revisions;
+                            changed_files
+                                .push("Git history revision changed during debounce".to_string());
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("warning: cannot refresh Git history revisions: {error}");
+                    }
+                }
                 for (path, last_token) in &mut watched_mtimes {
                     if let Ok(current_token) = file_watch_token(path) {
                         if current_token != *last_token {
@@ -2628,16 +2689,17 @@ fn main() -> ExitCode {
                 }
 
                 let reload_start = std::time::Instant::now();
-                let refreshed_issues = match load_issues(&cli) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        last_outcome = "reload failed";
-                        eprintln!(
-                            "warning: reload failed: {error} (last good export still served)"
-                        );
-                        continue;
-                    }
-                };
+                let (refreshed_issues, refreshed_history_context) =
+                    match load_issues_for_pages(&cli, options.include_history) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_outcome = "reload failed";
+                            eprintln!(
+                                "warning: reload failed: {error} (last good export still served)"
+                            );
+                            continue;
+                        }
+                    };
                 let refreshed_issues = if let Some(repo_filter) = cli.repo.as_deref() {
                     filter_by_repo(refreshed_issues, repo_filter)
                 } else {
@@ -2663,10 +2725,12 @@ fn main() -> ExitCode {
                     cli.no_hooks,
                     Some(hook_project_dir.as_path()),
                     |resolved_export_path| {
-                        bvr::export_pages::export_pages_bundle(
+                        export_pages_for_cli(
+                            &cli,
                             &refreshed_issues,
                             resolved_export_path,
                             &options,
+                            &refreshed_history_context,
                         )
                     },
                 ) {
@@ -3454,6 +3518,78 @@ fn load_issues(cli: &Cli) -> bvr::Result<Vec<bvr::model::Issue>> {
     }
 }
 
+#[derive(Debug)]
+struct PagesHistorySnapshot {
+    repo_root: PathBuf,
+    relative_path: PathBuf,
+    revision: String,
+    workspace_prefix: Option<String>,
+}
+
+fn load_issues_for_pages(
+    cli: &Cli,
+    include_history: bool,
+) -> bvr::Result<(Vec<bvr::model::Issue>, Vec<PagesHistorySnapshot>)> {
+    if !include_history {
+        return load_issues(cli).map(|issues| (issues, Vec::new()));
+    }
+    let Some(revision) = cli.as_of.as_deref() else {
+        let issues = load_issues(cli)?;
+        let mut scan = GitHistoryScan::default();
+        let mut revisions = BTreeMap::<PathBuf, Option<String>>::new();
+        let mut snapshots = Vec::new();
+        // Pin both source identity and its commit before hooks can rewrite
+        // the same file, advance HEAD, or change the selected source.
+        for source in resolve_pages_history_sources(cli, Some(&issues))? {
+            let Some((repo, relative)) = pages_history_repository(&mut scan, &source)? else {
+                continue;
+            };
+            if let std::collections::btree_map::Entry::Vacant(entry) = revisions.entry(repo.clone())
+            {
+                entry.insert(scan.head_sha(&repo)?);
+            }
+            let Some(revision) = revisions.get(&repo).and_then(Option::as_ref) else {
+                continue;
+            };
+            snapshots.push(PagesHistorySnapshot {
+                repo_root: repo,
+                relative_path: relative,
+                revision: revision.clone(),
+                workspace_prefix: source.workspace_prefix,
+            });
+        }
+        return Ok((issues, snapshots));
+    };
+    // Carry the exact commit and selected path out of the historical load.
+    // A before-export hook may advance HEAD or change the source metadata.
+    let loaded = match resolve_issue_load_target(cli)? {
+        IssueLoadTarget::BeadsFile(path) => {
+            let (issues, snapshot) =
+                load_issues_from_history_file_path_with_snapshot(&path, revision)?;
+            (issues, vec![snapshot])
+        }
+        IssueLoadTarget::WorkspaceConfig(path) => {
+            load_workspace_issues_at_revision_with_snapshots(&path, revision)?
+        }
+        IssueLoadTarget::RepoPath(repo_path) => {
+            let beads_dir = loader::get_beads_dir(repo_path.as_deref())
+                .map_err(|error| with_workspace_discovery_guidance(cli, error))?;
+            let (issues, snapshot) = load_issues_from_history_beads_dir_with_snapshot(
+                &beads_dir, revision,
+            )?
+            .ok_or_else(|| {
+                bvr::BvrError::InvalidArgument(format!(
+                    "could not resolve historical beads JSONL inside {} at revision {revision}",
+                    beads_dir.display()
+                ))
+            })?;
+            (issues, vec![snapshot])
+        }
+    };
+    eprintln!("Loaded {} issues (as-of: {revision})", loaded.0.len());
+    Ok(loaded)
+}
+
 fn count_pages_export_issues(
     issues: &[bvr::model::Issue],
     options: &bvr::export_pages::ExportPagesOptions,
@@ -3463,6 +3599,258 @@ fn count_pages_export_issues(
     } else {
         issues.iter().filter(|issue| issue.is_open_like()).count()
     }
+}
+
+#[derive(Debug)]
+enum PagesHistoryPath {
+    Jsonl(PathBuf),
+    HistoricalDirectory(PathBuf),
+}
+
+impl PagesHistoryPath {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Jsonl(path) | Self::HistoricalDirectory(path) => path,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PagesHistorySource {
+    path: PagesHistoryPath,
+    workspace_prefix: Option<String>,
+}
+
+fn resolve_pages_history_sources(
+    cli: &Cli,
+    issues: Option<&[bvr::model::Issue]>,
+) -> bvr::Result<Vec<PagesHistorySource>> {
+    let historical = cli.as_of.is_some();
+    let single = |path| PagesHistorySource {
+        path,
+        workspace_prefix: None,
+    };
+    match resolve_issue_load_target(cli)? {
+        IssueLoadTarget::BeadsFile(path) => {
+            let source = if historical && path.is_dir() {
+                Some(PagesHistoryPath::HistoricalDirectory(
+                    loader::resolve_beads_redirect(&path)?,
+                ))
+            } else if historical {
+                Some(PagesHistoryPath::Jsonl(path))
+            } else {
+                loader::issue_path_history_jsonl(&path)?.map(PagesHistoryPath::Jsonl)
+            };
+            Ok(source.into_iter().map(single).collect())
+        }
+        IssueLoadTarget::RepoPath(repo_path) => {
+            let source = if historical {
+                Some(PagesHistoryPath::HistoricalDirectory(
+                    loader::get_beads_dir(repo_path.as_deref())?,
+                ))
+            } else {
+                loader::issue_history_jsonl(repo_path.as_deref())?.map(PagesHistoryPath::Jsonl)
+            };
+            Ok(source.into_iter().map(single).collect())
+        }
+        IssueLoadTarget::WorkspaceConfig(config_path) => {
+            let config = loader::load_workspace_config(&config_path)?;
+            let workspace_root = loader::resolve_workspace_root(&config_path);
+            let mut sources = Vec::new();
+            for repo in config
+                .repos
+                .iter()
+                .filter(|repo| repo.enabled.unwrap_or(true))
+            {
+                let prefix = repo.effective_prefix();
+                if issues.is_some_and(|issues| {
+                    !issues
+                        .iter()
+                        .any(|issue| issue.workspace_prefix.as_deref() == Some(prefix.as_str()))
+                }) {
+                    continue;
+                }
+                let configured_path = Path::new(repo.path.trim());
+                let repo_path = if configured_path.is_absolute() {
+                    configured_path.to_path_buf()
+                } else {
+                    workspace_root.join(configured_path)
+                };
+                let beads_dir = repo_path.join(repo.effective_beads_path(Some(&config.defaults)));
+                let path = if historical {
+                    Some(PagesHistoryPath::HistoricalDirectory(
+                        loader::resolve_beads_redirect(&beads_dir)?,
+                    ))
+                } else if beads_dir.is_dir() {
+                    match loader::issue_path_history_jsonl(&beads_dir) {
+                        Ok(path) => path.map(PagesHistoryPath::Jsonl),
+                        // Automatic workspace discovery can include an
+                        // uninitialized repository with no issue source.
+                        Err(bvr::BvrError::MissingBeadsFile(_)) => None,
+                        Err(error) if issues.is_none() => {
+                            // Watch discovery runs before issue loading. An
+                            // unavailable optional repository must not make
+                            // a partially readable workspace unexportable;
+                            // the loader still enforces explicit source modes.
+                            eprintln!(
+                                "warning: workspace history source {} unavailable: {error}",
+                                beads_dir.display()
+                            );
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
+                } else {
+                    None
+                };
+                if let Some(path) = path {
+                    sources.push(PagesHistorySource {
+                        path,
+                        workspace_prefix: Some(prefix),
+                    });
+                }
+            }
+            Ok(sources)
+        }
+    }
+}
+
+fn pages_history_repository(
+    scan: &mut GitHistoryScan,
+    source: &PagesHistorySource,
+) -> bvr::Result<Option<(PathBuf, PathBuf)>> {
+    let absolute = absolute_from_current_dir(source.path.path());
+    let path = match fs::canonicalize(&absolute) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A selected historical file or directory may have been removed
+            // from the working tree. Resolve its existing ancestor instead.
+            let ancestor = absolute
+                .ancestors()
+                .find(|path| path.is_dir())
+                .ok_or_else(|| {
+                    bvr::BvrError::InvalidArgument(format!(
+                        "could not resolve history source {}",
+                        absolute.display()
+                    ))
+                })?;
+            fs::canonicalize(ancestor)?.join(
+                absolute
+                    .strip_prefix(ancestor)
+                    .expect("ancestor contains source"),
+            )
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let directory = path.ancestors().find(|path| path.is_dir()).ok_or_else(|| {
+        bvr::BvrError::InvalidArgument(format!(
+            "could not resolve history source directory {}",
+            path.display()
+        ))
+    })?;
+    let root = match scan.repository_root(directory) {
+        Ok(Some(root)) => root,
+        // Git enriches a live export when available. Only absence of the
+        // executable permits fallback; failed Git commands, damaged history,
+        // and timeouts must still preserve the previously published bundle.
+        Ok(None) | Err(bvr::BvrError::GitUnavailable { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let relative = path
+        .strip_prefix(&root)
+        .map_err(|_| {
+            bvr::BvrError::InvalidArgument(format!(
+                "history source {} is outside repository {}",
+                path.display(),
+                root.display()
+            ))
+        })?
+        .to_path_buf();
+    Ok(Some((root, relative)))
+}
+
+fn pages_history_revision(
+    cli: &Cli,
+    scan: &mut GitHistoryScan,
+    repo: &Path,
+) -> bvr::Result<Option<String>> {
+    match cli.as_of.as_deref() {
+        Some(revision) => scan.resolve_revision(repo, revision).map(Some),
+        None => scan.head_sha(repo),
+    }
+}
+
+fn export_pages_for_cli(
+    cli: &Cli,
+    issues: &[bvr::model::Issue],
+    output_dir: &Path,
+    options: &bvr::export_pages::ExportPagesOptions,
+    context: &[PagesHistorySnapshot],
+) -> bvr::Result<bvr::export_pages::ExportPagesSummary> {
+    if !options.include_history {
+        return bvr::export_pages::export_pages_bundle(issues, output_dir, options);
+    }
+    let mut scan = GitHistoryScan::default();
+    let mut histories = BTreeMap::new();
+    for snapshot in context {
+        let aliases = pages_history_aliases(
+            issues,
+            snapshot.workspace_prefix.as_deref(),
+            options.include_closed,
+        );
+        if aliases.is_empty() {
+            continue;
+        }
+        histories.extend(scan.load_timeline(
+            &snapshot.repo_root,
+            &snapshot.relative_path,
+            &snapshot.revision,
+            &aliases,
+            cli.history_limit,
+            cli.history_since.as_deref(),
+        )?);
+    }
+    bvr::export_pages::export_pages_bundle_with_history(issues, output_dir, options, &histories)
+}
+
+fn pages_history_aliases(
+    issues: &[bvr::model::Issue],
+    workspace_prefix: Option<&str>,
+    include_closed: bool,
+) -> BTreeMap<String, String> {
+    issues
+        .iter()
+        .filter(|issue| include_closed || issue.is_open_like())
+        .filter(|issue| {
+            workspace_prefix.is_none_or(|prefix| issue.workspace_prefix.as_deref() == Some(prefix))
+        })
+        .map(|issue| {
+            let raw_id = if workspace_prefix.is_some() {
+                issue.workspace_local_id.as_deref().unwrap_or(&issue.id)
+            } else {
+                &issue.id
+            };
+            (raw_id.to_string(), issue.id.clone())
+        })
+        .collect()
+}
+
+fn capture_pages_history_revisions(cli: &Cli) -> bvr::Result<BTreeMap<PathBuf, Option<String>>> {
+    let mut revisions = BTreeMap::new();
+    if !cli.pages_include_history {
+        return Ok(revisions);
+    }
+    let mut scan = GitHistoryScan::default();
+    for source in resolve_pages_history_sources(cli, None)? {
+        let Some((repo, _)) = pages_history_repository(&mut scan, &source)? else {
+            continue;
+        };
+        if let std::collections::btree_map::Entry::Vacant(entry) = revisions.entry(repo.clone()) {
+            let revision = pages_history_revision(cli, &mut scan, &repo)?;
+            entry.insert(revision);
+        }
+    }
+    Ok(revisions)
 }
 
 fn resolve_watch_export_paths(cli: &Cli) -> bvr::Result<Vec<PathBuf>> {
@@ -3899,6 +4287,14 @@ fn load_issues_from_history_beads_dir(
     beads_dir: &Path,
     revision: &str,
 ) -> bvr::Result<Option<Vec<bvr::model::Issue>>> {
+    load_issues_from_history_beads_dir_with_snapshot(beads_dir, revision)
+        .map(|loaded| loaded.map(|(issues, _)| issues))
+}
+
+fn load_issues_from_history_beads_dir_with_snapshot(
+    beads_dir: &Path,
+    revision: &str,
+) -> bvr::Result<Option<(Vec<bvr::model::Issue>, PagesHistorySnapshot)>> {
     let beads_dir = loader::resolve_beads_redirect(beads_dir)?;
     let absolute_beads_dir = absolute_from_current_dir(&beads_dir);
     let Some(repo_root) = resolve_git_toplevel(
@@ -3933,13 +4329,22 @@ fn load_issues_from_history_beads_dir(
     let Some(commit) = resolve_historical_commit(&repo_root, revision)? else {
         return Ok(None);
     };
-    let result = (|| {
+    let result: bvr::Result<_> = (|| {
         let Some(jsonl_relative) =
             resolve_historical_jsonl_relative_path(&repo_root, beads_dir_relative, &commit)?
         else {
             return Ok(None);
         };
-        load_issues_from_git_relative_path(&repo_root, &jsonl_relative, &commit).map(Some)
+        let issues = load_issues_from_git_relative_path(&repo_root, &jsonl_relative, &commit)?;
+        Ok(Some((
+            issues,
+            PagesHistorySnapshot {
+                repo_root: repo_root.clone(),
+                relative_path: jsonl_relative,
+                revision: commit.clone(),
+                workspace_prefix: None,
+            },
+        )))
     })();
     result.map_err(|error| {
         bvr::BvrError::InvalidIssue(format!(
@@ -3953,13 +4358,22 @@ fn load_issues_from_history_file_path(
     path: &Path,
     revision: &str,
 ) -> bvr::Result<Vec<bvr::model::Issue>> {
+    load_issues_from_history_file_path_with_snapshot(path, revision).map(|(issues, _)| issues)
+}
+
+fn load_issues_from_history_file_path_with_snapshot(
+    path: &Path,
+    revision: &str,
+) -> bvr::Result<(Vec<bvr::model::Issue>, PagesHistorySnapshot)> {
     if path.is_dir() {
-        return load_issues_from_history_beads_dir(path, revision)?.ok_or_else(|| {
-            bvr::BvrError::InvalidArgument(format!(
-                "could not resolve historical beads JSONL inside {} at revision {revision}",
-                path.display()
-            ))
-        });
+        return load_issues_from_history_beads_dir_with_snapshot(path, revision)?.ok_or_else(
+            || {
+                bvr::BvrError::InvalidArgument(format!(
+                    "could not resolve historical beads JSONL inside {} at revision {revision}",
+                    path.display()
+                ))
+            },
+        );
     }
     let absolute_path = absolute_from_current_dir(path);
     let repo_root = resolve_git_toplevel(absolute_path.parent().unwrap_or_else(|| Path::new(".")))
@@ -3983,18 +4397,37 @@ fn load_issues_from_history_file_path(
             relative_path.display()
         ))
     })?;
-    load_issues_from_git_relative_path(&repo_root, relative_path, &commit).map_err(|error| {
-        bvr::BvrError::InvalidIssue(format!(
-            "could not load historical snapshot {} at revision {revision}: {error}",
-            relative_path.display()
-        ))
-    })
+    let issues = load_issues_from_git_relative_path(&repo_root, relative_path, &commit).map_err(
+        |error| {
+            bvr::BvrError::InvalidIssue(format!(
+                "could not load historical snapshot {} at revision {revision}: {error}",
+                relative_path.display()
+            ))
+        },
+    )?;
+    Ok((
+        issues,
+        PagesHistorySnapshot {
+            repo_root: repo_root.clone(),
+            relative_path: relative_path.to_path_buf(),
+            revision: commit,
+            workspace_prefix: None,
+        },
+    ))
 }
 
 fn load_workspace_issues_at_revision(
     config_path: &Path,
     revision: &str,
 ) -> bvr::Result<Vec<bvr::model::Issue>> {
+    load_workspace_issues_at_revision_with_snapshots(config_path, revision)
+        .map(|(issues, _)| issues)
+}
+
+fn load_workspace_issues_at_revision_with_snapshots(
+    config_path: &Path,
+    revision: &str,
+) -> bvr::Result<(Vec<bvr::model::Issue>, Vec<PagesHistorySnapshot>)> {
     let config = loader::load_workspace_config(config_path)?;
     let workspace_root = loader::resolve_workspace_root(config_path);
     let enabled_repos = config
@@ -4009,6 +4442,7 @@ fn load_workspace_issues_at_revision(
         .collect::<Vec<_>>();
 
     let mut all_issues = Vec::new();
+    let mut snapshots = Vec::new();
     let mut absent_repos = Vec::new();
     let mut loaded_repos = 0usize;
 
@@ -4022,14 +4456,16 @@ fn load_workspace_issues_at_revision(
         };
         let beads_dir = repo_path.join(repo.effective_beads_path(Some(&config.defaults)));
 
-        match load_issues_from_history_beads_dir(&beads_dir, revision) {
-            Ok(Some(mut issues)) => {
+        match load_issues_from_history_beads_dir_with_snapshot(&beads_dir, revision) {
+            Ok(Some((mut issues, mut snapshot))) => {
                 loader::namespace_workspace_issues(
                     &mut issues,
                     &prefix,
                     &repo_name,
                     &known_prefixes,
                 );
+                snapshot.workspace_prefix = Some(prefix);
+                snapshots.push(snapshot);
                 all_issues.append(&mut issues);
                 loaded_repos += 1;
             }
@@ -4059,7 +4495,7 @@ fn load_workspace_issues_at_revision(
         )));
     }
 
-    Ok(all_issues)
+    Ok((all_issues, snapshots))
 }
 
 fn load_issues_at_revision(cli: &Cli, revision: &str) -> bvr::Result<Vec<bvr::model::Issue>> {

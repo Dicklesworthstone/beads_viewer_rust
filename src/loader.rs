@@ -1358,6 +1358,40 @@ pub fn load_issues_from_path(path: &Path) -> Result<Vec<Issue>> {
     load_issues_from_file(path)
 }
 
+/// Resolve the JSONL source whose committed snapshots can describe this load.
+///
+/// An explicit database has no implied sibling export. Directory loads may
+/// use their configured JSONL export even when the live SQLite store is newer;
+/// that file supplies committed evidence, not the current issue snapshot.
+pub fn issue_path_history_jsonl(path: &Path) -> Result<Option<PathBuf>> {
+    if !path.is_dir() {
+        return Ok((!is_sqlite_path(path)).then(|| path.to_path_buf()));
+    }
+    let beads_dir = resolve_beads_redirect(path)?;
+    match select_issue_source(&beads_dir)? {
+        IssueSource::Jsonl(path) => Ok(Some(path)),
+        IssueSource::Dolt(_) => Ok(None),
+        IssueSource::Sqlite(_) => {
+            let metadata = read_beads_metadata(&beads_dir).unwrap_or_default();
+            match resolve_metadata_path(&beads_dir, &metadata.jsonl_export)
+                .map_or_else(|| find_jsonl_path(&beads_dir), Ok)
+            {
+                Ok(path) => Ok(Some(path)),
+                Err(BvrError::MissingBeadsFile(_)) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+    }
+}
+
+/// Resolve history from the same explicit override or directory as `load_issues`.
+pub fn issue_history_jsonl(repo_path: Option<&Path>) -> Result<Option<PathBuf>> {
+    if let Some(path) = beads_db_env_file() {
+        return issue_path_history_jsonl(&path);
+    }
+    issue_path_history_jsonl(&get_beads_dir(repo_path)?)
+}
+
 /// Watch the selected store and any JSONL fallback it can actually read.
 pub fn issue_source_watch_paths(beads_dir: &Path) -> Result<Vec<PathBuf>> {
     issue_source_watch_paths_with_mode(beads_dir, DataSourceMode::from_environment()?)

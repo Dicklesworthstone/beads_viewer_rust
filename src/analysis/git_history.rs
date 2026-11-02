@@ -221,6 +221,131 @@ fn history_error(kind: std::io::ErrorKind, message: impl std::fmt::Display) -> B
     BvrError::Io(std::io::Error::new(kind, format!("git history: {message}")))
 }
 
+fn is_full_commit_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn timeline_event_types(
+    before: Option<&serde_json::Value>,
+    after: Option<&serde_json::Value>,
+) -> Vec<&'static str> {
+    match (before, after) {
+        (None, Some(_)) => vec!["created"],
+        (Some(_), None) => vec!["removed"],
+        (Some(old), Some(new)) if old != new => {
+            let status = |value: &serde_json::Value| {
+                value
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+            };
+            let old_status = status(old);
+            let new_status = status(new);
+            let was_closed = is_closed_like_status(&old_status);
+            let is_closed = is_closed_like_status(&new_status);
+            if !was_closed && is_closed {
+                return vec!["closed"];
+            }
+            let mut events = Vec::new();
+            if was_closed && !is_closed {
+                events.push("reopened");
+            }
+            if old_status != "in_progress" && new_status == "in_progress" {
+                events.push("claimed");
+            }
+            if events.is_empty() {
+                events.push("modified");
+            }
+            events
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn timeline_field_changes(
+    before: Option<&serde_json::Value>,
+    after: Option<&serde_json::Value>,
+) -> Vec<FieldChange> {
+    let (Some(before), Some(after)) = (
+        before.and_then(serde_json::Value::as_object),
+        after.and_then(serde_json::Value::as_object),
+    ) else {
+        return Vec::new();
+    };
+    let render = |value: Option<&serde_json::Value>| {
+        value.map_or_else(
+            || "<absent>".to_string(),
+            |value| {
+                value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), str::to_string)
+            },
+        )
+    };
+    before
+        .keys()
+        .chain(after.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|field| before.get(*field) != after.get(*field))
+        .map(|field| FieldChange {
+            field: field.clone(),
+            old_value: render(before.get(field)),
+            new_value: render(after.get(field)),
+        })
+        .collect()
+}
+
+type TimelineSnapshots = BTreeMap<String, Arc<serde_json::Value>>;
+
+#[derive(Debug)]
+struct TimelineLine {
+    raw: String,
+    record: Option<(String, Arc<serde_json::Value>)>,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct TimelineHunk<'a> {
+    new_start: usize,
+    old_count: usize,
+    new_count: usize,
+    before: Vec<&'a str>,
+    after: Vec<&'a str>,
+}
+
+struct TimelineTreeEntry {
+    kind: String,
+    oid: String,
+    size: Option<u64>,
+    path: String,
+}
+
+fn timeline_relative_path(path: &Path, allow_root: bool) -> Result<PathBuf> {
+    let mut relative = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(name) => relative.push(name),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidInput,
+                    "timeline source must be repository-relative",
+                ));
+            }
+        }
+    }
+    if !allow_root && relative.as_os_str().is_empty() {
+        return Err(history_error(
+            std::io::ErrorKind::InvalidInput,
+            "timeline source must be repository-relative",
+        ));
+    }
+    Ok(relative)
+}
+
 impl GitHistoryScan {
     #[must_use]
     pub fn cancellation_token(&self) -> GitHistoryCancellation {
@@ -342,10 +467,17 @@ impl GitHistoryScan {
             .stderr(Stdio::from(stderr.try_clone()?));
         let started = Instant::now();
         let mut child = command.spawn().map_err(|error| {
-            history_error(
-                error.kind(),
-                format!("could not start {operation}: {error}"),
-            )
+            if error.kind() == std::io::ErrorKind::NotFound {
+                BvrError::GitUnavailable {
+                    operation: operation.to_string(),
+                    source: error,
+                }
+            } else {
+                history_error(
+                    error.kind(),
+                    format!("could not start {operation}: {error}"),
+                )
+            }
         })?;
         #[cfg(test)]
         {
@@ -526,6 +658,827 @@ impl GitHistoryScan {
             return Err(Self::command_error("git log", &output));
         }
         self.parse_commit_log(&output.stdout)
+    }
+
+    /// Pin a caller-selected revision before reading a timeline. Do not let
+    /// option-like revisions become Git arguments or fall back to HEAD.
+    pub fn resolve_revision(&mut self, repo: &Path, revision: &str) -> Result<String> {
+        let mut command = self.command(repo);
+        command.args(["rev-parse", "--verify", "--end-of-options"]);
+        command.arg(format!("{revision}^{{commit}}"));
+        let output = self.run(command, "git rev-parse timeline revision")?;
+        if !output.status.success() {
+            return Err(Self::command_error(
+                "git rev-parse timeline revision",
+                &output,
+            ));
+        }
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !is_full_commit_id(&sha) {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                "invalid timeline commit ID",
+            ));
+        }
+        Ok(sha)
+    }
+
+    /// Read a selected historical file without treating Git failures as
+    /// absence. Inspect its tree entry and size before materializing its blob.
+    pub fn timeline_blob(
+        &mut self,
+        repo: &Path,
+        relative_path: &Path,
+        revision: &str,
+        max_bytes: usize,
+    ) -> Result<Option<Vec<u8>>> {
+        let relative_path = timeline_relative_path(relative_path, false)?;
+        let revision = if is_full_commit_id(revision) {
+            revision.to_string()
+        } else {
+            self.resolve_revision(repo, revision)?
+        };
+        let entries = self.read_timeline_tree(repo, &revision, Some(&relative_path))?;
+        let Some(entry) = entries
+            .into_iter()
+            .find(|entry| Path::new(&entry.path) == relative_path)
+        else {
+            return Ok(None);
+        };
+        let Some(size) = entry.size.filter(|_| entry.kind == "blob") else {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                "timeline source is not a blob",
+            ));
+        };
+        if size > max_bytes as u64 {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                format!("timeline blob exceeded {max_bytes} bytes"),
+            ));
+        }
+        let result_bytes = self.result_bytes.saturating_add(size as usize);
+        self.check_timeline_result_size(result_bytes)?;
+        let mut command = self.command(repo);
+        command.args(["cat-file", "blob", &entry.oid]);
+        let output = self.run(command, "git cat-file timeline blob")?;
+        if !output.status.success() {
+            return Err(Self::command_error("git cat-file timeline blob", &output));
+        }
+        if output.stdout.len() as u64 != size {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                "incomplete timeline blob",
+            ));
+        }
+        self.result_bytes = result_bytes;
+        Ok(Some(output.stdout))
+    }
+
+    /// Immediate historical blob names and sizes, for selecting a JSONL
+    /// source without loading whole databases or invoking unbounded Git.
+    pub fn timeline_tree_entries(
+        &mut self,
+        repo: &Path,
+        relative_dir: &Path,
+        revision: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        let relative_dir = timeline_relative_path(relative_dir, true)?;
+        let revision = if is_full_commit_id(revision) {
+            revision.to_string()
+        } else {
+            self.resolve_revision(repo, revision)?
+        };
+        let tree = if relative_dir.as_os_str().is_empty() {
+            revision
+        } else {
+            let entries = self.read_timeline_tree(repo, &revision, Some(&relative_dir))?;
+            let Some(entry) = entries
+                .into_iter()
+                .find(|entry| Path::new(&entry.path) == relative_dir)
+            else {
+                return Ok(Vec::new());
+            };
+            if entry.kind != "tree" {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "timeline source directory is not a tree",
+                ));
+            }
+            entry.oid
+        };
+        Ok(self
+            .read_timeline_tree(repo, &tree, None)?
+            .into_iter()
+            .filter_map(|entry| {
+                entry
+                    .size
+                    .filter(|_| entry.kind == "blob")
+                    .map(|size| (entry.path, size))
+            })
+            .collect())
+    }
+
+    fn read_timeline_tree(
+        &mut self,
+        repo: &Path,
+        object: &str,
+        path: Option<&Path>,
+    ) -> Result<Vec<TimelineTreeEntry>> {
+        let mut command = self.command(repo);
+        command.args(["ls-tree", "-z", "-l", "--full-tree", object]);
+        if let Some(path) = path {
+            command.arg("--").arg(path);
+        }
+        let output = self.run(command, "git ls-tree timeline")?;
+        if !output.status.success() {
+            return Err(Self::command_error("git ls-tree timeline", &output));
+        }
+        if !output.stdout.is_empty() && output.stdout.last() != Some(&0) {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                "incomplete timeline tree",
+            ));
+        }
+        let text = std::str::from_utf8(&output.stdout).map_err(|error| {
+            history_error(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid timeline tree text: {error}"),
+            )
+        })?;
+        let mut entries = Vec::new();
+        let mut result_bytes = self.result_bytes;
+        for record in text.split_terminator('\0') {
+            self.check_progress()?;
+            let (header, path) = record.split_once('\t').ok_or_else(|| {
+                history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid timeline tree entry",
+                )
+            })?;
+            let fields = header.split_whitespace().collect::<Vec<_>>();
+            if fields.len() != 4 || !is_full_commit_id(fields[2]) || path.is_empty() {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid timeline tree metadata",
+                ));
+            }
+            let size = if fields[1] == "blob" {
+                Some(fields[3].parse::<u64>().map_err(|_| {
+                    history_error(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid timeline blob size",
+                    )
+                })?)
+            } else {
+                None
+            };
+            result_bytes = result_bytes
+                .saturating_add(std::mem::size_of::<TimelineTreeEntry>())
+                .saturating_add(header.len())
+                .saturating_add(path.len());
+            self.check_timeline_result_size(result_bytes)?;
+            entries.push(TimelineTreeEntry {
+                kind: fields[1].to_string(),
+                oid: fields[2].to_string(),
+                size,
+                path: path.to_string(),
+            });
+        }
+        self.result_bytes = result_bytes;
+        Ok(entries)
+    }
+
+    /// Factual changes to one selected JSONL source, following its renames
+    /// along the first-parent history. Aliases are exact raw IDs scoped to
+    /// this source; callers supply current titles/statuses and any fallback.
+    /// Reuse this scan for every source to retain one request-wide budget.
+    /// `limit` bounds examined source commits; `since` filters their events.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_timeline(
+        &mut self,
+        repo: &Path,
+        source: &Path,
+        revision: &str,
+        aliases: &BTreeMap<String, String>,
+        limit: usize,
+        since: Option<&str>,
+    ) -> Result<BTreeMap<String, HistoryBeadCompat>> {
+        self.check_progress()?;
+        let source = timeline_relative_path(source, false)?;
+        if aliases.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let revision = if is_full_commit_id(revision) {
+            revision.to_string()
+        } else {
+            self.resolve_revision(repo, revision)?
+        };
+        let since = since
+            .map(|value| self.timeline_since_timestamp(repo, value))
+            .transpose()?;
+        let mut command = self.command(repo);
+        command.args([
+            "log",
+            "--follow",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            "--patch",
+            "--unified=0",
+            "--inter-hunk-context=0",
+            "--find-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--text",
+            "--root",
+            "--no-show-signature",
+            "--no-notes",
+            "--no-decorate",
+            "--encoding=UTF-8",
+            "--pretty=format:%x00%H%x00%h%x00%P%x00%cI%x00%an%x00%ae%x00%s%x00",
+        ]);
+        if limit > 0 {
+            command.arg(format!("-n{limit}"));
+        }
+        // Walk a contiguous first-parent window. Filtering Git's patch stream
+        // by date would omit intermediate edits when commit clocks differ.
+        command.arg(&revision).arg("--").arg(&source);
+        let output = self.run_with_timeout(command, "git log timeline", self.limits.log_timeout)?;
+        if !output.status.success() {
+            return Err(Self::command_error("git log timeline", &output));
+        }
+        if output.stdout.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let result_bytes = self.result_bytes;
+        let result = self
+            .timeline_blob(repo, &source, &revision, self.limits.max_stdout as usize)
+            .and_then(|blob| {
+                self.parse_timeline_log(
+                    repo,
+                    &output.stdout,
+                    aliases,
+                    blob.as_deref().unwrap_or_default(),
+                    since,
+                    result_bytes,
+                )
+            });
+        if result.is_err() {
+            self.result_bytes = result_bytes;
+        }
+        result
+    }
+
+    fn timeline_since_timestamp(&mut self, repo: &Path, since: &str) -> Result<i64> {
+        let mut command = self.command(repo);
+        command.args(["rev-parse", &format!("--since={since}")]);
+        let output = self.run(command, "git rev-parse timeline since")?;
+        if !output.status.success() {
+            return Err(Self::command_error("git rev-parse timeline since", &output));
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .strip_prefix("--max-age=")
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| {
+                history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid timeline --history-since timestamp",
+                )
+            })
+    }
+
+    fn parse_timeline_log(
+        &mut self,
+        repo: &Path,
+        output: &[u8],
+        aliases: &BTreeMap<String, String>,
+        snapshot: &[u8],
+        since: Option<i64>,
+        mut result_bytes: usize,
+    ) -> Result<BTreeMap<String, HistoryBeadCompat>> {
+        let text = std::str::from_utf8(output).map_err(|error| {
+            history_error(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid timeline text: {error}"),
+            )
+        })?;
+        let mut histories = BTreeMap::<String, HistoryBeadCompat>::new();
+        if text.is_empty() {
+            return Ok(histories);
+        }
+        let mut fields = text.split('\0');
+        if fields.next() != Some("") {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                "invalid timeline framing",
+            ));
+        }
+        let snapshot = std::str::from_utf8(snapshot).map_err(|error| {
+            history_error(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid timeline snapshot: {error}"),
+            )
+        })?;
+        let mut lines = Vec::new();
+        let mut snapshot_bytes = 0usize;
+        for raw in snapshot.split_inclusive('\n') {
+            let line = self.parse_timeline_line(
+                raw,
+                aliases,
+                result_bytes.saturating_add(snapshot_bytes),
+            )?;
+            snapshot_bytes = snapshot_bytes.saturating_add(line.bytes);
+            lines.push(line);
+        }
+        while let Some(sha) = fields.next() {
+            self.check_progress()?;
+            if !is_full_commit_id(sha) {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid timeline commit ID",
+                ));
+            }
+            let mut next = || {
+                fields.next().ok_or_else(|| {
+                    history_error(
+                        std::io::ErrorKind::InvalidData,
+                        "incomplete timeline record",
+                    )
+                })
+            };
+            let short_sha = next()?;
+            let parents = next()?;
+            let timestamp = next()?;
+            let author = next()?;
+            let author_email = next()?;
+            let message = next()?;
+            let patch = next()?;
+            if !parents.split_whitespace().all(is_full_commit_id)
+                || parse_rfc3339_utc(timestamp).is_none()
+            {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid timeline metadata",
+                ));
+            }
+            // Shallow history presents its boundary as a root and every row
+            // as an addition. The raw object retains its real parent headers.
+            if parents.is_empty() && !self.timeline_commit_is_root(repo, sha)? {
+                continue;
+            }
+            let retained_after_bytes = snapshot_bytes;
+            let after = self.timeline_effective_records(&lines)?;
+            snapshot_bytes = self.reverse_timeline_patch(
+                &mut lines,
+                patch,
+                aliases,
+                result_bytes,
+                snapshot_bytes,
+            )?;
+            let before = self.timeline_effective_records(&lines)?;
+            if since.is_some_and(|since| {
+                parse_rfc3339_utc(timestamp).is_some_and(|date| date.timestamp() < since)
+            }) {
+                continue;
+            }
+            let ids = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+            let commit = GitCommitRecord {
+                sha: sha.to_string(),
+                short_sha: short_sha.to_string(),
+                timestamp: timestamp.to_string(),
+                author: author.to_string(),
+                author_email: author_email.to_string(),
+                message: message.to_string(),
+                // The followed source may have a different historical path.
+                // Do not label it with today's path or an invented file action.
+                files: Vec::new(),
+                changed_beads: true,
+                changed_non_beads: false,
+            };
+            for bead_id in ids {
+                self.check_progress()?;
+                let old = before.get(bead_id).map(Arc::as_ref);
+                let new = after.get(bead_id).map(Arc::as_ref);
+                if old == new {
+                    continue;
+                }
+                let event_types = timeline_event_types(old, new);
+                let field_changes = timeline_field_changes(old, new);
+                let bead_diff_lines = old
+                    .into_iter()
+                    .map(|value| format!("- issue: {}", summarize_bead_snapshot(value)))
+                    .chain(
+                        new.into_iter()
+                            .map(|value| format!("+ issue: {}", summarize_bead_snapshot(value))),
+                    )
+                    .collect::<Vec<_>>();
+                let snapshot = new.or(old).expect("observed timeline record");
+                let title = snapshot
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let status = snapshot
+                    .get("status")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let reason = "Observed JSONL transition in first-parent history";
+                let event_bytes = std::mem::size_of::<HistoryEventCompat>()
+                    .saturating_add(bead_id.len())
+                    .saturating_add(32)
+                    .saturating_add(sha.len())
+                    .saturating_add(timestamp.len())
+                    .saturating_add(message.len())
+                    .saturating_add(author.len())
+                    .saturating_add(author_email.len());
+                result_bytes = result_bytes
+                    .saturating_add(correlation_entry_bytes(
+                        &commit,
+                        bead_id,
+                        "jsonl_diff",
+                        reason,
+                        &field_changes,
+                        &bead_diff_lines,
+                    ))
+                    .saturating_add(event_bytes.saturating_mul(event_types.len() + 4))
+                    .saturating_add(std::mem::size_of::<HistoryBeadCompat>())
+                    .saturating_add(bead_id.len().saturating_mul(3))
+                    .saturating_add(title.len())
+                    .saturating_add(status.len());
+                self.check_timeline_result_size(
+                    result_bytes
+                        .saturating_add(retained_after_bytes)
+                        .saturating_add(snapshot_bytes),
+                )?;
+                let history =
+                    histories
+                        .entry(bead_id.clone())
+                        .or_insert_with(|| HistoryBeadCompat {
+                            bead_id: bead_id.clone(),
+                            title: title.to_string(),
+                            status: status.to_string(),
+                            events: Vec::new(),
+                            milestones: HistoryMilestonesCompat::default(),
+                            commits: Some(Vec::new()),
+                            cycle_time: None,
+                            last_author: author.to_string(),
+                        });
+                // Reverse each group as well as the full stream below, so a
+                // reopen directly into in_progress remains reopened, claimed.
+                for event_type in event_types.into_iter().rev() {
+                    history.events.push(HistoryEventCompat {
+                        bead_id: bead_id.clone(),
+                        event_type: event_type.to_string(),
+                        timestamp: timestamp.to_string(),
+                        commit_sha: sha.to_string(),
+                        commit_message: message.to_string(),
+                        author: author.to_string(),
+                        author_email: author_email.to_string(),
+                    });
+                }
+                history
+                    .commits
+                    .get_or_insert_with(Vec::new)
+                    .push(HistoryCommitCompat {
+                        sha: commit.sha.clone(),
+                        short_sha: commit.short_sha.clone(),
+                        message: commit.message.clone(),
+                        author: commit.author.clone(),
+                        author_email: commit.author_email.clone(),
+                        timestamp: commit.timestamp.clone(),
+                        files: Vec::new(),
+                        method: "jsonl_diff".to_string(),
+                        confidence: 1.0,
+                        reason: reason.to_string(),
+                        field_changes,
+                        bead_diff_lines,
+                    });
+            }
+        }
+        for history in histories.values_mut() {
+            self.check_progress()?;
+            history.events.reverse();
+            if let Some(commits) = history.commits.as_mut() {
+                commits.reverse();
+            }
+            history.milestones = HistoryMilestonesCompat {
+                created: history
+                    .events
+                    .iter()
+                    .find(|event| event.event_type == "created")
+                    .cloned(),
+                claimed: history
+                    .events
+                    .iter()
+                    .find(|event| event.event_type == "claimed")
+                    .cloned(),
+                closed: history
+                    .events
+                    .iter()
+                    .find(|event| event.event_type == "closed")
+                    .cloned(),
+                reopened: history
+                    .events
+                    .iter()
+                    .rev()
+                    .find(|event| event.event_type == "reopened")
+                    .cloned(),
+            };
+        }
+        self.check_progress()?;
+        self.result_bytes = result_bytes;
+        Ok(histories)
+    }
+
+    fn timeline_commit_is_root(&mut self, repo: &Path, sha: &str) -> Result<bool> {
+        let mut command = self.command(repo);
+        command.args(["cat-file", "commit", sha]);
+        let output = self.run(command, "git cat-file timeline root")?;
+        if !output.status.success() {
+            return Err(Self::command_error("git cat-file timeline root", &output));
+        }
+        Ok(!output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .take_while(|line| !line.is_empty())
+            .any(|line| line.starts_with(b"parent ")))
+    }
+
+    fn check_timeline_result_size(&self, bytes: usize) -> Result<()> {
+        if bytes > self.limits.max_result_bytes {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "timeline data exceeded {} bytes; reduce --history-limit or narrow --history-since",
+                    self.limits.max_result_bytes,
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn parse_timeline_line(
+        &self,
+        raw: &str,
+        aliases: &BTreeMap<String, String>,
+        retained_bytes: usize,
+    ) -> Result<TimelineLine> {
+        self.check_progress()?;
+        let bytes = std::mem::size_of::<TimelineLine>().saturating_add(raw.len().saturating_mul(4));
+        self.check_timeline_result_size(retained_bytes.saturating_add(bytes))?;
+        let mut line = TimelineLine {
+            raw: raw.to_string(),
+            record: None,
+            bytes,
+        };
+        let content = raw.trim_start_matches('\u{feff}').trim();
+        if content.is_empty() {
+            return Ok(line);
+        }
+        let value: serde_json::Value = serde_json::from_str(content).map_err(|error| {
+            history_error(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid timeline JSONL row: {error}"),
+            )
+        })?;
+        if value.get("_type").and_then(serde_json::Value::as_str) == Some("memory") {
+            return Ok(line);
+        }
+        let raw_id = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "timeline JSONL row has no issue ID",
+                )
+            })?;
+        let Some(bead_id) = aliases.get(raw_id) else {
+            return Ok(line);
+        };
+        for field in ["status", "title"] {
+            if value.get(field).is_some_and(|value| !value.is_string()) {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid timeline issue {field}"),
+                ));
+            }
+        }
+        line.bytes = line
+            .bytes
+            .saturating_add(std::mem::size_of::<serde_json::Value>())
+            .saturating_add(bead_id.len().saturating_mul(3));
+        self.check_timeline_result_size(retained_bytes.saturating_add(line.bytes))?;
+        line.record = Some((bead_id.clone(), Arc::new(value)));
+        Ok(line)
+    }
+
+    fn timeline_effective_records(&self, lines: &[TimelineLine]) -> Result<TimelineSnapshots> {
+        let mut records = BTreeMap::new();
+        for line in lines {
+            self.check_progress()?;
+            if let Some((id, value)) = &line.record {
+                // Match loader::deduplicate_issues: append-only stores retain
+                // earlier rows, and the last occurrence is authoritative.
+                records.insert(id.clone(), Arc::clone(value));
+            }
+        }
+        Ok(records)
+    }
+
+    fn reverse_timeline_patch(
+        &self,
+        lines: &mut Vec<TimelineLine>,
+        patch: &str,
+        aliases: &BTreeMap<String, String>,
+        result_bytes: usize,
+        mut snapshot_bytes: usize,
+    ) -> Result<usize> {
+        let retained_after_bytes = snapshot_bytes;
+        for hunk in self.parse_timeline_patch(patch)?.into_iter().rev() {
+            self.check_progress()?;
+            let start = if hunk.new_count == 0 {
+                hunk.new_start
+            } else {
+                hunk.new_start - 1
+            };
+            let end = start
+                .checked_add(hunk.new_count)
+                .filter(|end| *end <= lines.len())
+                .ok_or_else(|| {
+                    history_error(
+                        std::io::ErrorKind::InvalidData,
+                        "timeline patch range does not match snapshot",
+                    )
+                })?;
+            if !lines[start..end]
+                .iter()
+                .zip(&hunk.after)
+                .all(|(line, expected)| line.raw == *expected)
+            {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "timeline patch contents do not match snapshot",
+                ));
+            }
+            let removed_bytes = lines[start..end]
+                .iter()
+                .fold(0usize, |bytes, line| bytes.saturating_add(line.bytes));
+            let mut previous_bytes = snapshot_bytes.saturating_sub(removed_bytes);
+            let mut previous = Vec::new();
+            for raw in hunk.before {
+                let line = self.parse_timeline_line(
+                    raw,
+                    aliases,
+                    result_bytes
+                        .saturating_add(retained_after_bytes)
+                        .saturating_add(previous_bytes),
+                )?;
+                previous_bytes = previous_bytes.saturating_add(line.bytes);
+                previous.push(line);
+            }
+            lines.splice(start..end, previous);
+            snapshot_bytes = previous_bytes;
+        }
+        self.check_timeline_result_size(
+            result_bytes
+                .saturating_add(retained_after_bytes)
+                .saturating_add(snapshot_bytes),
+        )?;
+        Ok(snapshot_bytes)
+    }
+
+    fn parse_timeline_patch<'a>(&self, patch: &'a str) -> Result<Vec<TimelineHunk<'a>>> {
+        let mut hunks = Vec::<TimelineHunk<'a>>::new();
+        let mut in_hunk = false;
+        let mut last_kind = None;
+        for raw in patch.split_inclusive('\n') {
+            self.check_progress()?;
+            let line = raw.trim_end_matches(['\r', '\n']);
+            if line.starts_with("diff --git ") {
+                in_hunk = false;
+            } else if let Some(header) = line.strip_prefix("@@ ") {
+                let header = header
+                    .split_once(" @@")
+                    .map(|(range, _)| range)
+                    .ok_or_else(|| {
+                        history_error(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid timeline hunk header",
+                        )
+                    })?;
+                let fields = header.split_whitespace().collect::<Vec<_>>();
+                let range = |field: &str, prefix: char| -> Result<(usize, usize)> {
+                    let value = field.strip_prefix(prefix).ok_or_else(|| {
+                        history_error(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid timeline hunk range",
+                        )
+                    })?;
+                    let (start, count) = value.split_once(',').unwrap_or((value, "1"));
+                    let start = start.parse::<usize>().map_err(|_| {
+                        history_error(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid timeline hunk start",
+                        )
+                    })?;
+                    let count = count.parse::<usize>().map_err(|_| {
+                        history_error(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid timeline hunk count",
+                        )
+                    })?;
+                    if start == 0 && count != 0 {
+                        return Err(history_error(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid timeline hunk position",
+                        ));
+                    }
+                    Ok((start, count))
+                };
+                if fields.len() != 2 {
+                    return Err(history_error(
+                        std::io::ErrorKind::InvalidData,
+                        "invalid timeline hunk ranges",
+                    ));
+                }
+                let (_, old_count) = range(fields[0], '-')?;
+                let (new_start, new_count) = range(fields[1], '+')?;
+                hunks.push(TimelineHunk {
+                    new_start,
+                    old_count,
+                    new_count,
+                    before: Vec::new(),
+                    after: Vec::new(),
+                });
+                in_hunk = true;
+                last_kind = None;
+            } else if line.starts_with("@@@") || line.starts_with("Binary files ") {
+                return Err(history_error(
+                    std::io::ErrorKind::InvalidData,
+                    "unsupported timeline diff",
+                ));
+            } else if in_hunk {
+                let hunk = hunks.last_mut().expect("active timeline hunk");
+                match raw.as_bytes().first() {
+                    Some(b'-') => {
+                        hunk.before.push(&raw[1..]);
+                        last_kind = Some('-');
+                    }
+                    Some(b'+') => {
+                        hunk.after.push(&raw[1..]);
+                        last_kind = Some('+');
+                    }
+                    Some(b' ') => {
+                        hunk.before.push(&raw[1..]);
+                        hunk.after.push(&raw[1..]);
+                        last_kind = Some(' ');
+                    }
+                    Some(b'\\') if line == "\\ No newline at end of file" => {
+                        let strip = |value: &mut &'a str| -> Result<()> {
+                            *value = value.strip_suffix('\n').ok_or_else(|| {
+                                history_error(
+                                    std::io::ErrorKind::InvalidData,
+                                    "invalid timeline end-of-file marker",
+                                )
+                            })?;
+                            Ok(())
+                        };
+                        if matches!(last_kind, Some('-' | ' ')) {
+                            strip(hunk.before.last_mut().expect("previous timeline removal"))?;
+                        }
+                        if matches!(last_kind, Some('+' | ' ')) {
+                            strip(hunk.after.last_mut().expect("previous timeline addition"))?;
+                        }
+                        if last_kind.is_none() {
+                            return Err(history_error(
+                                std::io::ErrorKind::InvalidData,
+                                "timeline end-of-file marker has no row",
+                            ));
+                        }
+                    }
+                    _ if line.is_empty() => {}
+                    _ => {
+                        return Err(history_error(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid timeline hunk body",
+                        ));
+                    }
+                }
+            }
+        }
+        if hunks
+            .iter()
+            .any(|hunk| hunk.before.len() != hunk.old_count || hunk.after.len() != hunk.new_count)
+        {
+            return Err(history_error(
+                std::io::ErrorKind::InvalidData,
+                "incomplete timeline hunk",
+            ));
+        }
+        Ok(hunks)
     }
 
     fn parse_commit_log(&self, output: &[u8]) -> Result<Vec<GitCommitRecord>> {
@@ -1436,6 +2389,698 @@ mod tests {
         temp
     }
 
+    fn commit_timeline_snapshot(
+        repo: &Path,
+        path: &str,
+        contents: &str,
+        date: &str,
+        message: &str,
+    ) -> String {
+        std::fs::write(repo.join(path), contents).expect("timeline snapshot");
+        run_history_git(repo, &["add", "--", path], date);
+        run_history_git(repo, &["commit", "-m", message], date);
+        run_history_git(repo, &["rev-parse", "HEAD"], date)
+            .trim()
+            .to_string()
+    }
+
+    fn timeline_kinds(history: &HistoryBeadCompat) -> Vec<&str> {
+        history
+            .events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn timeline_uses_record_transitions_not_messages_or_window_position() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        run_history_git(root, &["init"], "2024-01-01T00:00:00Z");
+        let path = "selected-export.jsonl";
+        let mut row = serde_json::json!({
+            "id": "Raw-ID", "title": "First", "status": "open", "future_field": 0,
+        });
+        commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{row}\n"),
+            "2024-01-01T00:00:00Z",
+            "closed Raw-ID",
+        );
+        row["future_field"] = serde_json::json!(1);
+        commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{row}\n"),
+            "2024-01-02T00:00:00Z",
+            "reopen close claimed Raw-ID",
+        );
+        row["status"] = serde_json::json!("in_progress");
+        let claimed = commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{row}\n"),
+            "2024-01-03T00:00:00Z",
+            "ordinary update",
+        );
+        row["status"] = serde_json::json!("closed");
+        commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{row}\n"),
+            "2024-01-04T00:00:00Z",
+            "rename documents",
+        );
+        row["status"] = serde_json::json!("open");
+        let reopened = commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{row}\n"),
+            "2024-01-05T00:00:00Z",
+            "finish work",
+        );
+        let reformatted = "{ \"status\": \"open\", \"id\": \"Raw-ID\", \"title\": \"First\", \"future_field\": 1 }\n";
+        commit_timeline_snapshot(
+            root,
+            path,
+            reformatted,
+            "2024-01-06T00:00:00Z",
+            "claim Raw-ID",
+        );
+        commit_timeline_snapshot(
+            root,
+            "notes.txt",
+            "documentation\n",
+            "2024-01-07T00:00:00Z",
+            "closed Raw-ID",
+        );
+        let head = run_history_git(root, &["rev-parse", "HEAD"], "2024-01-07T00:00:00Z");
+        run_history_git(
+            root,
+            &["config", "log.showRoot", "false"],
+            "2024-01-07T00:00:00Z",
+        );
+        run_history_git(
+            root,
+            &["config", "log.decorate", "full"],
+            "2024-01-07T00:00:00Z",
+        );
+        run_history_git(
+            root,
+            &["config", "log.showSignature", "true"],
+            "2024-01-07T00:00:00Z",
+        );
+        run_history_git(
+            root,
+            &["notes", "add", "-m", "Not timeline metadata", &reopened],
+            "2024-01-07T00:00:00Z",
+        );
+        let aliases = BTreeMap::from([("Raw-ID".to_string(), "workspace-Raw-ID".to_string())]);
+        let mut scan = GitHistoryScan::default();
+        let histories = scan
+            .load_timeline(root, Path::new(path), head.trim(), &aliases, 0, None)
+            .unwrap();
+        assert_eq!(
+            scan.commands_started, 4,
+            "one patch log, one pinned blob lookup/read, and genuine-root verification"
+        );
+        assert_eq!(histories.len(), 1);
+        let history = &histories["workspace-Raw-ID"];
+        assert_eq!(
+            timeline_kinds(history),
+            ["created", "modified", "claimed", "closed", "reopened"]
+        );
+        assert!(
+            history
+                .events
+                .iter()
+                .all(|event| is_full_commit_id(&event.commit_sha)
+                    && event.author == "History regression"
+                    && parse_rfc3339_utc(&event.timestamp).is_some())
+        );
+        assert_eq!(history.events[0].commit_message, "closed Raw-ID");
+        assert_eq!(history.events[4].commit_sha, reopened);
+        let commits = history.commits.as_ref().unwrap();
+        assert_eq!(commits.len(), 5);
+        assert!(
+            commits[1]
+                .field_changes
+                .iter()
+                .any(|change| change.field == "future_field")
+        );
+        let bounded = scan
+            .load_timeline(root, Path::new(path), head.trim(), &aliases, 2, None)
+            .unwrap();
+        assert_eq!(timeline_kinds(&bounded["workspace-Raw-ID"]), ["reopened"]);
+        assert!(bounded["workspace-Raw-ID"].milestones.created.is_none());
+        let as_of = scan
+            .load_timeline(root, Path::new(path), &claimed, &aliases, 0, None)
+            .unwrap();
+        assert_eq!(
+            timeline_kinds(&as_of["workspace-Raw-ID"]),
+            ["created", "modified", "claimed"]
+        );
+        let since = scan
+            .load_timeline(
+                root,
+                Path::new(path),
+                head.trim(),
+                &aliases,
+                0,
+                Some("2024-01-04T12:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(timeline_kinds(&since["workspace-Raw-ID"]), ["reopened"]);
+        let wrong_case = BTreeMap::from([("raw-id".to_string(), "wrong".to_string())]);
+        assert!(
+            scan.load_timeline(root, Path::new(path), head.trim(), &wrong_case, 0, None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeline_follows_renames_with_literal_paths_and_exact_source_scope() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        run_history_git(root, &["init"], "2024-01-01T00:00:00Z");
+        let old = "[literal]\tbefore.jsonl";
+        let new = "[literal]\nafter.jsonl";
+        let initial = format!(
+            "{}{}{}",
+            history_snapshot("bd-one", "open"),
+            history_snapshot("bd-two", "open"),
+            history_snapshot("bd-three", "open")
+        );
+        commit_timeline_snapshot(root, old, &initial, "2024-01-01T00:00:00Z", "seed source");
+        commit_timeline_snapshot(
+            root,
+            "literal-after.jsonl",
+            &history_snapshot("bd-one", "in_progress"),
+            "2024-01-02T00:00:00Z",
+            "decoy source",
+        );
+        run_history_git(root, &["mv", "--", old, new], "2024-01-03T00:00:00Z");
+        run_history_git(
+            root,
+            &["commit", "-m", "closed all issues (rename only)"],
+            "2024-01-03T00:00:00Z",
+        );
+        let updated = format!(
+            "{}{}{}",
+            history_snapshot("bd-one", "closed"),
+            history_snapshot("bd-two", "open"),
+            history_snapshot("bd-three", "open")
+        );
+        let head =
+            commit_timeline_snapshot(root, new, &updated, "2024-01-04T00:00:00Z", "update source");
+        let aliases = BTreeMap::from([("bd-one".to_string(), "workspace-bd-one".to_string())]);
+        let histories = GitHistoryScan::default()
+            .load_timeline(root, Path::new(new), &head, &aliases, 0, None)
+            .unwrap();
+        assert_eq!(histories.len(), 1);
+        assert_eq!(
+            timeline_kinds(&histories["workspace-bd-one"]),
+            ["created", "closed"]
+        );
+        assert_eq!(histories["workspace-bd-one"].events[1].commit_sha, head);
+    }
+
+    #[test]
+    fn timeline_compares_merges_to_first_parent_once() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        run_history_git(root, &["init"], "2024-01-01T00:00:00Z");
+        let path = "issues.jsonl";
+        commit_timeline_snapshot(
+            root,
+            path,
+            &history_snapshot("bd-one", "open"),
+            "2024-01-01T00:00:00Z",
+            "seed",
+        );
+        let main = run_history_git(
+            root,
+            &["symbolic-ref", "--short", "HEAD"],
+            "2024-01-01T00:00:00Z",
+        );
+        run_history_git(root, &["checkout", "-b", "side"], "2024-01-02T00:00:00Z");
+        let branch_commit = commit_timeline_snapshot(
+            root,
+            path,
+            &history_snapshot("bd-one", "closed"),
+            "2024-01-02T00:00:00Z",
+            "side update",
+        );
+        run_history_git(root, &["checkout", main.trim()], "2024-01-03T00:00:00Z");
+        commit_timeline_snapshot(
+            root,
+            "notes.txt",
+            "main branch work\n",
+            "2024-01-03T00:00:00Z",
+            "main work",
+        );
+        run_history_git(
+            root,
+            &["merge", "--no-ff", "-m", "reopen bd-one", "side"],
+            "2024-01-04T00:00:00Z",
+        );
+        let merge = run_history_git(root, &["rev-parse", "HEAD"], "2024-01-04T00:00:00Z");
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let histories = GitHistoryScan::default()
+            .load_timeline(root, Path::new(path), merge.trim(), &aliases, 0, None)
+            .unwrap();
+        let history = &histories["bd-one"];
+        assert_eq!(timeline_kinds(history), ["created", "closed"]);
+        assert_eq!(history.events[1].commit_sha, merge.trim());
+        assert!(
+            history
+                .events
+                .iter()
+                .all(|event| event.commit_sha != branch_commit)
+        );
+    }
+
+    #[test]
+    fn timeline_removal_is_not_a_closure_and_untracked_sources_are_empty() {
+        let repo = small_history_repo();
+        let head = commit_timeline_snapshot(
+            repo.path(),
+            ".beads/issues.jsonl",
+            "",
+            "2024-03-01T00:00:00Z",
+            "close missing record",
+        );
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let mut scan = GitHistoryScan::default();
+        let histories = scan
+            .load_timeline(
+                repo.path(),
+                Path::new(".beads/issues.jsonl"),
+                &head,
+                &aliases,
+                0,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            timeline_kinds(&histories["bd-one"]),
+            ["created", "closed", "removed"]
+        );
+        assert!(
+            scan.load_timeline(
+                repo.path(),
+                Path::new("untracked.jsonl"),
+                &head,
+                &aliases,
+                0,
+                None
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn timeline_rejects_malformed_selected_rows_without_partial_results() {
+        let repo = small_history_repo();
+        let head = commit_timeline_snapshot(
+            repo.path(),
+            ".beads/issues.jsonl",
+            "{\"id\":\"bd-one\", broken}\n",
+            "2024-03-01T00:00:00Z",
+            "bad snapshot",
+        );
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let mut scan = GitHistoryScan::default();
+        let error = scan
+            .load_timeline(
+                repo.path(),
+                Path::new(".beads/issues.jsonl"),
+                &head,
+                &aliases,
+                0,
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid timeline JSONL row"));
+        assert_eq!(scan.result_bytes, 0);
+        let bad_status = "{\"id\":\"bd-one\",\"status\":42}\n";
+        assert!(
+            scan.parse_timeline_line(bad_status, &aliases, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid timeline issue status")
+        );
+    }
+
+    #[test]
+    fn timeline_append_updates_compaction_and_missing_final_newlines_match_loader() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        run_history_git(root, &["init"], "2024-01-01T00:00:00Z");
+        run_history_git(
+            root,
+            &["config", "core.autocrlf", "false"],
+            "2024-01-01T00:00:00Z",
+        );
+        let path = "issues.jsonl";
+        let open = history_snapshot("bd-one", "open");
+        let closed = history_snapshot("bd-one", "closed");
+        commit_timeline_snapshot(
+            root,
+            path,
+            open.trim_end_matches('\n'),
+            "2024-01-01T00:00:00Z",
+            "seed",
+        );
+        let closed_sha = commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{open}{}", closed.trim_end_matches('\n')),
+            "2024-01-02T00:00:00Z",
+            "append replacement",
+        );
+        commit_timeline_snapshot(
+            root,
+            path,
+            closed.trim_end_matches('\n'),
+            "2024-01-03T00:00:00Z",
+            "compact old record",
+        );
+        let reopened_sha = commit_timeline_snapshot(
+            root,
+            path,
+            &format!("{closed}{}", open.trim_end_matches('\n')),
+            "2024-01-04T00:00:00Z",
+            "append open replacement",
+        );
+        commit_timeline_snapshot(
+            root,
+            path,
+            open.trim_end_matches('\n'),
+            "2024-01-05T00:00:00Z",
+            "compact again",
+        );
+        let head = commit_timeline_snapshot(
+            root,
+            path,
+            &open.replace('\n', "\r\n"),
+            "2024-01-06T00:00:00Z",
+            "CRLF formatting only",
+        );
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let histories = GitHistoryScan::default()
+            .load_timeline(root, Path::new(path), &head, &aliases, 0, None)
+            .unwrap();
+        let history = &histories["bd-one"];
+        assert_eq!(timeline_kinds(history), ["created", "closed", "reopened"]);
+        assert_eq!(history.events[1].commit_sha, closed_sha);
+        assert_eq!(history.events[2].commit_sha, reopened_sha);
+    }
+
+    #[test]
+    fn timeline_since_filter_keeps_intermediate_reverse_patches_with_clock_skew() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        run_history_git(root, &["init"], "2024-01-01T00:00:00Z");
+        let path = "issues.jsonl";
+        commit_timeline_snapshot(
+            root,
+            path,
+            &history_snapshot("bd-one", "open"),
+            "2024-01-01T00:00:00Z",
+            "seed",
+        );
+        let claimed = commit_timeline_snapshot(
+            root,
+            path,
+            &history_snapshot("bd-one", "in_progress"),
+            "2024-01-03T00:00:00Z",
+            "claim",
+        );
+        let head = commit_timeline_snapshot(
+            root,
+            path,
+            &history_snapshot("bd-one", "closed"),
+            "2024-01-02T00:00:00Z",
+            "clock moved back",
+        );
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let histories = GitHistoryScan::default()
+            .load_timeline(
+                root,
+                Path::new(path),
+                &head,
+                &aliases,
+                2,
+                Some("2024-01-02T12:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(timeline_kinds(&histories["bd-one"]), ["claimed"]);
+        assert_eq!(histories["bd-one"].events[0].commit_sha, claimed);
+    }
+
+    #[test]
+    fn timeline_reverse_patches_validate_ranges_counts_and_exact_contents() {
+        let scan = GitHistoryScan::default();
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let row = history_snapshot("bd-one", "open");
+        let line = scan.parse_timeline_line(&row, &aliases, 0).unwrap();
+        let bytes = line.bytes;
+        let mut lines = vec![line];
+        assert!(
+            scan.parse_timeline_patch("@@ -0,0 +1,2 @@\n+one\n")
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete timeline hunk")
+        );
+        let wrong = format!(
+            "@@ -1 +1 @@\n-{}+{}",
+            row,
+            history_snapshot("bd-one", "closed")
+        );
+        assert!(
+            scan.reverse_timeline_patch(&mut lines, &wrong, &aliases, 0, bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("contents do not match snapshot")
+        );
+        assert_eq!(lines[0].raw, row);
+        assert!(scan.parse_timeline_patch("@@ -0 +1 @@\n-x\n+y\n").is_err());
+    }
+
+    #[test]
+    fn timeline_does_not_invent_creation_at_a_shallow_boundary() {
+        let repo = small_history_repo();
+        let root = repo.path();
+        let boundary = run_history_git(root, &["rev-parse", "HEAD"], "2024-02-01T00:00:00Z");
+        // Model a real shallow clone without network access. Git hides this
+        // commit's parents, but its raw object still records them.
+        std::fs::write(root.join(".git/shallow"), &boundary).unwrap();
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let mut scan = GitHistoryScan::default();
+        assert!(
+            scan.load_timeline(
+                root,
+                Path::new(".beads/issues.jsonl"),
+                boundary.trim(),
+                &aliases,
+                0,
+                None
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let head = commit_timeline_snapshot(
+            root,
+            ".beads/issues.jsonl",
+            &history_snapshot("bd-one", "open"),
+            "2024-03-01T00:00:00Z",
+            "new snapshot",
+        );
+        let histories = scan
+            .load_timeline(
+                root,
+                Path::new(".beads/issues.jsonl"),
+                &head,
+                &aliases,
+                0,
+                None,
+            )
+            .unwrap();
+        assert_eq!(timeline_kinds(&histories["bd-one"]), ["reopened"]);
+        assert!(histories["bd-one"].milestones.created.is_none());
+        assert!(histories["bd-one"].milestones.closed.is_none());
+    }
+
+    #[test]
+    fn timeline_shares_output_result_and_cancellation_budgets() {
+        let repo = small_history_repo();
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        let mut scan = GitHistoryScan::default();
+        let head = scan.resolve_revision(repo.path(), "HEAD").unwrap();
+        let histories = scan
+            .load_timeline(
+                repo.path(),
+                Path::new(".beads/issues.jsonl"),
+                &head,
+                &aliases,
+                1,
+                None,
+            )
+            .unwrap();
+        assert_eq!(timeline_kinds(&histories["bd-one"]), ["closed"]);
+        assert!(histories["bd-one"].milestones.created.is_none());
+        let retained_bytes = scan.result_bytes;
+        assert!(retained_bytes > 0);
+        scan.limits.max_output = scan.output_bytes;
+        let error = scan
+            .load_timeline(
+                repo.path(),
+                Path::new(".beads/issues.jsonl"),
+                &head,
+                &aliases,
+                1,
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("request output exceeded"));
+        assert_eq!(scan.result_bytes, retained_bytes);
+        let mut tiny = GitHistoryScan::default();
+        tiny.limits.max_result_bytes = 1;
+        let error = tiny
+            .load_timeline(
+                repo.path(),
+                Path::new(".beads/issues.jsonl"),
+                &head,
+                &aliases,
+                1,
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("timeline data exceeded"));
+        assert_eq!(tiny.result_bytes, 0);
+        let mut cancelled = GitHistoryScan::default();
+        cancelled.cancellation_token().cancel();
+        assert!(
+            cancelled
+                .load_timeline(
+                    repo.path(),
+                    Path::new(".beads/issues.jsonl"),
+                    &head,
+                    &aliases,
+                    1,
+                    None
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("request cancelled")
+        );
+        assert_eq!(cancelled.commands_started, 0);
+    }
+
+    #[test]
+    fn timeline_revision_and_source_are_validated_without_fallback() {
+        let repo = small_history_repo();
+        let mut scan = GitHistoryScan::default();
+        let head = scan.resolve_revision(repo.path(), "HEAD").unwrap();
+        assert!(is_full_commit_id(&head));
+        assert!(
+            scan.resolve_revision(repo.path(), "missing-revision")
+                .is_err()
+        );
+        assert!(scan.resolve_revision(repo.path(), "--help").is_err());
+        let aliases = BTreeMap::from([("bd-one".to_string(), "bd-one".to_string())]);
+        assert!(
+            scan.load_timeline(
+                repo.path(),
+                Path::new("../issues.jsonl"),
+                &head,
+                &aliases,
+                1,
+                None
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("repository-relative")
+        );
+        assert!(
+            scan.load_timeline(
+                repo.path(),
+                Path::new(".beads/issues.jsonl"),
+                "missing-revision",
+                &aliases,
+                1,
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn timeline_source_lookup_is_revision_pinned_and_checks_size_before_reading() {
+        let repo = small_history_repo();
+        let root = repo.path();
+        let mut scan = GitHistoryScan::default();
+        let previous = scan.resolve_revision(root, "HEAD").unwrap();
+        let metadata = "{\"jsonl_export\":\"issues.jsonl\"}\n";
+        let head = commit_timeline_snapshot(
+            root,
+            ".beads/metadata.json",
+            metadata,
+            "2024-03-01T00:00:00Z",
+            "select source",
+        );
+        assert!(
+            scan.timeline_blob(root, Path::new(".beads/metadata.json"), &previous, 1024)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            scan.timeline_blob(root, Path::new(".beads/metadata.json"), &head, 1024)
+                .unwrap()
+                .unwrap(),
+            metadata.as_bytes()
+        );
+        let entries = scan
+            .timeline_tree_entries(root, Path::new("./.beads/"), &head)
+            .unwrap();
+        assert!(entries.contains(&("metadata.json".to_string(), metadata.len() as u64)));
+        assert!(entries.contains(&(
+            "issues.jsonl".to_string(),
+            history_snapshot("bd-one", "closed").len() as u64
+        )));
+        assert_eq!(
+            scan.timeline_tree_entries(root, Path::new("absent"), &head)
+                .unwrap(),
+            Vec::<(String, u64)>::new()
+        );
+        assert_eq!(
+            scan.timeline_tree_entries(root, Path::new("."), &head)
+                .unwrap(),
+            Vec::<(String, u64)>::new()
+        );
+        let started = scan.commands_started;
+        assert!(
+            scan.timeline_blob(root, Path::new(".beads/metadata.json"), &head, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("timeline blob exceeded 1 bytes")
+        );
+        assert_eq!(
+            scan.commands_started - started,
+            1,
+            "oversized blobs must not be read"
+        );
+        assert!(
+            scan.timeline_blob(root, Path::new("../metadata.json"), &head, 1024)
+                .is_err()
+        );
+    }
+
     #[test]
     fn bounded_history_reads_each_commit_diff_once_and_preserves_correlations() {
         let temp = tempfile::tempdir().expect("history repository");
@@ -1949,6 +3594,53 @@ mod tests {
             .expect("fake Git script");
         assert!(writer.wait().expect("script writer").success());
         path.into_os_string()
+    }
+
+    #[test]
+    fn bounded_history_missing_git_has_a_typed_unavailable_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut scan = GitHistoryScan::default();
+        scan.git_program = temp.path().join("missing-git-executable").into_os_string();
+        let error = scan.repository_root(temp.path()).unwrap_err();
+        assert!(
+            matches!(&error, BvrError::GitUnavailable { operation, source }
+            if operation == "git rev-parse --show-toplevel" && source.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert_eq!(scan.commands_started, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_history_failed_git_is_not_unavailable_even_with_missing_file_diagnostic() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut scan = GitHistoryScan::default();
+        scan.git_program = fake_history_git(
+            temp.path(),
+            "printf '%s\\n' 'could not start git rev-parse: No such file or directory' >&2\nexit 128",
+        );
+        let error = scan.repository_root(temp.path()).unwrap_err();
+        assert!(
+            matches!(&error, BvrError::Io(source) if source.kind() == std::io::ErrorKind::Other)
+        );
+        assert!(error.to_string().contains("No such file or directory"));
+        assert_eq!(scan.commands_started, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_history_non_not_found_spawn_failure_remains_fatal() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("not-executable");
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut scan = GitHistoryScan::default();
+        scan.git_program = path.into_os_string();
+        let error = scan.repository_root(temp.path()).unwrap_err();
+        assert!(
+            matches!(&error, BvrError::Io(source) if source.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+        assert_eq!(scan.commands_started, 0);
     }
 
     #[cfg(unix)]
