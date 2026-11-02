@@ -5,8 +5,8 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -29,6 +29,7 @@ const DEFAULT_PREVIEW_PORT: u16 = 9000;
 const MAX_PREVIEW_PORT_ATTEMPTS: u16 = 32;
 const PREVIEW_MAX_REQUESTS_ENV: &str = "BVR_PREVIEW_MAX_REQUESTS";
 const PREVIEW_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const PREVIEW_MAX_CONNECTIONS: usize = 8;
 const PREVIEW_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const PREVIEW_MAX_HEADER_BYTES: usize = 8192;
 const PREVIEW_STATUS_PATH: &str = "/__preview__/status";
@@ -459,54 +460,14 @@ pub fn run_preview_server(bundle_dir: &Path, live_reload: bool) -> Result<()> {
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .filter(|value| *value > 0);
-    let mut served = 0usize;
-
-    let shutdown_reason = loop {
-        if shutdown_requested.load(Ordering::Relaxed) {
-            break PreviewShutdownReason::ShutdownSignal;
-        }
-
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let result = handle_preview_connection(
-                    stream,
-                    bundle_dir,
-                    live_reload,
-                    port,
-                    &shutdown_requested,
-                );
-                if shutdown_requested.load(Ordering::Relaxed) {
-                    break PreviewShutdownReason::ShutdownSignal;
-                }
-                match result {
-                    Ok(count_as_request) => {
-                        if count_as_request {
-                            served = served.saturating_add(1);
-                            if max_requests.is_some_and(|limit| served >= limit) {
-                                break PreviewShutdownReason::RequestLimitReached;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("warning: preview request failed: {error}");
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(PREVIEW_ACCEPT_POLL_INTERVAL);
-            }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
-                ) => {}
-            Err(error) if shutdown_requested.load(Ordering::Relaxed) => {
-                eprintln!("warning: preview accept loop stopped after shutdown signal: {error}");
-                break PreviewShutdownReason::ShutdownSignal;
-            }
-            Err(error) => return Err(BvrError::Io(error)),
-        }
-    };
+    let shutdown_reason = serve_preview_connections(
+        &listener,
+        bundle_dir,
+        live_reload,
+        port,
+        &shutdown_requested,
+        max_requests,
+    )?;
 
     println!(
         "Preview server stopped: {}.",
@@ -515,46 +476,113 @@ pub fn run_preview_server(bundle_dir: &Path, live_reload: bool) -> Result<()> {
     Ok(())
 }
 
-fn handle_preview_connection(
-    stream: TcpStream,
+fn serve_preview_connections(
+    listener: &TcpListener,
     bundle_dir: &Path,
     live_reload: bool,
     port: u16,
     shutdown_requested: &AtomicBool,
-) -> Result<bool> {
-    // Keep a handle to interrupt blocking I/O on shutdown. A socket timeout is
-    // per operation, so a client making intermittent progress could otherwise
-    // keep write_all (and the serial accept loop) busy indefinitely.
-    let interrupt = stream.try_clone()?;
+    max_requests: Option<usize>,
+) -> Result<PreviewShutdownReason> {
     thread::scope(|scope| {
-        let (completed, completion) = mpsc::sync_channel(1);
-        let request = thread::Builder::new()
-            .name("bvr-preview-request".to_string())
-            .spawn_scoped(scope, move || {
-                let result = handle_preview_request(stream, bundle_dir, live_reload, port);
-                let _ = completed.send(());
-                result
-            })?;
-
+        let mut connections = PreviewConnections::default();
+        let mut served = 0usize;
         loop {
             if shutdown_requested.load(Ordering::Relaxed) {
-                // The peer may already have closed. Either way, join the worker
-                // before returning so no request outlives the preview server.
-                let _ = interrupt.shutdown(Shutdown::Both);
-                break;
+                return Ok(PreviewShutdownReason::ShutdownSignal);
             }
-            match completion.recv_timeout(PREVIEW_ACCEPT_POLL_INTERVAL) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            served = served.saturating_add(connections.reap_finished());
+            if max_requests.is_some_and(|limit| served >= limit) {
+                return Ok(PreviewShutdownReason::RequestLimitReached);
+            }
+
+            // Reserve one remaining request for every active worker. Empty
+            // preconnects and failed transfers release their reservation when
+            // reaped, so concurrent completions cannot overshoot the limit.
+            let reserved = served.saturating_add(connections.active.len());
+            if connections.active.len() >= PREVIEW_MAX_CONNECTIONS
+                || max_requests.is_some_and(|limit| reserved >= limit)
+            {
+                thread::sleep(PREVIEW_ACCEPT_POLL_INTERVAL);
+                continue;
+            }
+
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let interrupt = stream.try_clone()?;
+                    let request = thread::Builder::new()
+                        .name("bvr-preview-request".to_string())
+                        .spawn_scoped(scope, move || {
+                            handle_preview_request(stream, bundle_dir, live_reload, port)
+                        })?;
+                    connections
+                        .active
+                        .push(PreviewConnection { interrupt, request });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(PREVIEW_ACCEPT_POLL_INTERVAL);
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+                    ) => {}
+                Err(_) if shutdown_requested.load(Ordering::Relaxed) => {
+                    return Ok(PreviewShutdownReason::ShutdownSignal);
+                }
+                Err(error) => return Err(BvrError::Io(error)),
             }
         }
-
-        request.join().unwrap_or_else(|_| {
-            Err(BvrError::Io(std::io::Error::other(
-                "preview request worker panicked",
-            )))
-        })
     })
+}
+
+struct PreviewConnection<'scope> {
+    interrupt: TcpStream,
+    request: thread::ScopedJoinHandle<'scope, Result<bool>>,
+}
+
+#[derive(Default)]
+struct PreviewConnections<'scope> {
+    active: Vec<PreviewConnection<'scope>>,
+}
+
+impl PreviewConnections<'_> {
+    fn reap_finished(&mut self) -> usize {
+        let mut served = 0;
+        let mut index = 0;
+        while index < self.active.len() {
+            if !self.active[index].request.is_finished() {
+                index += 1;
+                continue;
+            }
+            let connection = self.active.swap_remove(index);
+            let result = connection.request.join().unwrap_or_else(|_| {
+                Err(BvrError::Io(std::io::Error::other(
+                    "preview request worker panicked",
+                )))
+            });
+            match result {
+                Ok(true) => served += 1,
+                Ok(false) => {}
+                Err(error) => eprintln!("warning: preview request failed: {error}"),
+            }
+        }
+        served
+    }
+}
+
+impl Drop for PreviewConnections<'_> {
+    fn drop(&mut self) {
+        // Cancel every socket before joining any worker. This runs on signals
+        // and all error exits, including failed accepts, clones, or spawns.
+        // Per-write timeouts alone do not bound a slowly progressing transfer.
+        for connection in &self.active {
+            let _ = connection.interrupt.shutdown(Shutdown::Both);
+        }
+        for connection in self.active.drain(..) {
+            let _ = connection.request.join();
+        }
+    }
 }
 
 fn bind_preview_listener() -> Result<(TcpListener, u16)> {
@@ -689,6 +717,9 @@ fn handle_preview_request(
         return Ok(true);
     };
 
+    // Capture the complete asset before advertising success: a watched export
+    // can rewrite the source while a slow peer is still receiving its body.
+    // The connection cap bounds the number of simultaneous response snapshots.
     let mut body = fs::read(&file_path)?;
     let mime = mime_type_for_path(&file_path);
     if live_reload && mime.starts_with("text/html") {
@@ -732,7 +763,7 @@ fn read_preview_headers(
             });
         }
         // A peer sending fragments must share one budget; a fresh five-second
-        // timeout for every read would let it monopolize the serial server.
+        // timeout for every read would let it occupy a worker indefinitely.
         stream.set_read_timeout(Some(remaining))?;
         let previous_len = used;
         match stream.read(&mut buffer[used..]) {
@@ -1289,6 +1320,8 @@ init().catch((error) => {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
     use tempfile::tempdir;
 

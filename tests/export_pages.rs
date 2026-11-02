@@ -2061,13 +2061,19 @@ mod preview_transfers {
 
     impl PreviewProcess {
         fn start(bundle: &Path, max_requests: usize) -> Self {
+            Self::start_with_live_reload(bundle, max_requests, false)
+        }
+
+        fn start_with_live_reload(bundle: &Path, max_requests: usize, live_reload: bool) -> Self {
             let probe = TcpListener::bind(("127.0.0.1", 0)).expect("reserve preview port");
             let port = probe.local_addr().expect("preview address").port();
             drop(probe);
-            let mut child = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("bvr"))
-                .arg("--preview-pages")
-                .arg(bundle)
-                .arg("--no-live-reload")
+            let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin!("bvr"));
+            command.arg("--preview-pages").arg(bundle);
+            if !live_reload {
+                command.arg("--no-live-reload");
+            }
+            let mut child = command
                 .env("BVR_PREVIEW_PORT", port.to_string())
                 .env("BVR_PREVIEW_MAX_REQUESTS", max_requests.to_string())
                 .env("BV_NO_BROWSER", "1")
@@ -2304,8 +2310,12 @@ mod preview_transfers {
     }
 
     fn expect_no_response(stream: &mut TcpStream) {
+        expect_no_response_for(stream, Duration::from_millis(100));
+    }
+
+    fn expect_no_response_for(stream: &mut TcpStream, duration: Duration) {
         stream
-            .set_read_timeout(Some(Duration::from_millis(100)))
+            .set_read_timeout(Some(duration))
             .expect("short response probe timeout");
         let mut byte = [0];
         let result = stream.read(&mut byte);
@@ -2315,7 +2325,7 @@ mod preview_transfers {
         assert!(
             matches!(result, Err(ref error)
                 if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
-            "preview replied before the request headers were complete: {result:?}, byte={byte:?}"
+            "preview replied before the request could be served: {result:?}, byte={byte:?}"
         );
     }
 
@@ -2582,8 +2592,8 @@ mod preview_transfers {
         let mut server = PreviewProcess::start(temp.path(), 2);
         let mut first_stream = request(server.port, "GET", "/chunks/first.bin");
         let mut second_stream = request(server.port, "GET", "/chunks/second.bin");
-        // The server intentionally serves serially. Both clients remain live
-        // and drain independently, so queued browser requests must still finish.
+        // Both clients remain live and drain independently, so overlapping
+        // browser requests must each receive their complete response.
         thread::scope(|scope| {
             let second_response = scope.spawn(|| read_response(&mut second_stream, false, false));
             thread::sleep(Duration::from_millis(300));
@@ -2594,6 +2604,231 @@ mod preview_transfers {
                 .assert_body(&second);
         });
         server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_serves_assets_status_and_reload_while_clients_wait() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = payload(32 * 1024 + 17);
+        fs::write(temp.path().join("chunks/available.bin"), &expected).expect("write asset");
+        // Reserve room for both waiting clients plus three independent requests.
+        // The empty connection does not count; completing the partial request
+        // and a final HEAD request reach the limit of five successful requests.
+        let mut server = PreviewProcess::start_with_live_reload(temp.path(), 5, true);
+        let idle = connect(server.port);
+        let mut partial = connect(server.port);
+        partial
+            .write_all(b"GET /chunks/available.bin HTTP/1.1\r\nHost: localhost\r\n")
+            .expect("send incomplete request");
+        expect_no_response(&mut partial);
+
+        let started = Instant::now();
+        let mut asset = request(server.port, "GET", "/chunks/available.bin");
+        asset
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("asset response timeout");
+        read_response(&mut asset, false, false).assert_body(&expected);
+
+        let mut status = request(server.port, "GET", "/__preview__/status");
+        status
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("status response timeout");
+        let status = read_response(&mut status, false, false);
+        let status: serde_json::Value =
+            serde_json::from_slice(&status.body).expect("status response JSON");
+        assert_eq!(status["status"], "running");
+        assert_eq!(status["live_reload"], true);
+        assert_eq!(status["reload_mode"], "poll");
+
+        let mut reload = request(server.port, "GET", "/.bvr/livereload");
+        reload
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("reload response timeout");
+        let reload = read_response(&mut reload, false, false);
+        assert_eq!(reload.body.len(), 64, "reload fingerprint length");
+        assert!(reload.body.iter().all(u8::is_ascii_hexdigit));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "waiting clients held up independent requests: {:?}",
+            started.elapsed()
+        );
+
+        drop(idle);
+        partial
+            .write_all(b"\r\n")
+            .expect("complete waiting request");
+        read_response(&mut partial, false, false).assert_body(&expected);
+        let head = read_response(
+            &mut request(server.port, "HEAD", "/chunks/available.bin"),
+            true,
+            false,
+        );
+        assert_eq!(head.header("Content-Length"), expected.len().to_string());
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_serves_other_requests_during_a_stalled_large_response() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let first = payload(16 * 1024 * 1024);
+        let second = payload(4 * 1024 * 1024 + 17);
+        fs::write(temp.path().join("chunks/stalled.bin"), &first).expect("first asset");
+        fs::write(temp.path().join("chunks/independent.bin"), &second).expect("second asset");
+        let mut server = PreviewProcess::start(temp.path(), 3);
+        let mut stalled = request(server.port, "GET", "/chunks/stalled.bin");
+        let mut byte = [0];
+        assert_eq!(stalled.peek(&mut byte).expect("first response began"), 1);
+        // A watch rebuild may overwrite the same file while this reader is
+        // stalled. The response that already began must keep its original bytes.
+        fs::write(
+            temp.path().join("chunks/stalled.bin"),
+            vec![0xa5; first.len()],
+        )
+        .expect("rewrite asset during transfer");
+
+        // Do not drain the first response: it is larger than normal TCP socket
+        // buffers. Other workers must finish without waiting for that reader.
+        let started = Instant::now();
+        let mut independent = request(server.port, "GET", "/chunks/independent.bin");
+        independent
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("independent response timeout");
+        read_response(&mut independent, false, false).assert_body(&second);
+        let mut status = request(server.port, "GET", "/__preview__/status");
+        status
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("status response timeout");
+        let status = read_response(&mut status, false, false);
+        let status: serde_json::Value =
+            serde_json::from_slice(&status.body).expect("status response JSON");
+        assert_eq!(status["status"], "running");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "stalled response held up independent requests: {:?}",
+            started.elapsed()
+        );
+
+        read_response(&mut stalled, false, false).assert_body(&first);
+        server.finish_requests();
+    }
+
+    #[test]
+    fn preview_pages_reserves_request_limit_slots_and_releases_failed_connections() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = fs::read(temp.path().join("index.html")).expect("index");
+        fs::File::create(temp.path().join("large.bin"))
+            .expect("large file")
+            .set_len(16 * 1024 * 1024)
+            .expect("large file size");
+
+        for interrupted in [false, true] {
+            let mut server = PreviewProcess::start(temp.path(), 1);
+            let mut occupied = if interrupted {
+                request(server.port, "GET", "/large.bin")
+            } else {
+                connect(server.port)
+            };
+            if interrupted {
+                read_headers(&mut occupied);
+            }
+            let mut queued = [
+                request(server.port, "GET", "/"),
+                request(server.port, "GET", "/"),
+            ];
+            for client in &mut queued {
+                expect_no_response(client);
+            }
+
+            occupied
+                .shutdown(Shutdown::Both)
+                .expect("release reserved connection");
+            drop(occupied);
+            let stderr = server.finish("request limit reached", Duration::from_secs(5));
+            assert_eq!(
+                stderr.contains("preview request failed"),
+                interrupted,
+                "unexpected connection outcome: {stderr}"
+            );
+
+            // One queued request may use the released reservation. The other
+            // stays unaccepted and ends with EOF/reset when the listener closes.
+            let mut delivered = 0;
+            for client in &mut queued {
+                client
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("closed connection timeout");
+                let mut byte = [0];
+                match client.peek(&mut byte) {
+                    Ok(0) => {}
+                    Ok(_) => {
+                        read_response(client, false, false).assert_body(&expected);
+                        delivered += 1;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                        ) => {}
+                    Err(error) => panic!("queued request did not finish: {error}"),
+                }
+            }
+            assert_eq!(
+                delivered, 1,
+                "request limit must allow exactly one completed response"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_pages_bounds_active_workers_and_interrupts_all_on_sigterm() {
+        let _guard = preview_test_guard();
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_bundle(temp.path());
+        let expected = fs::read(temp.path().join("index.html")).expect("index");
+        fs::File::create(temp.path().join("large.bin"))
+            .expect("large file")
+            .set_len(16 * 1024 * 1024)
+            .expect("large file size");
+        let mut server = PreviewProcess::start(temp.path(), 0);
+        let mut blocked = Vec::new();
+        for _ in 0..8 {
+            let mut writer = request(server.port, "GET", "/large.bin");
+            // Header arrival acknowledges admission to a worker, while the
+            // undrained body keeps that worker occupied under backpressure.
+            read_headers(&mut writer);
+            blocked.push(writer);
+        }
+
+        let mut ninth = request(server.port, "GET", "/");
+        expect_no_response_for(&mut ninth, Duration::from_millis(500));
+        let released = blocked.pop().expect("one occupied worker");
+        released
+            .shutdown(Shutdown::Both)
+            .expect("release worker capacity");
+        drop(released);
+        ninth
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("released capacity timeout");
+        read_response(&mut ninth, false, false).assert_body(&expected);
+
+        let mut partial = connect(server.port);
+        partial
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n")
+            .expect("occupy remaining worker with incomplete headers");
+        expect_no_response(&mut partial);
+        server.terminate();
+        // Keep all peers open until shutdown has interrupted and joined both
+        // the seven blocked writers and the incomplete request reader.
+        drop(blocked);
+        drop(partial);
     }
 
     #[test]
