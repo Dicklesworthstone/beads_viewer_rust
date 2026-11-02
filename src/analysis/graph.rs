@@ -1204,29 +1204,7 @@ impl IssueGraph {
             })
             .collect::<Vec<_>>();
 
-        let mut disc = vec![0usize; n];
-        let mut low = vec![0usize; n];
-        let mut parent = vec![usize::MAX; n];
-        let mut visited = vec![false; n];
-        let mut is_ap = vec![false; n];
-        let mut time = 0usize;
-
-        for node in 0..n {
-            if !visited[node] {
-                tarjan_articulation_dfs(
-                    node,
-                    &neighbors,
-                    &mut disc,
-                    &mut low,
-                    &mut parent,
-                    &mut visited,
-                    &mut is_ap,
-                    &mut time,
-                );
-            }
-        }
-
-        is_ap
+        tarjan_articulation_points(&neighbors)
             .iter()
             .enumerate()
             .filter_map(|(index, &value)| {
@@ -1350,42 +1328,74 @@ fn normalize_l2(values: &mut [f64]) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn tarjan_articulation_dfs(
-    node: usize,
-    neighbors: &[Vec<usize>],
-    disc: &mut [usize],
-    low: &mut [usize],
-    parent: &mut [usize],
-    visited: &mut [bool],
-    is_ap: &mut [bool],
-    time: &mut usize,
-) {
-    visited[node] = true;
-    *time = time.saturating_add(1);
-    disc[node] = *time;
-    low[node] = *time;
-    let mut children = 0usize;
+fn tarjan_articulation_points(neighbors: &[Vec<usize>]) -> Vec<bool> {
+    struct Frame {
+        node: usize,
+        next_neighbor: usize,
+        children: usize,
+    }
 
-    for &next in &neighbors[node] {
-        if !visited[next] {
-            children = children.saturating_add(1);
-            parent[next] = node;
+    let n = neighbors.len();
+    let mut disc = vec![0usize; n];
+    let mut low = vec![0usize; n];
+    let mut parent = vec![usize::MAX; n];
+    let mut is_ap = vec![false; n];
+    let mut time = 0usize;
+    let mut stack = Vec::<Frame>::new();
 
-            tarjan_articulation_dfs(next, neighbors, disc, low, parent, visited, is_ap, time);
+    for root in 0..n {
+        if disc[root] != 0 {
+            continue;
+        }
+        time = time.saturating_add(1);
+        disc[root] = time;
+        low[root] = time;
+        stack.push(Frame {
+            node: root,
+            next_neighbor: 0,
+            children: 0,
+        });
 
-            low[node] = low[node].min(low[next]);
-
-            if parent[node] == usize::MAX && children > 1 {
-                is_ap[node] = true;
+        // A dependency chain can be arbitrarily deep. Keep DFS frames on the
+        // heap and apply child low-link values only when their frames finish,
+        // exactly where recursive traversal would return to the parent.
+        while let Some(frame) = stack.last_mut() {
+            let node = frame.node;
+            if let Some(&next) = neighbors[node].get(frame.next_neighbor) {
+                frame.next_neighbor += 1;
+                if disc[next] == 0 {
+                    frame.children += 1;
+                    parent[next] = node;
+                    time = time.saturating_add(1);
+                    disc[next] = time;
+                    low[next] = time;
+                    stack.push(Frame {
+                        node: next,
+                        next_neighbor: 0,
+                        children: 0,
+                    });
+                } else if next != parent[node] {
+                    low[node] = low[node].min(disc[next]);
+                }
+            } else {
+                let children = frame.children;
+                stack.pop();
+                let parent_node = parent[node];
+                if parent_node == usize::MAX {
+                    // A root is a cut point only if DFS found multiple child
+                    // subtrees; its ordinary undirected degree is not enough.
+                    is_ap[node] = children > 1;
+                } else {
+                    low[parent_node] = low[parent_node].min(low[node]);
+                    if parent[parent_node] != usize::MAX && low[node] >= disc[parent_node] {
+                        is_ap[parent_node] = true;
+                    }
+                }
             }
-            if parent[node] != usize::MAX && low[next] >= disc[node] {
-                is_ap[node] = true;
-            }
-        } else if next != parent[node] {
-            low[node] = low[node].min(disc[next]);
         }
     }
+
+    is_ap
 }
 
 #[cfg(test)]
@@ -1520,6 +1530,141 @@ mod tests {
         let metrics = graph.compute_metrics();
 
         assert!(metrics.articulation_points.contains("A"));
+    }
+
+    fn articulation_graph(node_count: usize, edges: &[(usize, usize)]) -> IssueGraph {
+        let mut issues = (0..node_count)
+            .map(|node| hierarchy_issue(&format!("N-{node:05}"), "open", &[]))
+            .collect::<Vec<_>>();
+        for &(source, target) in edges {
+            let target_id = issues[target].id.clone();
+            let issue = &mut issues[source];
+            issue.dependencies.push(Dependency {
+                issue_id: issue.id.clone(),
+                depends_on_id: target_id,
+                dep_type: "blocks".to_string(),
+                ..Dependency::default()
+            });
+        }
+        IssueGraph::build(&issues)
+    }
+
+    #[test]
+    fn articulation_points_handle_deep_dependency_chains_without_recursion() {
+        // A 25,000-issue chain previously aborted --robot-triage with a stack
+        // overflow. Exercise the production articulation path without running
+        // unrelated, more expensive graph metrics on this deliberately deep DAG.
+        let node_count = 25_000;
+        let edges = (1..node_count)
+            .map(|node| (node - 1, node))
+            .collect::<Vec<_>>();
+        let graph = articulation_graph(node_count, &edges);
+
+        let points = graph.compute_articulation_points();
+
+        assert_eq!(points.len(), node_count - 2);
+        assert!(!points.contains("N-00000"));
+        assert!(!points.contains(&format!("N-{:05}", node_count - 1)));
+        for node in 1..node_count - 1 {
+            assert!(points.contains(&format!("N-{node:05}")), "missing {node}");
+        }
+    }
+
+    #[test]
+    fn articulation_points_preserve_roots_back_edges_and_disconnected_components() {
+        let graph = articulation_graph(
+            8,
+            &[
+                (0, 1),
+                (0, 2),
+                (3, 4),
+                (4, 5),
+                (5, 3),
+                (5, 6),
+                (3, 4),
+                (4, 3),
+                (7, 7),
+            ],
+        );
+
+        // Root 0 has two DFS children. Root 3 has only one despite its two
+        // neighbors in the cycle; only vertex 5 separates that cycle's tail.
+        // Duplicate/reverse dependencies and the isolated self-loop do not
+        // introduce additional articulation points.
+        assert_eq!(
+            graph.compute_articulation_points(),
+            ["N-00000".to_string(), "N-00005".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn articulation_points_match_vertex_removal_oracle_for_small_graphs() {
+        fn component_count(
+            node_count: usize,
+            edges: &[(usize, usize)],
+            removed: Option<usize>,
+        ) -> usize {
+            let mut visited = vec![false; node_count];
+            if let Some(node) = removed {
+                visited[node] = true;
+            }
+            let mut count = 0;
+            for start in 0..node_count {
+                if visited[start] {
+                    continue;
+                }
+                count += 1;
+                visited[start] = true;
+                let mut pending = vec![start];
+                while let Some(node) = pending.pop() {
+                    for &(left, right) in edges {
+                        let next = if left == node {
+                            right
+                        } else if right == node {
+                            left
+                        } else {
+                            continue;
+                        };
+                        if !visited[next] {
+                            visited[next] = true;
+                            pending.push(next);
+                        }
+                    }
+                }
+            }
+            count
+        }
+
+        // Compare every simple undirected graph through five vertices with an
+        // independent definition: removing a cut vertex increases the number
+        // of connected components. No DFS timestamps or low-link values are
+        // used by this oracle.
+        for node_count in 0..=5 {
+            let possible_edges = (0..node_count)
+                .flat_map(|left| (left + 1..node_count).map(move |right| (left, right)))
+                .collect::<Vec<_>>();
+            for edge_mask in 0usize..(1usize << possible_edges.len()) {
+                let edges = possible_edges
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(bit, &edge)| (edge_mask & (1 << bit) != 0).then_some(edge))
+                    .collect::<Vec<_>>();
+                let original_components = component_count(node_count, &edges, None);
+                let expected = (0..node_count)
+                    .filter(|&removed| {
+                        component_count(node_count, &edges, Some(removed)) > original_components
+                    })
+                    .map(|node| format!("N-{node:05}"))
+                    .collect();
+                assert_eq!(
+                    articulation_graph(node_count, &edges).compute_articulation_points(),
+                    expected,
+                    "node_count={node_count}, edge_mask={edge_mask:#x}"
+                );
+            }
+        }
     }
 
     #[test]
