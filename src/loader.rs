@@ -3162,6 +3162,33 @@ mod tests {
         assert_eq!(issues.len(), 1);
     }
 
+    #[test]
+    fn custom_statuses_survive_jsonl_loading_and_deduplication() {
+        let text = concat!(
+            "{\"id\":\"A\",\"title\":\"Task\",\"status\":\"open\",\"issue_type\":\"task\",\"dependencies\":[{\"depends_on_id\":\"B\",\"type\":\"blocks\"}]}\n",
+            "{\"id\":\"B\",\"title\":\"Old entry\",\"status\":\"open\",\"issue_type\":\"task\"}\n",
+            "{\"id\":\"B\",\"title\":\"Glossary entry\",\"status\":\" REFERENCE \",\"issue_type\":\"vocabulary\"}\n",
+            "{\"id\":\"B\",\"title\":\"Invalid update\",\"status\":\" \",\"issue_type\":\"vocabulary\"}\n",
+            "{\"id\":\"C\",\"title\":\"Proposed entry\",\"status\":\"draft\",\"issue_type\":\"task\"}\n",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("issues.jsonl");
+        std::fs::write(&path, text).unwrap();
+
+        for issues in [
+            load_issues_from_file(&path).unwrap(),
+            parse_issues_from_text(text).unwrap(),
+        ] {
+            assert_eq!(issues.len(), 3);
+            assert_eq!(issues[0].dependencies[0].depends_on_id, "B");
+            assert_eq!(issues[1].id, "B");
+            assert_eq!(issues[1].title, "Glossary entry");
+            assert_eq!(issues[1].status, "reference");
+            assert_eq!(issues[1].issue_type, "vocabulary");
+            assert_eq!(issues[2].status, "draft");
+        }
+    }
+
     // --- find_jsonl_path edge cases ---
 
     #[test]
@@ -3568,6 +3595,32 @@ mod tests {
         assert!(child.dependencies[0].is_blocking());
     }
 
+    #[test]
+    fn loads_custom_statuses_from_br_sqlite_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("beads.db");
+        write_br_sqlite(&db);
+        let writer = rusqlite::Connection::open(&db).expect("open writer");
+        writer
+            .execute_batch(
+                "UPDATE issues SET status=' REFERENCE ', issue_type='vocabulary' WHERE id='bd-1';
+                 UPDATE issues SET status='awaiting_review' WHERE id='bd-2';",
+            )
+            .expect("store custom statuses");
+        drop(writer);
+        let before = std::fs::read(&db).expect("read original database");
+
+        let issues = load_issues_from_sqlite(&db).expect("load custom statuses");
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].status, "reference");
+        assert_eq!(issues[0].issue_type, "vocabulary");
+        assert_eq!(issues[0].labels, ["api", "backend"]);
+        assert_eq!(issues[0].comments[0].text, "looks good");
+        assert_eq!(issues[1].status, "awaiting_review");
+        assert_eq!(issues[1].dependencies[0].depends_on_id, "bd-1");
+        assert_eq!(std::fs::read(&db).unwrap(), before, "loading is read-only");
+    }
+
     fn assert_sqlite_source_rejected(path: &Path, fragments: &[&str]) {
         let before = std::fs::read(path).expect("read original database");
         let error = load_issues_from_sqlite(path).expect_err("reject incomplete SQLite snapshot");
@@ -3682,7 +3735,7 @@ mod tests {
             ("id", "id=''", "issue id cannot be empty"),
             ("title", "title=''", "title cannot be empty"),
             ("type", "issue_type=''", "issue_type cannot be empty"),
-            ("status", "status='unrecognized'", "unknown status"),
+            ("status", "status='  '", "status cannot be empty"),
             (
                 "time_order",
                 "created_at='2027-01-01T00:00:00Z'",
@@ -4584,11 +4637,26 @@ mod tests {
     }
 
     #[test]
+    fn bd_export_parser_accepts_custom_statuses() {
+        let jsonl = concat!(
+            "{\"_type\":\"issue\",\"id\":\"CUSTOM-1\",\"title\":\"Glossary entry\",\"status\":\" REFERENCE \",\"issue_type\":\"vocabulary\"}\n",
+            "{\"id\":\"CUSTOM-2\",\"title\":\"Proposal\",\"status\":\"draft\",\"issue_type\":\"task\"}\n",
+        );
+        let issues = parse_bd_export(jsonl.as_bytes()).expect("complete custom-status snapshot");
+        assert_eq!(issues.len(), 2);
+        assert_eq!(issues[0].id, "CUSTOM-1");
+        assert_eq!(issues[0].status, "reference");
+        assert_eq!(issues[1].id, "CUSTOM-2");
+        assert_eq!(issues[1].status, "draft");
+    }
+
+    #[test]
     fn bd_export_parser_rejects_partial_invalid_and_unknown_records() {
         let valid = r#"{"id":"LIVE-1","title":"Live","status":"open","issue_type":"task"}"#;
         for invalid in [
             "{unfinished",
             r#"{"id":"BAD","title":"","status":"open","issue_type":"task"}"#,
+            r#"{"id":"BAD","title":"Blank status","status":" ","issue_type":"task"}"#,
             r#"{"_type":"unknown","id":"BAD","title":"Unknown","status":"open","issue_type":"task"}"#,
             r#"{"_type":null,"id":"BAD","title":"Unknown","status":"open","issue_type":"task"}"#,
             "[]",

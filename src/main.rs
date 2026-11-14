@@ -9619,14 +9619,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_issues_from_jsonl_text_skips_unknown_status_and_malformed_lines() {
-        // Historical parsing must mirror the live loader's tolerance (issue
-        // #24): a custom status that `br` accepts and a malformed line must be
-        // skipped with a warning, not abort the whole snapshot load.
+    fn parse_issues_from_jsonl_text_retains_custom_statuses_and_skips_invalid_records() {
+        // Historical parsing must preserve custom statuses accepted by `br`
+        // (issue #37), while retaining the malformed-record tolerance from #24.
         let text = concat!(
             "\u{feff}{\"id\":\"demo-1\",\"title\":\"ordinary\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\"}\n",
             "{\"id\":\"demo-2\",\"title\":\"glossary\",\"status\":\"reference\",\"priority\":4,\"issue_type\":\"vocabulary\"}\n",
             "not json at all\n",
+            "{\"id\":\"invalid\",\"title\":\"blank status\",\"status\":\"   \",\"issue_type\":\"task\"}\n",
             "\n",
             "{\"id\":\"demo-3\",\"title\":\"still parsed\",\"status\":\"closed\",\"priority\":1,\"issue_type\":\"task\"}\n",
         );
@@ -9636,9 +9636,24 @@ mod tests {
         let ids: Vec<&str> = issues.iter().map(|issue| issue.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["demo-1", "demo-3"],
-            "known-status issues around skipped records must survive"
+            ["demo-1", "demo-2", "demo-3"],
+            "valid issues, including custom statuses, must survive skipped records"
         );
+        assert_eq!(issues[1].status, "reference");
+        assert!(!issues[1].is_actionable_status());
+        assert!(!issues[1].is_claimable_status());
+    }
+
+    #[test]
+    fn historical_snapshot_parser_accepts_custom_status_only() {
+        let text =
+            r#"{"id":"REF-1","title":"Glossary","status":"reference","issue_type":"vocabulary"}"#;
+        let issues = parse_issues_from_jsonl_text(text).expect("valid custom-status snapshot");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].id, "REF-1");
+        assert_eq!(issues[0].status, "reference");
+        assert!(!issues[0].is_actionable_status());
+        assert!(!issues[0].is_claimable_status());
     }
 
     #[test]

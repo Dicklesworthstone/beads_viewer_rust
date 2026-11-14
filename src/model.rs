@@ -3,18 +3,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BvrError, Result};
 
-const KNOWN_STATUSES: &[&str] = &[
-    "open",
-    "in_progress",
-    "blocked",
-    "deferred",
-    "pinned",
-    "hooked",
-    "review",
-    "closed",
-    "tombstone",
-];
-
 #[derive(Debug, Clone, Hash, Serialize, Deserialize, Default)]
 pub struct Issue {
     #[serde(default)]
@@ -332,17 +320,12 @@ impl Issue {
             )));
         }
 
-        let status = self.normalized_status();
-        if status.is_empty() {
+        // Trackers can define custom statuses. Keep them in loaded snapshots;
+        // is_actionable_status/is_claimable_status decide readiness separately.
+        if self.status.trim().is_empty() {
             return Err(BvrError::InvalidIssue(format!(
                 "issue {} status cannot be empty",
                 self.id
-            )));
-        }
-        if !KNOWN_STATUSES.contains(&status.as_str()) {
-            return Err(BvrError::InvalidIssue(format!(
-                "issue {} has unknown status: {}",
-                self.id, self.status
             )));
         }
 
@@ -847,33 +830,49 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_status() {
-        let issue = Issue {
-            id: "X-1".to_string(),
-            title: "Test".to_string(),
-            issue_type: "task".to_string(),
-            status: String::new(),
-            ..Default::default()
-        };
-        let err = issue.validate().unwrap_err();
-        assert!(err.to_string().contains("status cannot be empty"));
+        for status in ["", " ", "\t\r\n", "\u{00a0}"] {
+            let issue = Issue {
+                id: "X-1".to_string(),
+                title: "Test".to_string(),
+                issue_type: "task".to_string(),
+                status: status.to_string(),
+                ..Default::default()
+            };
+            let err = issue.validate().unwrap_err();
+            assert!(err.to_string().contains("status cannot be empty"));
+        }
     }
 
     #[test]
-    fn validate_rejects_unknown_status() {
-        let issue = Issue {
-            id: "X-1".to_string(),
-            title: "Test".to_string(),
-            issue_type: "task".to_string(),
-            status: "banana".to_string(),
-            ..Default::default()
-        };
-        let err = issue.validate().unwrap_err();
-        assert!(err.to_string().contains("unknown status"));
+    fn validate_accepts_custom_statuses_without_making_them_actionable() {
+        for status in ["reference", "draft", "qa:ready", "  TEAM_REVIEW  "] {
+            let issue = Issue {
+                id: "X-1".to_string(),
+                title: "Test".to_string(),
+                issue_type: "vocabulary".to_string(),
+                status: status.to_string(),
+                ..Default::default()
+            };
+            assert!(issue.validate().is_ok(), "{status:?} is a valid custom status");
+            assert!(issue.is_open_like(), "{status:?} remains nonterminal");
+            assert!(!issue.is_actionable_status(), "{status:?} is not ready work");
+            assert!(!issue.is_claimable_status(), "{status:?} cannot be claimed");
+        }
     }
 
     #[test]
     fn validate_accepts_all_known_statuses() {
-        for status in KNOWN_STATUSES {
+        for status in [
+            "open",
+            "in_progress",
+            "blocked",
+            "deferred",
+            "pinned",
+            "hooked",
+            "review",
+            "closed",
+            "tombstone",
+        ] {
             let issue = Issue {
                 id: "X-1".to_string(),
                 title: "Test".to_string(),

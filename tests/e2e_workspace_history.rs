@@ -1543,8 +1543,8 @@ mod historical_snapshot_integrity {
                 "no valid issue records",
             ),
             (
-                "custom-only",
-                issue_line("CUSTOM-1", "Unrecognized", "reference", 1).into_bytes(),
+                "blank-status",
+                issue_line("INVALID-1", "Missing status", "   ", 1).into_bytes(),
                 "no valid issue records",
             ),
         ];
@@ -1785,20 +1785,26 @@ mod historical_snapshot_integrity {
         let root = directory.path();
         initialize(root);
         let final_record = issue_line("DUP-1", "Final title", "closed", 1);
+        let custom_record = issue_line("CUSTOM-1", "Custom status", "reference", 1);
         let baseline = format!(
-            "\u{feff}{}\n{}\nnot json\n{final_record}\n",
+            "\u{feff}{}\n{custom_record}\n{}\nnot json\n{final_record}\n",
             issue_line("DUP-1", "Old title", "open", 1),
-            issue_line("CUSTOM-1", "Custom status", "reference", 1),
+            issue_line("INVALID-1", "Missing status", "   ", 1),
         );
         fs::write(root.join(".beads/issues.jsonl"), &baseline).expect("mixed baseline");
         commit(root, "append duplicate update among tolerated records");
-        fs::write(root.join(".beads/issues.jsonl"), &final_record)
-            .expect("compacted current snapshot");
+        fs::write(
+            root.join(".beads/issues.jsonl"),
+            format!("{final_record}\n{custom_record}\n"),
+        )
+        .expect("compacted current snapshot");
         commit(root, "compact valid records");
 
         let historical = json(root, &["--robot-triage", "--as-of", "HEAD~1"]);
         let current = json(root, &["--robot-triage"]);
-        assert_eq!(historical["triage"]["quick_ref"]["total_open"], 0);
+        assert_eq!(historical["triage"]["quick_ref"]["total_open"], 1);
+        assert_eq!(historical["triage"]["quick_ref"]["actionable_count"], 0);
+        assert_eq!(historical["triage"]["project_health"]["counts"]["total"], 2);
         assert_eq!(historical["data_hash"], current["data_hash"]);
         let diff = json(root, &["--robot-diff", "--diff-since", "HEAD~1"]);
         assert_eq!(diff["diff"]["summary"]["total_changes"], 0);
@@ -1808,6 +1814,185 @@ mod historical_snapshot_integrity {
         let file_diff = json(root, &["--robot-diff", "--diff-since", "baseline.jsonl"]);
         assert_eq!(file_diff["diff"]["summary"]["total_changes"], 0);
         assert_eq!(file_diff["from_data_hash"], diff["from_data_hash"]);
+    }
+
+    #[test]
+    fn custom_statuses_survive_sqlite_jsonl_and_historical_loading() {
+        let directory = tempfile::tempdir().expect("custom status fixture");
+        let root = directory.path();
+        initialize(root);
+        let beads = root.join(".beads");
+        fs::write(
+            beads.join("metadata.json"),
+            r#"{"backend":"sqlite","database":"beads.db","jsonl_export":"issues.jsonl"}"#,
+        )
+        .expect("SQLite metadata");
+        let database = beads.join("beads.db");
+        let conn = rusqlite::Connection::open(&database).expect("fixture database");
+        conn.execute_batch(
+            "CREATE TABLE issues (id TEXT PRIMARY KEY, title TEXT, status TEXT,
+                priority INTEGER, issue_type TEXT);
+             CREATE TABLE dependencies (issue_id TEXT, depends_on_id TEXT, type TEXT);
+             INSERT INTO dependencies VALUES ('CHILD-1', 'CUSTOM-1', 'blocks');",
+        )
+        .expect("tracker tables");
+        let mut snapshot = String::new();
+        for (id, title, status, priority, issue_type) in [
+            ("CHILD-1", "Blocked urgent child", "open", 0, "task"),
+            ("CUSTOM-1", "Glossary entry", "reference", 0, "vocabulary"),
+            ("DRAFT-1", "Proposed work", "draft", 0, "task"),
+            ("PARKED-1", "Awaiting approval", "awaiting_signoff", 0, "task"),
+            ("READY-1", "Ordinary task", "open", 4, "task"),
+        ] {
+            conn.execute(
+                "INSERT INTO issues VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, title, status, priority, issue_type],
+            )
+            .expect("SQLite issue");
+            let mut record = serde_json::json!({
+                "id": id,
+                "title": title,
+                "status": status,
+                "priority": priority,
+                "issue_type": issue_type,
+            });
+            if id == "CHILD-1" {
+                record["dependencies"] = serde_json::json!([{
+                    "issue_id": "CHILD-1",
+                    "depends_on_id": "CUSTOM-1",
+                    "type": "blocks",
+                }]);
+            }
+            snapshot.push_str(&serde_json::to_string(&record).expect("JSONL issue"));
+            snapshot.push('\n');
+        }
+        drop(conn);
+        let jsonl = beads.join("issues.jsonl");
+        fs::write(&jsonl, snapshot).expect("equivalent JSONL export");
+        for (path, seconds) in [(&jsonl, 1_000_000), (&database, 2_000_000)] {
+            fs::File::open(path)
+                .expect("fixture file")
+                .set_times(fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                ))
+                .expect("SQLite is newer than the export");
+        }
+        commit(root, "custom status baseline");
+
+        let sources: &[&[&str]] = &[
+            &[],
+            &["--db", ".beads/beads.db"],
+            &["--db", ".beads/issues.jsonl"],
+            &["--as-of", "HEAD"],
+        ];
+        let mut adjacency = None;
+        for source in sources {
+            let source_json = |flag: &str| {
+                let mut args = vec![flag, "--format", "json"];
+                args.extend_from_slice(source);
+                json(root, &args)
+            };
+            let graph = source_json("--robot-graph");
+            assert_eq!(graph["nodes"], 5, "{source:?}");
+            assert_eq!(graph["edges"], 1, "{source:?}");
+            let statuses = graph["adjacency"]["nodes"]
+                .as_array()
+                .expect("graph nodes")
+                .iter()
+                .map(|node| {
+                    (
+                        node["id"].as_str().expect("issue ID"),
+                        node["status"].as_str().expect("issue status"),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(
+                statuses,
+                std::collections::BTreeMap::from([
+                    ("CHILD-1", "open"),
+                    ("CUSTOM-1", "reference"),
+                    ("DRAFT-1", "draft"),
+                    ("PARKED-1", "awaiting_signoff"),
+                    ("READY-1", "open"),
+                ]),
+                "{source:?}"
+            );
+            assert_eq!(
+                graph["adjacency"]["edges"],
+                serde_json::json!([{"from": "CHILD-1", "to": "CUSTOM-1", "type": "blocks"}]),
+                "{source:?}"
+            );
+            if let Some(expected) = &adjacency {
+                assert_eq!(&graph["adjacency"], expected, "{source:?}");
+            } else {
+                adjacency = Some(graph["adjacency"].clone());
+            }
+
+            // Custom statuses remain nonterminal blockers, never ready picks.
+            // All parked issues and their dependent outrank READY-1 by priority.
+            let triage = source_json("--robot-triage");
+            assert_eq!(triage["triage"]["quick_ref"]["total_open"], 5, "{source:?}");
+            assert_eq!(
+                triage["triage"]["quick_ref"]["actionable_count"],
+                1,
+                "{source:?}"
+            );
+            assert_eq!(
+                triage["triage"]["quick_ref"]["not_actionable_count"],
+                4,
+                "{source:?}"
+            );
+            for picks in [
+                &triage["triage"]["recommendations"],
+                &triage["triage"]["quick_ref"]["top_picks"],
+            ] {
+                let picks = picks.as_array().expect("recommendations");
+                assert_eq!(picks.len(), 1, "{source:?}");
+                assert_eq!(picks[0]["id"], "READY-1", "{source:?}");
+            }
+            assert!(
+                triage["triage"]["quick_wins"]
+                    .as_array()
+                    .expect("quick wins")
+                    .iter()
+                    .all(|pick| pick["id"] == "READY-1"),
+                "{source:?}"
+            );
+            assert_eq!(source_json("--robot-next")["id"], "READY-1", "{source:?}");
+        }
+    }
+
+    #[test]
+    fn custom_status_changes_are_modifications_in_git_and_file_diffs() {
+        let directory = tempfile::tempdir().expect("custom status history fixture");
+        let root = directory.path();
+        initialize(root);
+        let snapshot = root.join(".beads/issues.jsonl");
+        let baseline = issue_line("CUSTOM-1", "Custom issue", "reference", 1);
+        fs::write(&snapshot, &baseline).expect("custom-only baseline");
+        commit(root, "custom-only history");
+        fs::write(root.join("baseline.jsonl"), baseline).expect("file baseline");
+
+        for status in ["open", "awaiting_signoff"] {
+            fs::write(&snapshot, issue_line("CUSTOM-1", "Custom issue", status, 1))
+                .expect("change custom status");
+            for revision in ["HEAD", "baseline.jsonl"] {
+                let diff = json(root, &["--robot-diff", "--diff-since", revision]);
+                assert_eq!(diff["diff"]["summary"]["issues_added"], 0);
+                assert_eq!(diff["diff"]["summary"]["issues_removed"], 0);
+                assert_eq!(diff["diff"]["summary"]["issues_modified"], 1);
+                assert_eq!(diff["diff"]["modified_issues"][0]["issue_id"], "CUSTOM-1");
+                assert_eq!(
+                    diff["diff"]["modified_issues"][0]["changes"],
+                    serde_json::json!([{
+                        "field": "status",
+                        "old_value": "reference",
+                        "new_value": status,
+                    }])
+                );
+            }
+        }
+        assert!(json(root, &["--robot-next"])["id"].is_null());
     }
 
     #[test]
