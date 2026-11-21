@@ -1516,7 +1516,7 @@ fn latest_modified_token(path: &Path) -> Result<String> {
         &mut visited_dirs,
         &mut hasher,
     )?;
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::robot::hex_lower(&hasher.finalize()))
 }
 
 fn count_files_recursive(path: &Path) -> Result<usize> {

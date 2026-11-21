@@ -128,7 +128,7 @@ impl EconomicsOverlay {
         hasher.update(b"\x1f");
         hasher.update(self.currency.as_deref().unwrap_or("").as_bytes());
         let digest = hasher.finalize();
-        format!("{digest:x}")[..16].to_string()
+        crate::robot::hex_lower(&digest[..8])
     }
 
     pub fn throughput_window_days(&self) -> u32 {

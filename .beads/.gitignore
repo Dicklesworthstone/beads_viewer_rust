@@ -15,3 +15,10 @@ last-touched
 
 # br fsqlite WAL-cert sidecars — per-machine runtime, like -wal/-shm
 *.db-wal-cert*
+*.db-journal
+*-fsqlite-ns-gate
+*-fsqlite-ns-use
+*.vacuum-wal-cert*
+*.fsqlite-migration-state
+.br-wal-index-*/
+.br_recovery/

@@ -7524,9 +7524,9 @@ fn sanitize_mermaid_text(text: &str) -> String {
 
 fn print_version() {
     let pkg = env!("CARGO_PKG_VERSION");
-    let rustc = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("unknown-rustc");
-    let target = option_env!("VERGEN_CARGO_TARGET_TRIPLE").unwrap_or("unknown-target");
-    let ts = option_env!("VERGEN_BUILD_TIMESTAMP").unwrap_or("unknown-build-ts");
+    let rustc = option_env!("BVR_BUILD_RUSTC").unwrap_or("unknown-rustc");
+    let target = option_env!("BVR_BUILD_TARGET").unwrap_or("unknown-target");
+    let ts = option_env!("BVR_BUILD_TIMESTAMP").unwrap_or("unknown-build-ts");
     eprintln!("bvr {pkg} ({rustc}, {target}, {ts})");
 }
 

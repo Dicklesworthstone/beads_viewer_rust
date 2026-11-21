@@ -2710,7 +2710,7 @@ mod publication {
             config.total_size,
             u64::try_from(bytes.len()).expect("database size")
         );
-        assert_eq!(config.hash, format!("{:x}", Sha256::digest(&bytes)));
+        assert_eq!(config.hash, bvr::robot::hex_lower(&Sha256::digest(&bytes)));
         assert!(
             !config.chunked,
             "small replacement database should be a single file"
@@ -3728,7 +3728,10 @@ mod preview_transfers {
         );
         assert_eq!(database.header("Content-Type"), "application/x-sqlite3");
         assert_eq!(database.body.len() as u64, config.total_size);
-        assert_eq!(format!("{:x}", Sha256::digest(&database.body)), config.hash);
+        assert_eq!(
+            bvr::robot::hex_lower(&Sha256::digest(&database.body)),
+            config.hash
+        );
         database.assert_body(&fs::read(bundle.join("beads.sqlite3")).expect("database on disk"));
         let mut reassembled = Vec::new();
         for chunk in &config.chunks {
@@ -3738,7 +3741,10 @@ mod preview_transfers {
                 false,
             );
             assert_eq!(response.body.len() as u64, chunk.size);
-            assert_eq!(format!("{:x}", Sha256::digest(&response.body)), chunk.hash);
+            assert_eq!(
+                bvr::robot::hex_lower(&Sha256::digest(&response.body)),
+                chunk.hash
+            );
             response.assert_body(&fs::read(bundle.join(&chunk.path)).expect("exported chunk"));
             reassembled.extend_from_slice(&response.body);
         }

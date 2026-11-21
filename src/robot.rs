@@ -73,7 +73,19 @@ pub fn compute_data_hash(issues: &[Issue]) -> String {
     }
 
     let digest = hasher.finalize();
-    format!("{digest:x}")[..16].to_string()
+    hex_lower(&digest[..8])
+}
+
+/// Lowercase hexadecimal encoding of `bytes` (two digits per byte).
+#[must_use]
+pub fn hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 /// Fingerprint every issue field for in-process change detection, including
@@ -2615,6 +2627,20 @@ mod tests {
     fn compute_data_hash_empty_issues() {
         let h = compute_data_hash(&[]);
         assert_eq!(h.len(), 16);
+        // SHA-256 of the empty input, truncated to 8 bytes: the wire format
+        // must stay stable across sha2/digest releases.
+        assert_eq!(h, "e3b0c44298fc1c14");
+    }
+
+    #[test]
+    fn hex_lower_matches_reference_encoding() {
+        assert_eq!(hex_lower(&[]), "");
+        assert_eq!(hex_lower(&[0x00, 0x0f, 0x10, 0xab, 0xff]), "000f10abff");
+        let digest = Sha256::digest(b"abc");
+        assert_eq!(
+            hex_lower(&digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

@@ -164,7 +164,11 @@ pub(crate) fn snapshot_export_database(
         )));
     }
     ensure_no_export_database_sidecars(output_dir)?;
-    connection.backup(rusqlite::MAIN_DB, export_database_path(staging_dir), None)?;
+    connection.backup(
+        rusqlite::MAIN_DB,
+        export_database_path(staging_dir),
+        None::<fn(rusqlite::backup::Progress)>,
+    )?;
     Ok(Some(connection))
 }
 
@@ -1073,7 +1077,7 @@ fn hash_file(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::robot::hex_lower(&hasher.finalize()))
 }
 
 fn write_database_chunks(
@@ -1112,7 +1116,7 @@ fn write_database_chunks(
 
         chunks.push(SqliteChunkInfo {
             path: relative_path,
-            hash: format!("{:x}", hasher.finalize()),
+            hash: crate::robot::hex_lower(&hasher.finalize()),
             size: u64::try_from(read).map_err(|_| {
                 BvrError::InvalidArgument(format!(
                     "sqlite export chunk size does not fit in u64: {read}"
