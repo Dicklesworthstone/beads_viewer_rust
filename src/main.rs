@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fmt::Write;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{BufReader, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -2609,14 +2609,16 @@ fn main() -> ExitCode {
                         regeneration_pending = true;
                     }
                 }
+                let poll_now = std::time::SystemTime::now();
                 for (path, last_token) in &mut watched_mtimes {
-                    let current_token = match file_watch_token(path) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            eprintln!("warning: cannot stat {}: {error}", path.display());
-                            continue;
-                        }
-                    };
+                    let current_token =
+                        match file_watch_token_with_previous(path, *last_token, poll_now) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                eprintln!("warning: cannot stat {}: {error}", path.display());
+                                continue;
+                            }
+                        };
 
                     if current_token != *last_token {
                         *last_token = current_token;
@@ -2666,8 +2668,11 @@ fn main() -> ExitCode {
                         eprintln!("warning: cannot refresh Git history revisions: {error}");
                     }
                 }
+                let settle_now = std::time::SystemTime::now();
                 for (path, last_token) in &mut watched_mtimes {
-                    if let Ok(current_token) = file_watch_token(path) {
+                    if let Ok(current_token) =
+                        file_watch_token_with_previous(path, *last_token, settle_now)
+                    {
                         if current_token != *last_token {
                             *last_token = current_token;
                             let display = path.display().to_string();
@@ -3891,6 +3896,7 @@ fn cached_dolt_watch_token(path: &Path) -> Option<FileWatchToken> {
     loader::cached_dolt_snapshot_hash(path).map(|content_fingerprint| FileWatchToken {
         modified_millis: 0,
         len_bytes: 0,
+        metadata_stamp: None,
         content_fingerprint,
     })
 }
@@ -3939,14 +3945,80 @@ fn reconcile_watch_export_paths(
     Ok(path_set_changed)
 }
 
+/// Filesystem metadata fingerprint used to skip redundant full-file SHA-256
+/// reads on settled idle `--watch-export` polls while keeping content hashing
+/// active within the racy-clean window (2 s) for same-size rapid rewrites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileMetadataStamp {
+    modified_nanos: Option<u128>,
+    len_bytes: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    ctime_nanos: i128,
+}
+
+impl FileMetadataStamp {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        let modified_nanos = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos());
+        #[cfg(unix)]
+        let (inode, ctime_nanos) = {
+            use std::os::unix::fs::MetadataExt;
+            let ctime_nanos =
+                i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
+            (metadata.ino(), ctime_nanos)
+        };
+        Self {
+            modified_nanos,
+            len_bytes: metadata.len(),
+            #[cfg(unix)]
+            inode,
+            #[cfg(unix)]
+            ctime_nanos,
+        }
+    }
+}
+
+/// Minimum age past a file's mtime before unchanged metadata alone proves the
+/// file was not rewritten in the same filesystem timestamp quantum.
+const WATCH_RACY_CLEAN_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FileWatchToken {
     modified_millis: u64,
     len_bytes: u64,
+    metadata_stamp: Option<FileMetadataStamp>,
     content_fingerprint: [u8; 32],
 }
 
+fn hash_file_streaming(path: &Path) -> bvr::Result<[u8; 32]> {
+    let file = fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
+}
+
 fn file_watch_token(path: &Path) -> bvr::Result<Option<FileWatchToken>> {
+    file_watch_token_with_previous(path, None, std::time::SystemTime::now())
+}
+
+fn file_watch_token_with_previous(
+    path: &Path,
+    previous: Option<FileWatchToken>,
+    now: std::time::SystemTime,
+) -> bvr::Result<Option<FileWatchToken>> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -3959,8 +4031,21 @@ fn file_watch_token(path: &Path) -> bvr::Result<Option<FileWatchToken>> {
             // changing an issue. Only complete live content controls reloads.
             modified_millis: 0,
             len_bytes: 0,
+            metadata_stamp: None,
             content_fingerprint: bvr::robot::compute_snapshot_hash(&issues),
         }));
+    }
+    let stamp = FileMetadataStamp::from_metadata(&metadata);
+    let settled = metadata
+        .modified()
+        .ok()
+        .and_then(|mtime| now.duration_since(mtime).ok())
+        .is_some_and(|age| age >= WATCH_RACY_CLEAN_WINDOW);
+    if settled
+        && let Some(prev) = previous
+        && prev.metadata_stamp == Some(stamp)
+    {
+        return Ok(Some(prev));
     }
     let modified_millis = metadata
         .modified()
@@ -3970,10 +4055,11 @@ fn file_watch_token(path: &Path) -> bvr::Result<Option<FileWatchToken>> {
             let millis = duration.as_millis().min(u128::from(u64::MAX));
             u64::try_from(millis).unwrap_or(u64::MAX)
         });
-    let content_fingerprint = Sha256::digest(fs::read(path)?).into();
+    let content_fingerprint = hash_file_streaming(path)?;
     Ok(Some(FileWatchToken {
         modified_millis,
         len_bytes: metadata.len(),
+        metadata_stamp: Some(stamp),
         content_fingerprint,
     }))
 }
@@ -8683,14 +8769,14 @@ mod tests {
         BackgroundModeSource, BvrCommand, Cli, IssueLoadTarget, actionable_ids_for_recipe_filters,
         build_background_mode_config, check_update_outcome, compare_versions,
         compute_related_work_result, confirm_upgrade, discover_workspace_config_from_starts,
-        feedback_project_dir, file_watch_token, filter_by_repo, generate_daily_burndown_points,
-        load_issues, load_issues_from_git_ref, parse_background_mode_bool,
-        parse_crates_io_latest_version, parse_github_highest_tag, parse_github_latest_release,
-        parse_issues_from_jsonl_text, parse_scope_git_header_line, project_dir_for_export_hooks,
-        reconcile_watch_export_paths, resolve_background_mode, resolve_cli_path_from_project_dir,
-        resolve_cli_reference_file_path, resolve_git_toplevel, resolve_issue_load_target,
-        resolve_reference_file_path, resolve_watch_export_paths, resolve_workspace_config_path,
-        upgrade_cargo_args,
+        feedback_project_dir, file_watch_token, file_watch_token_with_previous, filter_by_repo,
+        generate_daily_burndown_points, load_issues, load_issues_from_git_ref,
+        parse_background_mode_bool, parse_crates_io_latest_version, parse_github_highest_tag,
+        parse_github_latest_release, parse_issues_from_jsonl_text, parse_scope_git_header_line,
+        project_dir_for_export_hooks, reconcile_watch_export_paths, resolve_background_mode,
+        resolve_cli_path_from_project_dir, resolve_cli_reference_file_path, resolve_git_toplevel,
+        resolve_issue_load_target, resolve_reference_file_path, resolve_watch_export_paths,
+        resolve_workspace_config_path, upgrade_cargo_args,
     };
 
     fn export_fixture() -> Vec<bvr::model::Issue> {
@@ -9838,6 +9924,66 @@ mod tests {
         assert_eq!(first.len_bytes, second.len_bytes);
         assert_ne!(first.content_fingerprint, second.content_fingerprint);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn file_watch_token_reuses_cached_fingerprint_when_metadata_settled() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("beads.db");
+        fs::write(&path, "SQLite-fixture-payload-v1").expect("write initial payload");
+
+        let first = file_watch_token(&path)
+            .expect("initial token")
+            .expect("initial token present");
+        let mtime = fs::metadata(&path)
+            .expect("stat file")
+            .modified()
+            .expect("mtime");
+
+        // Replace the cached fingerprint with a sentinel while preserving the
+        // exact metadata stamp: once outside the 2 s racy-clean window, an
+        // unchanged file must return the cached token without re-hashing.
+        let mut sentinel = first;
+        sentinel.content_fingerprint = [0xAA; 32];
+
+        let settled_now = mtime + std::time::Duration::from_secs(5);
+        let settled = file_watch_token_with_previous(&path, Some(sentinel), settled_now)
+            .expect("settled poll")
+            .expect("settled token present");
+        assert_eq!(
+            settled.content_fingerprint, sentinel.content_fingerprint,
+            "settled poll should reuse cached token without re-hashing"
+        );
+
+        // Within the racy-clean window (< 2 s), the file must still be hashed
+        // so same-second same-size rewrites are never missed.
+        let racy_now = mtime + std::time::Duration::from_millis(500);
+        let racy = file_watch_token_with_previous(&path, Some(sentinel), racy_now)
+            .expect("racy poll")
+            .expect("racy token present");
+        assert_eq!(
+            racy.content_fingerprint, first.content_fingerprint,
+            "racy-window poll must re-hash file contents"
+        );
+
+        // Changing the file size invalidates the metadata stamp even when settled.
+        fs::write(&path, "SQLite-fixture-payload-v2-longer").expect("write updated payload");
+        let updated_mtime = fs::metadata(&path)
+            .expect("stat updated file")
+            .modified()
+            .expect("updated mtime");
+        let after_write = file_watch_token_with_previous(
+            &path,
+            Some(sentinel),
+            updated_mtime + std::time::Duration::from_secs(5),
+        )
+        .expect("post-write poll")
+        .expect("post-write token present");
+        assert_ne!(
+            after_write.content_fingerprint,
+            sentinel.content_fingerprint
+        );
+        assert_ne!(after_write.content_fingerprint, first.content_fingerprint);
     }
 
     #[test]

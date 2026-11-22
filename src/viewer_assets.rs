@@ -510,6 +510,21 @@ mod tests {
     }
 
     #[test]
+    fn graph_runtime_keeps_shortcuts_active_while_toolbar_button_has_focus() {
+        let graph = lookup_asset("graph.js").expect("graph.js");
+        let js = std::str::from_utf8(graph.bytes).expect("valid utf8");
+
+        assert!(
+            !js.contains("['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes"),
+            "graph shortcuts must not ignore all keys whenever a toolbar button retains focus"
+        );
+        assert!(
+            js.contains("if (tag === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return;"),
+            "focused buttons should still keep native Space/Enter activation"
+        );
+    }
+
+    #[test]
     fn graph_runtime_cleans_up_time_travel_styles_and_controls() {
         let graph = lookup_asset("graph.js").expect("graph.js");
         let js = std::str::from_utf8(graph.bytes).expect("valid utf8");

@@ -2723,10 +2723,13 @@ function setupKeyboardShortcuts() {
     }
 
     keyboardShortcutHandler = (e) => {
-        // Native timeline controls own their keyboard behavior (including Space
-        // and range arrows), as do other editable controls.
-        if (['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(e.target.tagName) ||
-            e.target.isContentEditable) return;
+        // Native editable controls own their keyboard behavior. Focused
+        // toolbar buttons keep native Space/Enter activation without blocking
+        // graph shortcuts after a button click.
+        const tag = e.target && e.target.tagName;
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) ||
+            (e.target && e.target.isContentEditable)) return;
+        if (tag === 'BUTTON' && (e.key === ' ' || e.key === 'Enter')) return;
 
         switch (e.key) {
             case 'Escape':

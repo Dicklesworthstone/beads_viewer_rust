@@ -13681,22 +13681,12 @@ impl BvrApp {
     }
 
     /// (total, critical, warning) alert counts for the status bar, computed
-    /// once per loaded issue set.
+    /// once per loaded issue set and dismissed-alert selection.
     fn status_alert_counts(&self) -> (usize, usize, usize) {
-        if !self.dismissed_alerts.is_empty() {
-            // Dismissals are rare; count what the alerts panel still shows.
-            use crate::analysis::alerts::AlertSeverity;
-            let rows = self.active_alert_rows();
-            let count = |severity| rows.iter().filter(|row| row.severity == severity).count();
-            return (
-                rows.len(),
-                count(AlertSeverity::Critical),
-                count(AlertSeverity::Warning),
-            );
-        }
         // Cheap fingerprint of what alerts depend on (ids, statuses, update
-        // times, dependency counts) so a reload or a different data set in
-        // the same thread never reuses stale counts.
+        // times, dependency counts, and dismissed alert keys) so a reload,
+        // dismissal, or different data set in the same thread never reuses
+        // stale counts.
         let key = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -13707,6 +13697,15 @@ impl BvrApp {
                 issue.updated_at.map(|t| t.timestamp()).hash(&mut hasher);
                 issue.dependencies.len().hash(&mut hasher);
             }
+            self.dismissed_alerts.len().hash(&mut hasher);
+            if !self.dismissed_alerts.is_empty() {
+                let mut dismissed: Vec<&str> =
+                    self.dismissed_alerts.iter().map(String::as_str).collect();
+                dismissed.sort_unstable();
+                for alert_key in dismissed {
+                    alert_key.hash(&mut hasher);
+                }
+            }
             hasher.finish()
         };
         if let Some((cached, total, critical, warning)) = ALERT_COUNTS.with(Cell::get)
@@ -13714,19 +13713,26 @@ impl BvrApp {
         {
             return (total, critical, warning);
         }
-        let summary = self
-            .analyzer
-            .alerts(&crate::analysis::alerts::AlertOptions::default())
-            .summary;
+        let counts = if self.dismissed_alerts.is_empty() {
+            let summary = self
+                .analyzer
+                .alerts(&crate::analysis::alerts::AlertOptions::default())
+                .summary;
+            (summary.total, summary.critical, summary.warning)
+        } else {
+            use crate::analysis::alerts::AlertSeverity;
+            let rows = self.active_alert_rows();
+            let count = |severity| rows.iter().filter(|row| row.severity == severity).count();
+            (
+                rows.len(),
+                count(AlertSeverity::Critical),
+                count(AlertSeverity::Warning),
+            )
+        };
         ALERT_COUNTS.with(|cell| {
-            cell.set(Some((
-                key,
-                summary.total,
-                summary.critical,
-                summary.warning,
-            )));
+            cell.set(Some((key, counts.0, counts.1, counts.2)));
         });
-        (summary.total, summary.critical, summary.warning)
+        counts
     }
 
     /// Go bv's status bar: filter badge, hints, status stats on the left;
@@ -31201,6 +31207,35 @@ mod tests {
         ));
         app.handle_key(KeyCode::Escape, Modifiers::NONE);
         assert!(app.modal_overlay.is_none());
+    }
+
+    #[test]
+    fn status_alert_counts_caches_after_dismissal() {
+        let mut app = new_app(ViewMode::Main, 0);
+        let rows = app.active_alert_rows();
+        assert!(rows.len() >= 2, "sample data should raise alerts: {rows:?}");
+
+        app.dismissed_alerts.insert(rows[0].key.clone());
+        crate::tui::ALERT_COUNTS.with(|cell| cell.set(None));
+
+        let counts = app.status_alert_counts();
+        assert_eq!(counts.0, rows.len() - 1);
+
+        let cached = crate::tui::ALERT_COUNTS
+            .with(std::cell::Cell::get)
+            .expect("dismissed alert counts must populate ALERT_COUNTS cache");
+        assert_eq!((cached.1, cached.2, cached.3), counts);
+
+        // Poison the cached counts under the exact same key to prove repeated
+        // status-bar frames hit the cache without recomputing analyzer.alerts().
+        crate::tui::ALERT_COUNTS.with(|cell| cell.set(Some((cached.0, 999, 888, 777))));
+        assert_eq!(app.status_alert_counts(), (999, 888, 777));
+
+        // Changing the dismissed set invalidates the cache key and recomputes.
+        app.dismissed_alerts.insert(rows[1].key.clone());
+        assert_eq!(app.status_alert_counts().0, rows.len() - 2);
+        app.dismissed_alerts.clear();
+        assert_eq!(app.status_alert_counts().0, rows.len());
     }
 
     #[test]
