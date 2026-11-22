@@ -76,7 +76,7 @@ predicates = "3.1.4"
 pretty_assertions = "1.4.1"
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"

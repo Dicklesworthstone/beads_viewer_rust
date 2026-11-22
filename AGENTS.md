@@ -60,7 +60,7 @@ success** — one line, revert, next lever, no retraction narrative.
 
 We only use **Cargo** in this project, NEVER any other package manager.
 
-- **Edition:** Rust 2024 (`rust-version = "1.88"`)
+- **Edition:** Rust 2024 (`rust-version = "1.89"`)
 - **Dependency versions:** Explicit versions for stability
 - **Configuration:** Cargo.toml only (single crate, not a workspace)
 - **Unsafe code:** Forbidden (`unsafe_code = "forbid"` in `[lints.rust]`)
@@ -77,7 +77,6 @@ We only use **Cargo** in this project, NEVER any other package manager.
 | `ftui` | TUI runtime (frankentui) with crossterm backend |
 | `petgraph` | Directed graph for dependency analysis |
 | `rusqlite` | SQLite export (bundled-full) |
-| `itertools` | Iterator combinators |
 | `sha2` | Content hashing for data fingerprints |
 | `signal-hook` | Unix signal handling for preview server |
 | `tempfile` | Temp file management for exports |
@@ -86,7 +85,6 @@ We only use **Cargo** in this project, NEVER any other package manager.
 | `tracing` + `tracing-subscriber` | Structured logging with env-filter |
 | `anyhow` | Error propagation |
 | `png` | PNG generation for graph export |
-| `vergen-gix` | Build metadata embedding (build.rs) |
 
 ### Dev Dependencies
 
@@ -102,7 +100,7 @@ We only use **Cargo** in this project, NEVER any other package manager.
 
 ```toml
 [profile.release]
-opt-level = "z"     # Optimize for size
+opt-level = 3       # Optimize for speed
 lto = true          # Link-time optimization
 codegen-units = 1   # Single codegen unit
 panic = "abort"     # No unwinding overhead
