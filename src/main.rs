@@ -2672,13 +2672,12 @@ fn main() -> ExitCode {
                 for (path, last_token) in &mut watched_mtimes {
                     if let Ok(current_token) =
                         file_watch_token_with_previous(path, *last_token, settle_now)
+                        && current_token != *last_token
                     {
-                        if current_token != *last_token {
-                            *last_token = current_token;
-                            let display = path.display().to_string();
-                            if !changed_files.contains(&display) {
-                                changed_files.push(display);
-                            }
+                        *last_token = current_token;
+                        let display = path.display().to_string();
+                        if !changed_files.contains(&display) {
+                            changed_files.push(display);
                         }
                     }
                 }
@@ -3999,7 +3998,7 @@ fn hash_file_streaming(path: &Path) -> bvr::Result<[u8; 32]> {
     let file = fs::File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = [0_u8; 16 * 1024];
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
