@@ -12,6 +12,123 @@ Binary name: **`bvr`**
 
 ---
 
+## [v0.5.0] -- 2026-11-22
+
+Custom tracker status support, graph and planning accuracy/scalability fixes,
+reliable Pages preview serving, watch/TUI/viewer follow-ups from
+[#31](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/31),
+release-profile speed optimization, and security/dependency updates.
+
+### Breaking / Notable Changes
+
+- The minimum supported Rust version (`rust-version`) is now **1.89** (up from
+  1.88), required by `rusqlite 0.43.0` (which resolves `RUSTSEC-2026-0459`).
+- `[profile.release]` now builds with `opt-level = 3` instead of `"z"`
+  (preserving `lto = true`, `codegen-units = 1`, `panic = "abort"`, and
+  `strip = true`) for substantially faster analysis and robot commands.
+
+### Data sources
+
+- **Custom tracker statuses are retained across all snapshots.** SQLite, JSONL,
+  Git/file history, and `bd export` loaders now accept any non-blank status
+  instead of rejecting or dropping values outside a fixed built-in list, while
+  keeping actionable and claimable readiness gates unchanged.
+  ([338fff3](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/338fff3),
+  [#37](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/37))
+
+### Analysis, planning, and insights
+
+- **Residual-graph cycle and parallel planning.** Cycle-break recommendations
+  and parallel-gain cuts now replay cumulative cuts on an indexed residual
+  topology with iterative SCC, DAG-depth, and component traversals instead of
+  discarding entire cyclic components after a single cut.
+  ([7d051f6](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/7d051f6))
+- **Scalable forecast and capacity traversal.** Indexed forecast snapshots and
+  explicit-frame dependency evaluation eliminate repeated prerequisite walks and
+  exponential diamond path enumeration.
+  ([062c89f](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/062c89f))
+- **Exact what-if readiness and multi-level inherited blockers.** What-if
+  simulations compute real readiness and metric deltas
+  ([a56a216](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/a56a216)),
+  inherited blockers propagate through arbitrarily deep parent hierarchies
+  ([01ebc73](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/01ebc73)),
+  `--robot-plan` selects highest-impact work across all execution tracks
+  ([e21e297](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/e21e297)),
+  and articulation-point analysis runs iteratively to avoid stack overflows on
+  deep graphs
+  ([62cd2cb](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/62cd2cb)).
+
+### Pages export, viewer, and preview server
+
+- **Reliable preview server on macOS/BSD and under concurrency.** Accepted
+  sockets restore blocking mode before applying read/write timeouts so large
+  asset transfers are never truncated
+  ([dfef723](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/dfef723),
+  [#36](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/36)),
+  HTTP header parsing waits for complete bounded headers
+  ([86329f5](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/86329f5)),
+  and concurrent requests run on bounded workers with prompt shutdown
+  cancellation
+  ([a7ccf8c](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/a7ccf8c)).
+- **Pinned Git history, staged publication, and integrity verification.**
+  Pages exports build factual Git history from pinned source snapshots
+  ([2482c1f](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/2482c1f)),
+  stage bundles with rollback on failed publication
+  ([eb205e5](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/eb205e5)),
+  verify exported SQLite database and cache integrity
+  ([450d138](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/450d138)),
+  and align dashboard readiness and dependency navigation with core rules
+  ([ba00b0b](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/ba00b0b)).
+- **Bounded charts and resilient search.** Progress timelines sample at most 31
+  UTC day-end buckets including current-day updates
+  ([f45f592](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/f45f592));
+  Pages search preserves relevance, pagination, and finite deterministic
+  fallback rankings across accelerator failures
+  ([114506f](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/114506f),
+  [e526dd6](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/e526dd6),
+  [d796b2e](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/d796b2e)).
+- **Graph keyboard shortcuts remain active after toolbar clicks.** Focusing a
+  toolbar button in the standalone graph viewer now suppresses only native
+  `Space`/`Enter` activation instead of disabling all graph shortcuts.
+  ([814096e](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/814096e),
+  [#31](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/31))
+
+### Watch mode and TUI
+
+- **Idle `--watch-export` avoids full-file hashing.** Settled files reuse their
+  cached watch fingerprint via metadata stamps (mtime, size, and Unix
+  inode/ctime) outside a 2-second racy-clean window, and changed files are
+  hashed with a streaming reader instead of reading the whole file into memory.
+  ([814096e](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/814096e),
+  [#31](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/31))
+- **Status-bar alert counts stay cached after dismissal.** Dismissed alert keys
+  are folded into the alert-count cache key so TUI rendering does not recompute
+  alerts on every frame after dismissing an alert.
+  ([814096e](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/814096e),
+  [#31](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/31))
+
+### Toolchain, dependencies, and build
+
+- **Security and crate updates (0 `cargo audit` vulnerabilities).** Upgraded
+  `rusqlite` to 0.43.0 (`RUSTSEC-2026-0459`), `pulldown-cmark` to 0.13.6
+  (`RUSTSEC-2026-0433`, `RUSTSEC-2026-0414`), `rustix` to 1.1.6
+  (`RUSTSEC-2026-0486`), `tru` (TOON) to 0.3.0, `sha2` to 0.11.1, `png` to
+  0.18.1, `signal-hook` to 0.4.6, `clap` to 4.6.9, and supporting crates;
+  removed unused `itertools`.
+  ([3d442c9](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/3d442c9))
+- **Stdlib-only `build.rs`.** Replaced `vergen-gix` with a zero-dependency
+  `build.rs` that preserves `bvr --version` metadata and `SOURCE_DATE_EPOCH`
+  reproducibility while dropping over 100 build-time transitive crates.
+  ([3d442c9](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/3d442c9))
+- **Release profile switched to `opt-level = 3`.** Same-host interleaved
+  benchmarks show speedups across compute-heavy robot commands (up to 21x faster
+  on 500-issue `--robot-insights` combined with the residual-graph improvements
+  above, and 7–18% faster on `--robot-triage`, `--robot-suggest`, and
+  `--robot-forecast`).
+  ([8518381](https://github.com/Dicklesworthstone/beads_viewer_rust/commit/8518381))
+
+---
+
 ## [v0.4.1] -- 2026-10-13
 
 Fixes from the v0.4.0 release review ([#31](https://github.com/Dicklesworthstone/beads_viewer_rust/issues/31))

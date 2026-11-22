@@ -302,7 +302,7 @@ Installation requires an explicit `y` or `yes` answer in an interactive terminal
 ### Toolchain
 
 - Rust edition: `2024`
-- Minimum Rust version: `1.88`
+- Minimum Rust version: `1.89`
 - Binary name: `bvr`
 
 ## Quick Start

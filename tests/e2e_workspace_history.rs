@@ -1841,7 +1841,13 @@ mod historical_snapshot_integrity {
             ("CHILD-1", "Blocked urgent child", "open", 0, "task"),
             ("CUSTOM-1", "Glossary entry", "reference", 0, "vocabulary"),
             ("DRAFT-1", "Proposed work", "draft", 0, "task"),
-            ("PARKED-1", "Awaiting approval", "awaiting_signoff", 0, "task"),
+            (
+                "PARKED-1",
+                "Awaiting approval",
+                "awaiting_signoff",
+                0,
+                "task",
+            ),
             ("READY-1", "Ordinary task", "open", 4, "task"),
         ] {
             conn.execute(
@@ -1933,13 +1939,11 @@ mod historical_snapshot_integrity {
             let triage = source_json("--robot-triage");
             assert_eq!(triage["triage"]["quick_ref"]["total_open"], 5, "{source:?}");
             assert_eq!(
-                triage["triage"]["quick_ref"]["actionable_count"],
-                1,
+                triage["triage"]["quick_ref"]["actionable_count"], 1,
                 "{source:?}"
             );
             assert_eq!(
-                triage["triage"]["quick_ref"]["not_actionable_count"],
-                4,
+                triage["triage"]["quick_ref"]["not_actionable_count"], 4,
                 "{source:?}"
             );
             for picks in [

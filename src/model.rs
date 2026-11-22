@@ -853,9 +853,15 @@ mod tests {
                 status: status.to_string(),
                 ..Default::default()
             };
-            assert!(issue.validate().is_ok(), "{status:?} is a valid custom status");
+            assert!(
+                issue.validate().is_ok(),
+                "{status:?} is a valid custom status"
+            );
             assert!(issue.is_open_like(), "{status:?} remains nonterminal");
-            assert!(!issue.is_actionable_status(), "{status:?} is not ready work");
+            assert!(
+                !issue.is_actionable_status(),
+                "{status:?} is not ready work"
+            );
             assert!(!issue.is_claimable_status(), "{status:?} cannot be claimed");
         }
     }
