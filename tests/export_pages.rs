@@ -3613,6 +3613,13 @@ mod preview_transfers {
             ];
             for client in &mut queued {
                 expect_no_response(client);
+                // Configure the post-shutdown read timeout while the queued
+                // connection is still live: Darwin/XNU returns EINVAL from
+                // setsockopt(SO_RCVTIMEO) after the listener closes and resets
+                // an unaccepted socket.
+                client
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("closed connection timeout");
             }
 
             occupied
@@ -3630,9 +3637,6 @@ mod preview_transfers {
             // stays unaccepted and ends with EOF/reset when the listener closes.
             let mut delivered = 0;
             for client in &mut queued {
-                client
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .expect("closed connection timeout");
                 let mut byte = [0];
                 match client.peek(&mut byte) {
                     Ok(0) => {}

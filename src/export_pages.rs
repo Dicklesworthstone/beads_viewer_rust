@@ -2495,8 +2495,27 @@ mod tests {
         server
             .set_write_timeout(Some(Duration::from_millis(100)))
             .expect("prefill timeout");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // On Darwin/BSD loopback (16 KiB MTU), RFC 1122 silly-window avoidance
+        // can leave < 1 MSS (~15 KiB) unclaimed in the peer receive buffer until
+        // the first TCP zero-window persist probe (TCPTV_PERSMIN = 5s) delivers
+        // that tail and frees send-buffer room for our short HTTP response.
+        // Wait past that initial persist window and refill any freed tail so the
+        // peer receive buffer is truly saturated before invoking the handler.
+        let initial_settle = if cfg!(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly",
+        )) {
+            Duration::from_secs(6)
+        } else {
+            Duration::from_secs(1)
+        };
+        let post_refill_settle = Duration::from_secs(1);
+        let deadline = Instant::now() + initial_settle + Duration::from_secs(6);
         let mut last_progress = Instant::now();
+        let mut saw_persist_refill = false;
         let buffer = vec![0_u8; 64 * 1024];
         let mut probe = buffer.as_slice();
         loop {
@@ -2506,7 +2525,12 @@ mod tests {
             );
             match server.write(probe) {
                 Ok(0) => panic!("peer closed during prefill"),
-                Ok(_) => last_progress = Instant::now(),
+                Ok(_) => {
+                    if probe.len() == 1 && last_progress.elapsed() >= Duration::from_secs(1) {
+                        saw_persist_refill = true;
+                    }
+                    last_progress = Instant::now();
+                }
                 Err(error)
                     if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
                 {
@@ -2516,8 +2540,15 @@ mod tests {
                         // that remaining space before measuring the timeout.
                         probe = &buffer[..1];
                         last_progress = Instant::now();
-                    } else if last_progress.elapsed() >= Duration::from_secs(1) {
-                        break;
+                    } else {
+                        let required_settle = if saw_persist_refill {
+                            post_refill_settle
+                        } else {
+                            initial_settle
+                        };
+                        if last_progress.elapsed() >= required_settle {
+                            break;
+                        }
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => {}
